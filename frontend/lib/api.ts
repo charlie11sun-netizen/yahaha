@@ -69,6 +69,10 @@ export const api = {
   tags: () => req<{ tags: string[] }>("/tags"),
   play: (id: string) => req<{ plays: number; plays_str: string }>(`/games/${id}/play`, { method: "POST" }),
   publish: (id: string) => req<Game>(`/games/${id}/publish`, { method: "POST" }),
+  like: (id: string) => req<{ liked: boolean; likes: number }>(`/games/${id}/like`, { method: "POST" }),
+  unlike: (id: string) => req<{ liked: boolean; likes: number }>(`/games/${id}/like`, { method: "DELETE" }),
+  favorite: (id: string) => req<{ favorited: boolean }>(`/games/${id}/favorite`, { method: "POST" }),
+  unfavorite: (id: string) => req<{ favorited: boolean }>(`/games/${id}/favorite`, { method: "DELETE" }),
 
   upload: (files: FileList | File[]) => {
     const fd = new FormData();

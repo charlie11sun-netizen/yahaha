@@ -28,6 +28,8 @@ export interface Game {
   oss_path: string;
   prompt?: string | null;
   bundle_url?: string;
+  liked?: boolean;
+  favorited?: boolean;
 }
 
 export interface Step {

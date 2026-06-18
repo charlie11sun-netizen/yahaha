@@ -78,7 +78,10 @@ def get_game(game_id: str, user=Depends(get_optional_user), db: Session = Depend
     g = db.get(Game, game_id)
     if not g or (g.status != GameStatus.PUBLISHED and (not user or user.id != g.author_id)):
         raise HTTPException(status_code=404, detail="Game not found")
-    return game_detail(g)
+    d = game_detail(g)
+    d["liked"] = bool(user and db.get(Like, {"user_id": user.id, "game_id": g.id}))
+    d["favorited"] = bool(user and db.get(Favorite, {"user_id": user.id, "game_id": g.id}))
+    return d
 
 
 @router.get("/games/{game_id}/preview")

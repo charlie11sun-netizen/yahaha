@@ -1,11 +1,21 @@
 "use client";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
+import { useToast } from "@/lib/toast";
 
 const ORANGE = "#ff6b35";
 const mono = "'IBM Plex Mono'";
+
+const pillBtn = (on: boolean): React.CSSProperties => ({
+  display: "inline-flex", alignItems: "center", gap: 7,
+  border: `1px solid ${on ? ORANGE : "#e8e3d8"}`, background: on ? "#fff1ea" : "#fff",
+  color: on ? "#d4501f" : "#5c574e", cursor: "pointer", fontWeight: 600, fontSize: 13.5,
+  padding: "8px 15px", borderRadius: 10,
+});
 
 function Centered({ children }: { children: React.ReactNode }) {
   return <div style={{ textAlign: "center", padding: "90px 20px", color: "#a8a294", fontFamily: mono, fontSize: 14 }}>{children}</div>;
@@ -15,9 +25,31 @@ export default function DetailPage() {
   const { id } = useParams() as { id: string };
   const router = useRouter();
   const { data: g, isLoading, isError } = useQuery({ queryKey: ["game", id], queryFn: () => api.game(id) });
+  const { user } = useAuth();
+  const flash = useToast();
+  const qc = useQueryClient();
+  const [liked, setLiked] = useState(false);
+  const [favorited, setFavorited] = useState(false);
+  const [likes, setLikes] = useState(0);
+  useEffect(() => {
+    if (g) { setLiked(!!g.liked); setFavorited(!!g.favorited); setLikes(g.likes); }
+  }, [g]);
 
   if (isLoading) return <Centered>Loading…</Centered>;
   if (isError || !g) return <Centered>Game not found.</Centered>;
+
+  const toggleLike = () => {
+    if (!user) { flash("登录后可点赞"); router.push("/login"); return; }
+    if (liked) { setLiked(false); setLikes((l) => Math.max(0, l - 1)); api.unlike(g.id).catch(() => {}); }
+    else { setLiked(true); setLikes((l) => l + 1); api.like(g.id).catch(() => {}); }
+  };
+  const toggleFav = () => {
+    if (!user) { flash("登录后可收藏"); router.push("/login"); return; }
+    const next = !favorited;
+    setFavorited(next);
+    (next ? api.favorite(g.id) : api.unfavorite(g.id)).catch(() => {});
+    qc.invalidateQueries({ queryKey: ["me-favorites"] });
+  };
 
   return (
     <div style={{ maxWidth: 980, width: "100%", margin: "0 auto", padding: "24px 28px 80px" }}>
@@ -41,6 +73,10 @@ export default function DetailPage() {
             <span style={{ fontSize: 14.5, fontWeight: 600 }}>{g.author}</span>
             <span style={{ color: "#cfc8b8" }}>·</span>
             <span style={{ fontSize: 13.5, color: "#7a756c" }}>{g.date}</span>
+          </div>
+          <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
+            <button onClick={toggleLike} style={pillBtn(liked)}>{liked ? "♥" : "♡"} {likes}</button>
+            <button onClick={toggleFav} style={pillBtn(favorited)}>{favorited ? "★" : "☆"} 收藏</button>
           </div>
           <p style={{ fontSize: 15.5, color: "#3a362f", lineHeight: 1.6, marginBottom: 20 }}>{g.summary}</p>
           <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 22 }}>
