@@ -9,6 +9,7 @@ AI全栈工程师系统设计-handoff/
 # Node / Next.js
 node_modules/
 .next/
+next-env.d.ts
 out/
 dist/
 build/

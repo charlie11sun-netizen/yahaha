@@ -11,7 +11,7 @@ sqlalchemy>=2.0
 psycopg[binary]>=3.2
 
 # 鉴权（MVP 脚手架用最小 JWT 实现；生产换 fastapi-users，见 README）
-passlib[bcrypt]>=1.7
+bcrypt>=4.0
 pyjwt>=2.9
 
 # 异步任务

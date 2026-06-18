@@ -1,19 +1,22 @@
 import datetime as dt
 
+import bcrypt
 import jwt
-from passlib.context import CryptContext
 
 from app.core.config import settings
 
-_pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 
 def hash_password(password: str) -> str:
-    return _pwd.hash(password)
+    # bcrypt 上限 72 字节，超出需手动截断
+    pw = password.encode("utf-8")[:72]
+    return bcrypt.hashpw(pw, bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(password: str, password_hash: str) -> bool:
-    return _pwd.verify(password, password_hash)
+    try:
+        return bcrypt.checkpw(password.encode("utf-8")[:72], password_hash.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
 
 
 def create_access_token(subject: str) -> str:
