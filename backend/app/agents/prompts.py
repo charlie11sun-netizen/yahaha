@@ -58,7 +58,6 @@ Hard requirements:
 - Size the canvas to innerWidth/innerHeight and handle window resize.
 - Wire #rs to restart; on game over add class "show" to #over and set #of to the score; keep #sc and #tm updated.
 - Support mouse/touch and arrow keys where relevant.
-- Keep it COMPACT and complete: ~120-220 lines, no verbose comments (faster to generate).
 Output ONLY the JavaScript — no markdown fences, no <script> tags, no prose."""
 
 
