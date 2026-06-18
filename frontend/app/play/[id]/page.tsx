@@ -94,8 +94,8 @@ export default function PlayPage() {
         )}
 
         {phase === "ready" && (
-          <div style={{ width: "100%", height: "100%", maxWidth: 920, display: "flex", flexDirection: "column", gap: 10 }}>
-            <div style={{ flex: 1, position: "relative", borderRadius: 16, overflow: "hidden", background: "#000", boxShadow: "0 20px 60px rgba(0,0,0,.5)", border: "1px solid #2c2823", minHeight: 420 }}>
+          <div style={{ width: "100%", maxWidth: 960, display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ position: "relative", height: "min(72vh, 640px)", borderRadius: 16, overflow: "hidden", background: "#000", boxShadow: "0 20px 60px rgba(0,0,0,.5)", border: "1px solid #2c2823" }}>
               <iframe src={game.bundle_url} sandbox="allow-scripts allow-pointer-lock" style={{ width: "100%", height: "100%", border: 0, display: "block" }} />
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 14, color: "#8a857b", fontFamily: mono, fontSize: 11.5 }}>
