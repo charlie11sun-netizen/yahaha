@@ -104,6 +104,8 @@ def run_generation(task_id: str) -> None:
 def _package(db, task: GenerationTask, user: User | None) -> Game:
     meta = bundles.pick_bundle(task.idea)
     title = bundles.title_from(task.idea)
+    # mock：选用已调好可玩性的模板。接真实 GPT-5.5 时，Coder 节点改用
+    # app.agents.prompts.CODER_SYSTEM_PROMPT 约束产出（含同一套可玩性契约）。
     html = bundles.BUNDLES[meta["bundle"]]
     author_name = user.display_name if user else "PlayForge AI"
 
