@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     MODEL_NAME: str = "gpt-5.5"
     USE_REAL_MODEL: bool = False
+    OPENAI_TIMEOUT: int = 300  # 写整个 game.js 耗时长，给足超时
 
     # OAuth (optional)
     GOOGLE_CLIENT_ID: str = ""

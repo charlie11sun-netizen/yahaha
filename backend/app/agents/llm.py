@@ -9,7 +9,7 @@ from app.core.config import settings
 
 
 def _client() -> OpenAI:
-    return OpenAI(api_key=settings.OPENAI_API_KEY, base_url=settings.OPENAI_BASE_URL, timeout=120)
+    return OpenAI(api_key=settings.OPENAI_API_KEY, base_url=settings.OPENAI_BASE_URL, timeout=settings.OPENAI_TIMEOUT)
 
 
 def chat(system: str, user: str, temperature: float | None = None, max_tokens: int | None = None) -> tuple[str, int]:
