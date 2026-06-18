@@ -3,6 +3,7 @@
 用装饰器包住每个 LangGraph 节点（graph.py），节点内部无需感知 DB。
 每次写库用独立短事务，安全（图内节点串行执行）。
 """
+import json
 import time
 
 from app.agents.state import STEP_META
@@ -29,7 +30,8 @@ def begin_step(task_id: str, agent: str, display: str) -> str | None:
         db.close()
 
 
-def finish_step(task_id, step_id, logs, tokens=0, repair=None, replan=None, failed=False) -> None:
+def finish_step(task_id, step_id, logs, tokens=0, repair=None, replan=None, failed=False,
+                spec=None, design=None) -> None:
     db = SessionLocal()
     try:
         if step_id:
@@ -46,6 +48,10 @@ def finish_step(task_id, step_id, logs, tokens=0, repair=None, replan=None, fail
                 task.repair_attempts = repair
             if replan is not None:
                 task.replan_attempts = replan
+            if spec is not None:  # 实时落库，前端在 game_design 完成后即可看到设计草案
+                task.spec_json = json.dumps(spec, ensure_ascii=False)
+            if design is not None:
+                task.design_json = json.dumps(design, ensure_ascii=False)
         db.commit()
     finally:
         db.close()
@@ -70,6 +76,7 @@ def logged(node_name: str):
                 task_id, sid, result.get("_logs"), result.get("_tokens_delta", 0),
                 repair=result.get("repair_attempts"), replan=result.get("replan_attempts"),
                 failed=result.get("status") == "failed",
+                spec=result.get("game_spec"), design=result.get("game_design"),
             )
             return result
 

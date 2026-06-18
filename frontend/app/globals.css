@@ -20,3 +20,4 @@ input, textarea, button { font-family: inherit; }
 @keyframes pfpulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
 @keyframes pfrise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 @keyframes pfblink { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+@keyframes pfslidein { from { transform: translateX(100%); } to { transform: none; } }
