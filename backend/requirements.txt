@@ -1,0 +1,27 @@
+# Web 框架
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.9
+pydantic-settings>=2.5
+python-multipart>=0.0.9      # 文件上传
+
+# 数据库
+sqlalchemy>=2.0
+psycopg[binary]>=3.2
+
+# 鉴权（MVP 脚手架用最小 JWT 实现；生产换 fastapi-users，见 README）
+passlib[bcrypt]>=1.7
+pyjwt>=2.9
+
+# 异步任务
+celery>=5.4
+redis>=5.0
+
+# 对象存储（S3 兼容）
+boto3>=1.35
+
+# Agent / 模型（USE_REAL_MODEL=true 时启用）
+langgraph>=0.2
+langchain-core>=0.3
+langchain-openai>=0.2
+httpx>=0.27
