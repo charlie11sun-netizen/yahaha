@@ -1,0 +1,22 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Albert+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #faf8f3;
+  font-family: "Albert Sans", system-ui, sans-serif;
+  color: #181613;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: inherit; text-decoration: none; }
+input, textarea, button { font-family: inherit; }
+::selection { background: #ffd2bf; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #e0dacb; border-radius: 8px; border: 3px solid #faf8f3; }
+
+@keyframes pfspin { to { transform: rotate(360deg); } }
+@keyframes pfpulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+@keyframes pfrise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes pfblink { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }

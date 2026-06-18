@@ -8,7 +8,7 @@
 
 | 层 | 选型 |
 | --- | --- |
-| 前端 | Next.js 15 + React 19 + TypeScript + Tailwind |
+| 前端 | Next.js 15 + React 19 + TypeScript（内联样式移植自设计稿） |
 | 后端 | Python · FastAPI |
 | 异步任务 | Celery + Redis |
 | Agent | LangGraph（`USE_REAL_MODEL=true` 时接 GPT-5.5；默认 mock 流水线离线可跑） |
@@ -68,5 +68,6 @@ docker compose up --build
 - **迁移**：MVP 用 `Base.metadata.create_all` 启动建表；生产换 Alembic。
 - **生成**：默认 `USE_REAL_MODEL=false` 走 mock 流水线（保留 5-Agent 步骤与日志，从模板产出真实可玩 bundle 并上传 OSS）；置 `true` 接真实 GPT-5.5，仅替换 Coder 节点实现。
 - **沙箱**：Sandbox QA 的 gVisor 执行在 MVP 为 mock（返回冒烟结果），接口边界已预留。
+- **前端样式**：为保真，直接移植设计稿的内联样式，未引入 Tailwind；后续可抽象为 Tailwind / CSS Modules。
 
 完成度详见各阶段提交与 `docs/安全与可观测性.md` 的「已知问题」。
