@@ -1,7 +1,7 @@
 "use client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -25,6 +25,29 @@ const AGENT_LIST = [
   { n: "6", agent: "Build Validation", role: "Safety scan + structure check (→ repair/replan)" },
   { n: "7", agent: "Publish Artifact", role: "Upload to OSS + write meta" },
 ];
+
+// 数字平滑递增动画（easeOutCubic），让 token 计数"跳动"地累加而非瞬跳
+function useCountUp(target: number, durationMs = 700): number {
+  const [display, setDisplay] = useState(target);
+  const displayRef = useRef(target);
+  displayRef.current = display;
+  useEffect(() => {
+    const from = displayRef.current;
+    if (from === target) return;
+    let raf = 0;
+    let start = 0;
+    const tick = (t: number) => {
+      if (!start) start = t;
+      const p = Math.min(1, (t - start) / durationMs);
+      const eased = 1 - Math.pow(1 - p, 3);
+      setDisplay(Math.round(from + (target - from) * eased));
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, durationMs]);
+  return display;
+}
 
 export default function CreatePage() {
   const router = useRouter();
@@ -54,6 +77,7 @@ export default function CreatePage() {
   const status = taskId ? task?.status ?? "running" : "idle";
   const running = status === "running" || status === "pending";
   const succeeded = status === "succeeded";
+  const animatedTokens = useCountUp(task?.tokens ?? 0);
 
   if (loading || !user) return null;
 
@@ -147,7 +171,11 @@ export default function CreatePage() {
               <span style={{ fontFamily: "'Space Grotesk'", fontWeight: 700, fontSize: 15 }}>Generation task</span>
               <StatusPill status={status} />
             </div>
-            {status !== "idle" && <span style={{ fontFamily: mono, fontSize: 12, color: "#7a756c" }}>{(task?.tokens ?? 0).toLocaleString()} tokens</span>}
+            {status !== "idle" && (
+              <span style={{ fontFamily: mono, fontSize: 12.5, color: running ? "#d4501f" : "#7a756c", transition: "color .3s" }}>
+                <b style={{ fontWeight: 700 }}>{animatedTokens.toLocaleString()}</b> tokens
+              </span>
+            )}
           </div>
 
           {!taskId ? (
