@@ -45,3 +45,29 @@ def build_replan_prompt(game_spec: dict, prev_design: dict | None, last_error: s
         f"Validation error:\n{last_error}\n\n"
         "Output a SIMPLER GameDesign JSON."
     )
+
+
+CODE_SYSTEM_PROMPT = """You are GameCodeAgent. Write ONLY the JavaScript (game.js) for a single-screen HTML5 Canvas game.
+The HTML and CSS are fixed and provided; your JS must drive exactly these element ids:
+  #stage (canvas), #sc (score text), #tm (time text), #over (overlay — add class "show" on game over),
+  #ot (over title), #of (final score), #op (over subtitle), #rs (restart button).
+Hard requirements:
+- Vanilla JS only. No imports, no external URLs, NO fetch / XMLHttpRequest / WebSocket / eval / new Function / localStorage / sessionStorage / cookies / window.parent.
+- Frame-rate independent: cap to ~60 updates/sec via a timestamp gate so it never runs 2x on 120/144Hz displays.
+- Start easy and ramp gradually; the game must always be solvable (never an unavoidable state).
+- Size the canvas to innerWidth/innerHeight and handle window resize.
+- Wire #rs to restart; on game over add class "show" to #over and set #of to the score; keep #sc and #tm updated.
+- Support mouse/touch and arrow keys where relevant.
+Output ONLY the JavaScript — no markdown fences, no <script> tags, no prose."""
+
+
+def build_code_prompt(game_spec: dict, game_design: dict, index_html: str, repair_error: str | None = None) -> str:
+    parts = [
+        f"GameSpec:\n{json.dumps(game_spec, ensure_ascii=False)}",
+        f"GameDesign:\n{json.dumps(game_design, ensure_ascii=False)}",
+        f"Fixed index.html (your JS must drive these elements):\n{index_html}",
+        "Write game.js implementing this game.",
+    ]
+    if repair_error:
+        parts.append(f"Your previous game.js FAILED validation: {repair_error}\nFix it; output corrected game.js only.")
+    return "\n\n".join(parts)

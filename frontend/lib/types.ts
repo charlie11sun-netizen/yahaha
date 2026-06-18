@@ -42,8 +42,12 @@ export interface Task {
   id: string;
   status: string;
   current_step: number;
+  current_agent?: string | null;
+  repair_attempts?: number;
+  replan_attempts?: number;
   tokens: number;
   error: string | null;
+  error_code?: string | null;
   idea: string;
   steps: Step[];
   game: Game | null;

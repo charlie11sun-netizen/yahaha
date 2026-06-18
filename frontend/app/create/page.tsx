@@ -167,6 +167,12 @@ export default function CreatePage() {
           ) : (
             <div style={{ flex: 1, padding: "18px 20px", overflow: "auto" }}>
               {(task?.steps ?? []).map((st) => (<PipelineStep key={st.seq} step={st} />))}
+              {running && (
+                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "2px 0 2px 41px", color: "#d4501f", fontFamily: mono, fontSize: 12.5 }}>
+                  <span style={{ width: 13, height: 13, borderRadius: "50%", border: "2px solid #f0d9cd", borderTopColor: ORANGE, display: "inline-block", animation: "pfspin .8s linear infinite" }} />
+                  {task?.current_agent ? `${task.current_agent} working…` : "agents working…"}
+                </div>
+              )}
             </div>
           )}
 
@@ -184,7 +190,7 @@ export default function CreatePage() {
                 </div>
               </div>
               <div style={{ display: "flex", gap: 10, marginTop: 15 }}>
-                <button onClick={() => router.push(`/play/${task.game!.id}`)} style={{ flex: 1, border: "1px solid #e8e3d8", background: "#fff", cursor: "pointer", fontWeight: 600, fontSize: 14, padding: 11, borderRadius: 11, color: "#181613" }}>Preview</button>
+                <button onClick={() => window.open(`/play/${task.game!.id}`, "_blank", "noopener")} style={{ flex: 1, border: "1px solid #e8e3d8", background: "#fff", cursor: "pointer", fontWeight: 600, fontSize: 14, padding: 11, borderRadius: 11, color: "#181613" }}>Preview ↗</button>
                 <button onClick={() => setTaskId(null)} style={{ border: "1px solid #e8e3d8", background: "#fff", cursor: "pointer", fontWeight: 600, fontSize: 14, padding: "11px 14px", borderRadius: 11, color: "#181613" }}>Regenerate</button>
                 <button onClick={publish} style={{ flex: 1, border: "none", cursor: "pointer", background: ORANGE, color: "#fff", fontWeight: 700, fontSize: 14, padding: 11, borderRadius: 11, boxShadow: "0 6px 16px rgba(255,107,53,.3)" }}>Publish</button>
               </div>
@@ -221,7 +227,7 @@ function PipelineStep({ step }: { step: Step }) {
         : { background: "#fff", borderColor: "#e8e3d8", color: "#bdb6a8" }),
   };
   return (
-    <div style={{ display: "flex", gap: 13 }}>
+    <div style={{ display: "flex", gap: 13, animation: "pfrise .3s ease" }}>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
         <div style={dot}>{done ? "✓" : active ? "●" : step.seq}</div>
         <div style={{ width: 2, flex: 1, minHeight: 14, margin: "4px 0", background: done ? "#1f9d6b" : "#e8e3d8" }} />

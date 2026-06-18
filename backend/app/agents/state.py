@@ -37,6 +37,7 @@ class GenerationState(TypedDict, total=False):
 
     generated_files: list  # [{"path": str, "content": str}]
     validation_result: dict
+    use_template_code: bool  # replan 兜底：回退到模板 game.js，保证产物可校验
 
     repair_attempts: int
     replan_attempts: int

