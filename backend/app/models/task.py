@@ -1,0 +1,87 @@
+from datetime import datetime
+
+from sqlalchemy import (
+    BigInteger,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Table,
+    Text,
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db.base import Base
+from app.models.common import AssetKind, PkMixin, StepStatus, TaskStatus, TimestampMixin, now_utc
+
+task_assets = Table(
+    "task_assets",
+    Base.metadata,
+    Column("task_id", ForeignKey("generation_tasks.id", ondelete="CASCADE"), primary_key=True),
+    Column("asset_id", ForeignKey("assets.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
+class Asset(PkMixin, TimestampMixin, Base):
+    __tablename__ = "assets"
+
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(120), default="application/octet-stream")
+    kind: Mapped[str] = mapped_column(String(20), default=AssetKind.FILE)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    oss_key: Mapped[str] = mapped_column(String(400))
+
+
+class GenerationTask(PkMixin, TimestampMixin, Base):
+    __tablename__ = "generation_tasks"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    idea: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default=TaskStatus.PENDING, index=True)
+    current_step: Mapped[int] = mapped_column(Integer, default=0)
+    result_game_id: Mapped[str | None] = mapped_column(
+        ForeignKey("games.id", ondelete="SET NULL"), nullable=True
+    )
+    tokens_used: Mapped[int] = mapped_column(BigInteger, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    steps: Mapped[list["AgentStep"]] = relationship(
+        back_populates="task", cascade="all, delete-orphan", lazy="selectin", order_by="AgentStep.seq"
+    )
+    assets: Mapped[list["Asset"]] = relationship("Asset", secondary=task_assets, lazy="selectin")
+    result_game = relationship("Game", lazy="joined")
+
+
+class AgentStep(PkMixin, TimestampMixin, Base):
+    __tablename__ = "agent_steps"
+
+    task_id: Mapped[str] = mapped_column(ForeignKey("generation_tasks.id", ondelete="CASCADE"), index=True)
+    seq: Mapped[int] = mapped_column(Integer)
+    agent: Mapped[str] = mapped_column(String(40))
+    name: Mapped[str] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(20), default=StepStatus.PENDING)
+    tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    task: Mapped["GenerationTask"] = relationship(back_populates="steps")
+    logs: Mapped[list["AgentLog"]] = relationship(
+        back_populates="step", cascade="all, delete-orphan", lazy="selectin", order_by="AgentLog.seq"
+    )
+
+
+class AgentLog(Base):
+    __tablename__ = "agent_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    step_id: Mapped[str] = mapped_column(ForeignKey("agent_steps.id", ondelete="CASCADE"), index=True)
+    seq: Mapped[int] = mapped_column(Integer, default=0)
+    line: Mapped[str] = mapped_column(Text)
+    level: Mapped[str] = mapped_column(String(10), default="info")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+    step: Mapped["AgentStep"] = relationship(back_populates="logs")
