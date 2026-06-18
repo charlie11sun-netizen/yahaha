@@ -36,8 +36,10 @@ export default function Nav() {
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
           <button onClick={goCreate} style={{ border: "none", cursor: "pointer", background: ORANGE, color: "#fff", fontWeight: 600, fontSize: 14, padding: "9px 16px", borderRadius: 10, boxShadow: "0 4px 12px rgba(255,107,53,.3)", whiteSpace: "nowrap" }}>+ New game</button>
           <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "4px 4px 4px 12px", border: "1px solid #e8e3d8", borderRadius: 999, background: "#fff" }}>
-            <span style={{ fontSize: 13.5, fontWeight: 600 }}>{user.name}</span>
-            <div style={{ width: 30, height: 30, borderRadius: "50%", background: "#181613", color: "#faf8f3", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 13, fontFamily: "'Space Grotesk'" }}>{user.init}</div>
+            <div onClick={() => router.push("/me")} title="个人主页" style={{ display: "flex", alignItems: "center", gap: 9, cursor: "pointer" }}>
+              <span style={{ fontSize: 13.5, fontWeight: 600 }}>{user.name}</span>
+              <div style={{ width: 30, height: 30, borderRadius: "50%", background: "#181613", color: "#faf8f3", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 13, fontFamily: "'Space Grotesk'" }}>{user.init}</div>
+            </div>
             <button onClick={() => { logout(); router.push("/"); }} title="Sign out" style={{ border: "none", background: "none", cursor: "pointer", color: "#7a756c", fontSize: 13, padding: "0 6px 0 2px" }}>Exit</button>
           </div>
         </div>

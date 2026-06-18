@@ -62,6 +62,8 @@ export const api = {
       `/games?q=${encodeURIComponent(q)}&tag=${encodeURIComponent(tag)}`,
     ),
   game: (id: string) => req<Game>(`/games/${id}`),
+  myGames: () => req<{ items: Game[] }>("/me/games"),
+  myFavorites: () => req<{ items: Game[] }>("/me/favorites"),
   preview: (id: string) => req<Game>(`/games/${id}/preview`),
   stats: () => req<{ game_count: number; total_plays: number }>("/stats"),
   tags: () => req<{ tags: string[] }>("/tags"),

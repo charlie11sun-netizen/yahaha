@@ -18,6 +18,9 @@ export default function GameCard({ game }: { game: Game }) {
         {game.from_create && (
           <span style={{ position: "absolute", top: 12, right: 13, fontFamily: "'IBM Plex Mono'", fontSize: 10, fontWeight: 600, color: "#181613", background: "#ffd54a", padding: "4px 8px", borderRadius: 999 }}>✦ AI-MADE</span>
         )}
+        {game.status && game.status !== "published" && (
+          <span style={{ position: "absolute", bottom: 12, left: 13, fontFamily: "'IBM Plex Mono'", fontSize: 10, fontWeight: 600, color: "#fff", background: game.status === "preview" ? "rgba(212,80,31,.92)" : "rgba(70,70,70,.85)", padding: "4px 9px", borderRadius: 999, backdropFilter: "blur(4px)" }}>{game.status === "preview" ? "预览" : "草稿"}</span>
+        )}
         <button
           onClick={(e) => { e.stopPropagation(); router.push(`/play/${game.id}`); }}
           style={{ position: "absolute", bottom: 12, right: 12, border: "none", cursor: "pointer", width: 42, height: 42, borderRadius: "50%", background: "#fff", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 12px rgba(0,0,0,.25)" }}

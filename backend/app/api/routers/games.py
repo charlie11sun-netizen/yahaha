@@ -55,6 +55,24 @@ def list_tags(db: Session = Depends(get_db)):
     return {"tags": names}
 
 
+@router.get("/me/games")
+def my_games(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    games = db.query(Game).filter(Game.author_id == user.id).order_by(Game.created_at.desc()).all()
+    return {"items": [game_card(g) for g in games]}
+
+
+@router.get("/me/favorites")
+def my_favorites(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    games = (
+        db.query(Game)
+        .join(Favorite, Favorite.game_id == Game.id)
+        .filter(Favorite.user_id == user.id, Game.status == GameStatus.PUBLISHED)
+        .order_by(Favorite.created_at.desc())
+        .all()
+    )
+    return {"items": [game_card(g) for g in games]}
+
+
 @router.get("/games/{game_id}")
 def get_game(game_id: str, user=Depends(get_optional_user), db: Session = Depends(get_db)):
     g = db.get(Game, game_id)
