@@ -41,11 +41,20 @@ class GenerationTask(PkMixin, TimestampMixin, Base):
     idea: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default=TaskStatus.PENDING, index=True)
     current_step: Mapped[int] = mapped_column(Integer, default=0)
+    current_agent: Mapped[str | None] = mapped_column(String(40), nullable=True)
     result_game_id: Mapped[str | None] = mapped_column(
         ForeignKey("games.id", ondelete="SET NULL"), nullable=True
     )
+    version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     tokens_used: Mapped[int] = mapped_column(BigInteger, default=0)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    repair_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_repair_attempts: Mapped[int] = mapped_column(Integer, default=2)
+    replan_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_replan_attempts: Mapped[int] = mapped_column(Integer, default=1)
+    spec_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    design_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

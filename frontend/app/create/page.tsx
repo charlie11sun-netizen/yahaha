@@ -17,11 +17,13 @@ const EXAMPLES = [
   "A memory game: repeat the glowing color sequence, one more each round",
 ];
 const AGENT_LIST = [
-  { n: "1", agent: "Planner", role: "Parse idea → game spec" },
-  { n: "2", agent: "Designer", role: "Mechanics, art direction & balance" },
-  { n: "3", agent: "Coder", role: "Write runnable game bundle" },
-  { n: "4", agent: "Sandbox QA", role: "Execute in sandbox & safety-scan" },
-  { n: "5", agent: "Packager", role: "Upload to OSS & write meta" },
+  { n: "1", agent: "Safety Intake", role: "Screen prompt & assets, block injection" },
+  { n: "2", agent: "Intent Spec", role: "Idea → structured GameSpec" },
+  { n: "3", agent: "Asset Processing", role: "Uploads → AssetManifest" },
+  { n: "4", agent: "Game Design", role: "GameSpec → runnable design" },
+  { n: "5", agent: "Code Generation", role: "Render index.html / style.css / game.js" },
+  { n: "6", agent: "Build Validation", role: "Safety scan + structure check (→ repair/replan)" },
+  { n: "7", agent: "Publish Artifact", role: "Upload to OSS + write meta" },
 ];
 
 export default function CreatePage() {

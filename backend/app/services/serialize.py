@@ -69,8 +69,12 @@ def task_out(t) -> dict:
         "id": t.id,
         "status": t.status,
         "current_step": t.current_step,
+        "current_agent": t.current_agent,
+        "repair_attempts": t.repair_attempts,
+        "replan_attempts": t.replan_attempts,
         "tokens": t.tokens_used,
         "error": t.error,
+        "error_code": t.error_code,
         "idea": t.idea,
         "steps": [
             {
