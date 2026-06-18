@@ -47,7 +47,7 @@ export default function CreatePage() {
     enabled: !!taskId,
     refetchInterval: (query) => {
       const s = query.state.data?.status;
-      return s === "pending" || s === "running" ? 700 : false;
+      return s === "pending" || s === "running" ? 500 : false;
     },
   });
   const task = taskQ.data;
@@ -165,14 +165,10 @@ export default function CreatePage() {
               <p style={{ marginTop: 18, fontSize: 13, color: "#a8a294", lineHeight: 1.5 }}>Write a brief and hit generate — each agent&apos;s logs stream here so you can see exactly what&apos;s happening.</p>
             </div>
           ) : (
-            <div style={{ flex: 1, padding: "18px 20px", overflow: "auto" }}>
-              {(task?.steps ?? []).map((st) => (<PipelineStep key={st.seq} step={st} />))}
-              {running && (
-                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "2px 0 2px 41px", color: "#d4501f", fontFamily: mono, fontSize: 12.5 }}>
-                  <span style={{ width: 13, height: 13, borderRadius: "50%", border: "2px solid #f0d9cd", borderTopColor: ORANGE, display: "inline-block", animation: "pfspin .8s linear infinite" }} />
-                  {task?.current_agent ? `${task.current_agent} working…` : "agents working…"}
-                </div>
-              )}
+            <div style={{ flex: 1, padding: "20px 20px 8px", overflow: "auto" }}>
+              {(task?.steps ?? []).map((st, i, arr) => (
+                <PipelineStep key={st.seq} step={st} last={i === arr.length - 1} />
+              ))}
             </div>
           )}
 
@@ -214,33 +210,43 @@ function StatusPill({ status }: { status: string }) {
   return <span style={{ fontFamily: mono, fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 999, letterSpacing: ".03em", background: s.bg, color: s.color }}>{s.label}</span>;
 }
 
-function PipelineStep({ step }: { step: Step }) {
+function PipelineStep({ step, last }: { step: Step; last: boolean }) {
   const done = step.status === "done";
-  const active = step.status === "running";
-  const dot: React.CSSProperties = {
-    width: 28, height: 28, borderRadius: "50%", border: "2px solid", display: "flex", alignItems: "center",
-    justifyContent: "center", fontSize: 13, fontWeight: 700, fontFamily: mono, flex: "none",
-    ...(done
-      ? { background: "#1f9d6b", borderColor: "#1f9d6b", color: "#fff" }
-      : active
-        ? { background: ORANGE, borderColor: ORANGE, color: "#fff" }
-        : { background: "#fff", borderColor: "#e8e3d8", color: "#bdb6a8" }),
+  const running = step.status === "running";
+  const failed = step.status === "failed";
+  const dotBase: React.CSSProperties = {
+    width: 26, height: 26, borderRadius: "50%", flex: "none", display: "flex",
+    alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, fontFamily: mono,
   };
+  const dot: React.CSSProperties = done
+    ? { ...dotBase, background: "#1f9d6b", color: "#fff" }
+    : failed
+      ? { ...dotBase, background: "#e2483d", color: "#fff" }
+      : running
+        ? { ...dotBase, background: "#fff", border: `2px solid ${ORANGE}` }
+        : { ...dotBase, background: "#f4f1e9", border: "1px solid #e8e3d8", color: "#bdb6a8" };
   return (
-    <div style={{ display: "flex", gap: 13, animation: "pfrise .3s ease" }}>
+    <div style={{ display: "flex", gap: 14, animation: "pfrise .3s ease" }}>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-        <div style={dot}>{done ? "✓" : active ? "●" : step.seq}</div>
-        <div style={{ width: 2, flex: 1, minHeight: 14, margin: "4px 0", background: done ? "#1f9d6b" : "#e8e3d8" }} />
+        <div style={dot}>
+          {done ? "✓" : failed ? "!" : running ? (
+            <span style={{ width: 11, height: 11, borderRadius: "50%", border: "2px solid #f6dccd", borderTopColor: ORANGE, animation: "pfspin .7s linear infinite" }} />
+          ) : step.seq}
+        </div>
+        {!last && <div style={{ width: 2, flex: 1, minHeight: 16, margin: "5px 0", background: done ? "#cfe9da" : "#ece7dc" }} />}
       </div>
-      <div style={{ flex: 1, paddingBottom: 14 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <span style={{ fontFamily: mono, fontSize: 10.5, fontWeight: 600, color: "#d4501f", background: "#fff1ea", padding: "2px 7px", borderRadius: 5, letterSpacing: ".04em" }}>{step.agent}</span>
-          <span style={{ fontWeight: 600, fontSize: 13.5, color: "#3a362f" }}>{step.name}</span>
+      <div style={{ flex: 1, paddingBottom: 18, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9, minHeight: 26 }}>
+          <span style={{ fontFamily: "'Space Grotesk'", fontWeight: 600, fontSize: 14.5, letterSpacing: "-.01em", color: running ? "#181613" : done ? "#3a362f" : "#a8a294" }}>{step.name}</span>
+          {running && <span style={{ fontFamily: mono, fontSize: 10, fontWeight: 600, color: "#d4501f", background: "#fff1ea", padding: "3px 9px", borderRadius: 999, animation: "pfpulse 1.4s infinite" }}>running</span>}
+          {done && <span style={{ fontFamily: mono, fontSize: 10.5, color: "#bdb6a8" }}>{step.agent}</span>}
         </div>
         {step.logs.length > 0 && (
-          <div style={{ marginTop: 8, background: "#181613", borderRadius: 9, padding: "10px 12px", fontFamily: mono, fontSize: 11.5, lineHeight: 1.7, color: "#b8e6c8" }}>
+          <div style={{ marginTop: 9, background: "#fbf9f4", border: "1px solid #efe9dc", borderLeft: `2.5px solid ${failed ? "#e2483d" : done ? "#1f9d6b" : ORANGE}`, borderRadius: 9, padding: "10px 13px" }}>
             {step.logs.map((ln, i) => (
-              <div key={i} style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}><span style={{ color: "#5f6f64" }}>$</span> {ln}</div>
+              <div key={i} style={{ fontFamily: mono, fontSize: 11.5, lineHeight: 1.8, color: "#6b6459", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                <span style={{ color: "#cdbfa3" }}>›</span> {ln}
+              </div>
             ))}
           </div>
         )}
