@@ -6,8 +6,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 COPY requirements.txt .
-# 国内网络用清华镜像加速；海外可删掉 -i 这段
-RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 

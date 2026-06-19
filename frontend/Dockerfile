@@ -4,8 +4,7 @@ FROM node:20-alpine
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
-# 国内网络用 npmmirror 加速；海外可删掉 --registry
-RUN npm install --registry=https://registry.npmmirror.com
+RUN npm install
 
 COPY . .
 
