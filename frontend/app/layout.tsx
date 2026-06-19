@@ -1,11 +1,23 @@
 import type { Metadata } from "next";
 
+import "@fontsource/space-grotesk/400.css";
+import "@fontsource/space-grotesk/500.css";
+import "@fontsource/space-grotesk/600.css";
+import "@fontsource/space-grotesk/700.css";
+import "@fontsource/albert-sans/400.css";
+import "@fontsource/albert-sans/500.css";
+import "@fontsource/albert-sans/600.css";
+import "@fontsource/albert-sans/700.css";
+import "@fontsource/albert-sans/800.css";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/500.css";
+import "@fontsource/ibm-plex-mono/600.css";
 import "./globals.css";
 import Nav from "@/components/Nav";
 import Providers from "./providers";
 
 export const metadata: Metadata = {
-  title: "PlayForge — AI Native 互动游戏平台",
+  title: "PlayForge AI - AI Native Game Platform",
   description: "Prompt a game. Play it in seconds.",
 };
 
@@ -14,7 +26,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" suppressHydrationWarning>
       <body suppressHydrationWarning>
         <Providers>
-          <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", background: "#faf8f3" }}>
+          <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", background: "#fbfcff" }}>
             <Nav />
             <main style={{ flex: 1, display: "flex", flexDirection: "column" }}>{children}</main>
           </div>
