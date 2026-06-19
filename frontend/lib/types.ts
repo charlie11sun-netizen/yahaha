@@ -51,6 +51,7 @@ export interface AgentLogItem {
   agent_name: string;
   step: string;
   message: string;
+  created_at?: string;
   duration?: string | null;
   status: string;
   lines: string[];
@@ -72,10 +73,16 @@ export interface TaskAsset {
 export interface Task {
   id: string;
   status: string;
+  created_at?: string;
+  updated_at?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
   current_step: number;
   current_agent?: string | null;
   repair_attempts?: number;
+  max_repair_attempts?: number;
   replan_attempts?: number;
+  max_replan_attempts?: number;
   tokens: number;
   error: string | null;
   error_code?: string | null;

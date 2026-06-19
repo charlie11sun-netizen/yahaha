@@ -19,6 +19,8 @@ def run_generation(task_id: str) -> None:
         task = db.get(GenerationTask, task_id)
         if not task:
             return
+        if task.status == TaskStatus.CANCELLED:
+            return
         task.status = TaskStatus.RUNNING
         task.started_at = now_utc()
         task.current_step = 0
@@ -55,6 +57,8 @@ def run_generation(task_id: str) -> None:
     try:
         task = db.get(GenerationTask, task_id)
         if not task:
+            return
+        if task.status == TaskStatus.CANCELLED:
             return
         if final is None:
             task.status = TaskStatus.FAILED

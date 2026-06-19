@@ -34,6 +34,7 @@ class TaskStatus:
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class StepStatus:

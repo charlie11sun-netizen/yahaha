@@ -94,6 +94,24 @@ def _dur(s):
     return None
 
 
+def _iso(dt):
+    return dt.isoformat() if dt else None
+
+
+def _latest_task_event_at(t):
+    latest = t.created_at
+    for step in t.steps:
+        for dt in (step.started_at, step.finished_at, step.created_at):
+            if dt and (latest is None or dt > latest):
+                latest = dt
+        for log in step.logs:
+            if log.created_at and (latest is None or log.created_at > latest):
+                latest = log.created_at
+    if t.finished_at and (latest is None or t.finished_at > latest):
+        latest = t.finished_at
+    return latest
+
+
 def _design_preview(spec: dict, design: dict):
     rules = design.get("rules") if isinstance(design.get("rules"), dict) else {}
     fields = []
@@ -118,6 +136,7 @@ def _design_preview(spec: dict, design: dict):
 def task_out(t) -> dict:
     spec, design = _parse(t.spec_json), _parse(t.design_json)
     steps_by_agent = {s.agent: s for s in t.steps}
+    latest_event_at = _latest_task_event_at(t)
 
     step_summaries = []
     progress = 0
@@ -149,6 +168,7 @@ def task_out(t) -> dict:
     logs = [
         {"agent_name": s.agent, "step": s.name,
          "message": (s.logs[-1].line if s.logs else ""),
+         "created_at": _iso(s.logs[-1].created_at if s.logs else s.created_at),
          "duration": _dur(s), "status": _ST.get(s.status, "pending"),
          "lines": [log.line for log in s.logs]}
         for s in t.steps
@@ -157,7 +177,10 @@ def task_out(t) -> dict:
     return {
         "id": t.id, "status": t.status, "current_step": t.current_step, "current_agent": t.current_agent,
         "repair_attempts": t.repair_attempts, "replan_attempts": t.replan_attempts,
+        "max_repair_attempts": t.max_repair_attempts, "max_replan_attempts": t.max_replan_attempts,
         "tokens": t.tokens_used, "error": t.error, "error_code": t.error_code, "idea": t.idea,
+        "created_at": _iso(t.created_at), "started_at": _iso(t.started_at),
+        "finished_at": _iso(t.finished_at), "updated_at": _iso(latest_event_at),
         "progress": progress, "game_title": game_title,
         "manifest_url": manifest_url, "preview_url": preview_url,
         "step_summaries": step_summaries,

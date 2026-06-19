@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { Box } from "lucide-react";
+import { Box, ClipboardList, Save } from "lucide-react";
 
 import { useAuth } from "@/lib/auth";
 
@@ -13,11 +13,17 @@ export default function Nav() {
   const { user, logout } = useAuth();
   const path = usePathname();
   const router = useRouter();
+  const isCreate = path === "/create";
 
   const goCreate = () => router.push(user ? "/create" : "/login?intent=create");
+  const emitCreateEvent = (name: string) => {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new Event(name));
+    }
+  };
 
   return (
-    <nav className="pf-topnav" aria-label="Main navigation">
+    <nav className={`pf-topnav${isCreate ? " is-create" : ""}`} aria-label="Main navigation">
       <div className="pf-topnav-inner">
         <button className="pf-brand" onClick={() => router.push("/")} type="button">
           <span className="pf-logo-mark">
@@ -43,25 +49,49 @@ export default function Nav() {
 
         <div className="pf-nav-actions">
           {user ? (
-            <>
-              <button className="pf-user-chip" onClick={() => router.push("/me")} type="button">
-                <span>{user.init}</span>
-                {user.name}
-              </button>
-              <button
-                className="pf-login-btn"
-                onClick={() => {
-                  logout();
-                  router.push("/");
-                }}
-                type="button"
-              >
-                Exit
-              </button>
-              <button className="pf-start-btn" onClick={goCreate} type="button">
-                Start Creating
-              </button>
-            </>
+            isCreate ? (
+              <>
+                <button
+                  className="pf-task-btn"
+                  onClick={() => emitCreateEvent("pf-open-create-tasks")}
+                  type="button"
+                >
+                  <ClipboardList size={17} />
+                  My Tasks
+                </button>
+                <button
+                  className="pf-save-draft-btn"
+                  onClick={() => emitCreateEvent("pf-save-create-draft")}
+                  type="button"
+                >
+                  <Save size={17} />
+                  Save Draft
+                </button>
+                <button className="pf-create-avatar" onClick={() => router.push("/me")} type="button" aria-label="My games">
+                  {user.init}
+                </button>
+              </>
+            ) : (
+              <>
+                <button className="pf-user-chip" onClick={() => router.push("/me")} type="button">
+                  <span>{user.init}</span>
+                  {user.name}
+                </button>
+                <button
+                  className="pf-login-btn"
+                  onClick={() => {
+                    logout();
+                    router.push("/");
+                  }}
+                  type="button"
+                >
+                  Exit
+                </button>
+                <button className="pf-start-btn" onClick={goCreate} type="button">
+                  Start Creating
+                </button>
+              </>
+            )
           ) : (
             <>
               <button className="pf-login-btn" onClick={() => router.push("/login")} type="button">

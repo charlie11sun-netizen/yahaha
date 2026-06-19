@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models import Asset, GenerationTask
-from app.models.common import TaskStatus
+from app.models.common import TaskStatus, now_utc
 from app.schemas import TaskCreateIn
 from app.services.serialize import task_out
 from app.tasks.generate import generate_game
@@ -67,3 +67,16 @@ def retry_task(task_id: str, user=Depends(get_current_user), db: Session = Depen
     db.commit()
     generate_game.delay(task.id)
     return {"task_id": task.id}
+
+
+@router.post("/{task_id}/cancel")
+def cancel_task(task_id: str, user=Depends(get_current_user), db: Session = Depends(get_db)):
+    task = _owned_task(task_id, user, db)
+    if task.status not in (TaskStatus.PENDING, TaskStatus.RUNNING):
+        raise HTTPException(status_code=400, detail="Only active tasks can be cancelled")
+    task.status = TaskStatus.CANCELLED
+    task.error = "Cancelled by user"
+    task.finished_at = now_utc()
+    db.commit()
+    db.refresh(task)
+    return task_out(task)

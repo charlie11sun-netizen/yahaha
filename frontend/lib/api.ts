@@ -81,5 +81,8 @@ export const api = {
   },
   createTask: (idea: string, asset_ids: string[]) =>
     req<{ task_id: string }>("/tasks", { json: { idea, asset_ids } }),
+  tasks: () => req<{ items: Task[] }>("/tasks"),
   task: (id: string) => req<Task>(`/tasks/${id}`),
+  retryTask: (id: string) => req<{ task_id: string }>(`/tasks/${id}/retry`, { method: "POST" }),
+  cancelTask: (id: string) => req<Task>(`/tasks/${id}/cancel`, { method: "POST" }),
 };

@@ -1,511 +1,1046 @@
 "use client";
+
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  AlertCircle,
+  ArrowRight,
+  BarChart3,
+  Check,
+  CheckCircle2,
+  Circle,
+  Clock3,
+  Edit3,
+  FileImage,
+  FileText,
+  Gamepad2,
+  Image as ImageIcon,
+  Loader2,
+  MoreHorizontal,
+  Play,
+  RefreshCcw,
+  Sparkles,
+  Timer,
+  Trash2,
+  UploadCloud,
+  WandSparkles,
+  X,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/lib/toast";
 import type { AgentLogItem, StepSummary, Task, UploadedAsset } from "@/lib/types";
 
-/* ---------------- palette (indigo / emerald per design doc) ---------------- */
-const INDIGO = "#6366f1";
-const INDIGO_D = "#4f46e5";
-const INDIGO_BG = "#eef2ff";
-const EMERALD = "#10b981";
-const EMERALD_BG = "#ecfdf5";
-const RED = "#ef4444";
-const RED_BG = "#fef2f2";
-const INK = "#0f172a";
-const SLATE = "#475569";
-const SLATE_L = "#94a3b8";
-const BORDER = "#e7e9f1";
-const CARD = "#ffffff";
-const PAGE = "#f6f7fb";
-const MONO = "'IBM Plex Mono', ui-monospace, monospace";
+const DRAFT_KEY = "pf_create_draft_v2";
+const LAST_TASK_KEY = "pf_last_create_task";
 
-const card: React.CSSProperties = { background: CARD, border: `1px solid ${BORDER}`, borderRadius: 18, padding: 20 };
+const USER_STEPS = [
+  { key: "safety_intake", label: "Idea checked" },
+  { key: "intent_spec", label: "Game spec created" },
+  { key: "asset_processing", label: "Assets processed" },
+  { key: "game_design", label: "Game designed" },
+  { key: "code_generation", label: "Files generated" },
+  { key: "build_validation", label: "Validating build" },
+  { key: "publish_artifact", label: "Preparing preview" },
+  { key: "ready", label: "Ready to publish" },
+] as const;
 
-/* ---------------- icons (inline svg) ---------------- */
-const sv = (s: number) => ({ width: s, height: s, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const });
-const IcCheck = ({ s = 15 }: { s?: number }) => (<svg {...sv(s)} strokeWidth={2.6}><polyline points="20 6 9 17 4 12" /></svg>);
-const IcClock = ({ s = 15 }: { s?: number }) => (<svg {...sv(s)}><circle cx="12" cy="12" r="9" /><polyline points="12 7 12 12 15 14" /></svg>);
-const IcLink = ({ s = 15 }: { s?: number }) => (<svg {...sv(s)}><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1" /><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" /></svg>);
-const IcEye = ({ s = 15 }: { s?: number }) => (<svg {...sv(s)}><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" /><circle cx="12" cy="12" r="3" /></svg>);
-const IcPencil = ({ s = 14 }: { s?: number }) => (<svg {...sv(s)}><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" /></svg>);
-const IcBot = ({ s = 16 }: { s?: number }) => (<svg {...sv(s)}><rect x="4" y="8" width="16" height="11" rx="3" /><path d="M12 8V4" /><circle cx="9" cy="13" r="1" /><circle cx="15" cy="13" r="1" /></svg>);
-const IcFolder = ({ s = 16 }: { s?: number }) => (<svg {...sv(s)}><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>);
-const IcDoc = ({ s = 15 }: { s?: number }) => (<svg {...sv(s)}><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><polyline points="14 3 14 8 19 8" /><line x1="9" y1="13" x2="15" y2="13" /><line x1="9" y1="17" x2="13" y2="17" /></svg>);
-const IcPlay = ({ s = 15 }: { s?: number }) => (<svg {...sv(s)} fill="currentColor" stroke="none"><polygon points="6 4 20 12 6 20" /></svg>);
-const IcX = ({ s = 18 }: { s?: number }) => (<svg {...sv(s)}><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>);
-const IcAlert = ({ s = 15 }: { s?: number }) => (<svg {...sv(s)}><path d="M12 9v4" /><path d="M12 17h.01" /><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" /></svg>);
-const Spinner = ({ s = 14, c = INDIGO }: { s?: number; c?: string }) => (
-  <span style={{ width: s, height: s, borderRadius: "50%", border: `2px solid ${c}33`, borderTopColor: c, display: "inline-block", animation: "pfspin .7s linear infinite" }} />
-);
+type StepState = "pending" | "running" | "completed" | "failed";
+type StepRow = { key: string; label: string; status: StepState; summary?: string | null };
 
-/* ---------------- count-up ---------------- */
-function useCountUp(target: number, durationMs = 700): number {
-  const [display, setDisplay] = useState(target);
-  const ref = useRef(target);
-  ref.current = display;
-  useEffect(() => {
-    const from = ref.current;
-    if (from === target) return;
-    let raf = 0;
-    let start = 0;
-    const tick = (t: number) => {
-      if (!start) start = t;
-      const p = Math.min(1, (t - start) / durationMs);
-      setDisplay(Math.round(from + (target - from) * (1 - Math.pow(1 - p, 3))));
-      if (p < 1) raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [target, durationMs]);
-  return display;
-}
-
-const STAGES = [
-  { key: "safety_intake", title: "检查创意和素材", desc: "确认上传内容格式正确，并过滤不安全的生成请求。" },
-  { key: "intent_spec", title: "理解你的游戏创意", desc: "提取游戏类型、核心玩法、胜负条件和操作方式。" },
-  { key: "asset_processing", title: "整理素材", desc: "处理你上传的图片，并补齐游戏需要的默认素材。" },
-  { key: "game_design", title: "设计玩法规则", desc: "设计机制、数值、范围、波次和胜负条件。" },
-  { key: "code_generation", title: "生成游戏代码", desc: "把玩法设计转换成浏览器可运行的 Canvas 游戏。" },
-  { key: "build_validation", title: "测试游戏是否可运行", desc: "检查文件是否完整、安全，并确认可在浏览器中运行。" },
-  { key: "publish_artifact", title: "准备预览版本", desc: "上传游戏文件，并生成可游玩的预览链接。" },
-];
-const EXAMPLES = ["像素风太空躲避游戏", "魔法森林塔防游戏", "海底收集金币小游戏"];
-
-/* ================================================================= */
 export default function CreatePage() {
   const router = useRouter();
-  const qc = useQueryClient();
+  const queryClient = useQueryClient();
   const flash = useToast();
   const { user, loading } = useAuth();
+  const now = useNow(1000);
 
   const [idea, setIdea] = useState("");
   const [files, setFiles] = useState<UploadedAsset[]>([]);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [publishing, setPublishing] = useState(false);
-  const [logsOpen, setLogsOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [tasksOpen, setTasksOpen] = useState(false);
 
   useEffect(() => {
-    if (!loading && !user) router.replace("/login?intent=create");
-  }, [loading, user, router]);
+    if (!loading && !user) {
+      router.replace("/login?intent=create");
+    }
+  }, [loading, router, user]);
 
-  const taskQ = useQuery({
+  useEffect(() => {
+    const raw = localStorage.getItem(DRAFT_KEY);
+    if (!raw) return;
+    try {
+      const draft = JSON.parse(raw) as { idea?: string; files?: UploadedAsset[] };
+      setIdea(draft.idea || "");
+      setFiles(Array.isArray(draft.files) ? draft.files : []);
+    } catch {
+      localStorage.removeItem(DRAFT_KEY);
+    }
+  }, []);
+
+  useEffect(() => {
+    const lastTask = localStorage.getItem(LAST_TASK_KEY);
+    if (lastTask) {
+      setTaskId(lastTask);
+    }
+  }, []);
+
+  const saveDraft = useCallback(() => {
+    if (!idea.trim() && files.length === 0) {
+      flash("Nothing to save yet");
+      return;
+    }
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({ idea, files, savedAt: new Date().toISOString() }));
+    flash("Draft saved");
+  }, [files, flash, idea]);
+
+  useEffect(() => {
+    const openTasks = () => setTasksOpen(true);
+    window.addEventListener("pf-save-create-draft", saveDraft);
+    window.addEventListener("pf-open-create-tasks", openTasks);
+    return () => {
+      window.removeEventListener("pf-save-create-draft", saveDraft);
+      window.removeEventListener("pf-open-create-tasks", openTasks);
+    };
+  }, [saveDraft]);
+
+  const taskQuery = useQuery({
     queryKey: ["task", taskId],
     queryFn: () => api.task(taskId as string),
     enabled: !!taskId,
-    refetchInterval: (q) => {
-      const s = q.state.data?.status;
-      return s === "pending" || s === "running" ? 800 : false;
-    },
+    refetchInterval: (query) => (isActiveTask(query.state.data?.status) ? 1000 : false),
   });
-  const task = taskQ.data;
 
-  if (loading || !user) return null;
+  const tasksQuery = useQuery({
+    queryKey: ["tasks"],
+    queryFn: api.tasks,
+    enabled: tasksOpen,
+    refetchInterval: tasksOpen ? 5000 : false,
+  });
 
-  const onPick = async (fl: FileList | null) => {
-    if (!fl || !fl.length) return;
+  const task = taskQuery.data;
+
+  const pickFiles = async (picked: FileList | File[] | null) => {
+    if (!picked || picked.length === 0) return;
     try {
-      const r = await api.upload(fl);
-      setFiles((p) => [...p, ...r.assets].slice(0, 5));
+      const result = await api.upload(picked);
+      setFiles((current) => [...current, ...result.assets].slice(0, 5));
+      flash(`${result.assets.length} asset${result.assets.length === 1 ? "" : "s"} uploaded`);
     } catch {
-      flash("素材上传失败");
+      flash("Upload failed");
     }
   };
-  const generate = async () => {
+
+  const startGeneration = async () => {
     if (!idea.trim() || busy) return;
     setBusy(true);
     try {
-      const r = await api.createTask(idea.trim(), files.map((f) => f.id));
-      setTaskId(r.task_id);
+      const result = await api.createTask(
+        idea.trim(),
+        files.map((file) => file.id),
+      );
+      setTaskId(result.task_id);
+      localStorage.setItem(LAST_TASK_KEY, result.task_id);
+      flash("Generation task started");
     } catch {
-      flash("创建生成任务失败");
+      flash("Could not start generation");
     } finally {
       setBusy(false);
     }
   };
-  const publish = async () => {
+
+  const retryTask = async () => {
+    if (!task) return;
+    try {
+      const result = await api.retryTask(task.id);
+      setTaskId(result.task_id);
+      localStorage.setItem(LAST_TASK_KEY, result.task_id);
+      await queryClient.invalidateQueries({ queryKey: ["task", result.task_id] });
+      await queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      flash("Retry started");
+    } catch {
+      flash("Retry failed");
+    }
+  };
+
+  const cancelTask = async () => {
+    if (!task) return;
+    try {
+      const cancelled = await api.cancelTask(task.id);
+      queryClient.setQueryData(["task", task.id], cancelled);
+      await queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      flash("Task cancelled");
+    } catch {
+      flash("Could not cancel task");
+    }
+  };
+
+  const publishGame = async () => {
     if (!task?.game) return;
     setPublishing(true);
     try {
       await api.publish(task.game.id);
-      flash(`《${task.game.title}》已发布到首页`);
-      qc.invalidateQueries({ queryKey: ["games"] });
-      qc.invalidateQueries({ queryKey: ["stats"] });
+      await queryClient.invalidateQueries({ queryKey: ["games"] });
+      await queryClient.invalidateQueries({ queryKey: ["stats"] });
+      flash(`${task.game.title} published`);
       router.push("/");
+    } catch {
+      flash("Publish failed");
     } finally {
       setPublishing(false);
     }
   };
-  const preview = () => task?.game && window.open(`/play/${task.game.id}`, "_blank", "noopener");
-  const regenerate = () => { setTaskId(null); setLogsOpen(false); };
+
+  const openPreview = () => {
+    if (task?.game) {
+      window.open(`/play/${task.game.id}`, "_blank", "noopener");
+    }
+  };
+
+  const editBrief = () => {
+    setTaskId(null);
+    localStorage.removeItem(LAST_TASK_KEY);
+  };
+
+  const resumeTask = (id: string) => {
+    setTaskId(id);
+    localStorage.setItem(LAST_TASK_KEY, id);
+    setTasksOpen(false);
+  };
+
+  if (loading || !user) return null;
 
   return (
-    <div style={{ background: PAGE, minHeight: "calc(100vh - 64px)", color: INK }}>
-      <div style={{ maxWidth: 1340, margin: "0 auto", padding: "30px 28px 90px" }}>
+    <div className="pf-create-page">
+      <section className="pf-create-shell">
+        <header className="pf-create-header">
+          <h1>Create with AI</h1>
+          <p>Describe your idea, upload references, and generate a playable web game.</p>
+        </header>
+
         {taskId ? (
-          <Dashboard task={task} onPreview={preview} onPublish={publish} onRegenerate={regenerate} onOpenLogs={() => setLogsOpen(true)} publishing={publishing} />
+          <CreateWorkspace
+            connectionStatus={taskQuery.isError ? "Reconnecting" : "Connected"}
+            files={files}
+            now={now}
+            onCancel={cancelTask}
+            onEditBrief={editBrief}
+            onOpenActivity={() => setActivityOpen(true)}
+            onPreview={openPreview}
+            onPublish={publishGame}
+            onRetry={retryTask}
+            publishing={publishing}
+            task={task}
+          />
         ) : (
-          <InputView idea={idea} setIdea={setIdea} files={files} setFiles={setFiles} onPick={onPick} generate={generate} busy={busy} />
+          <CreateInput
+            busy={busy}
+            files={files}
+            idea={idea}
+            now={now}
+            onGenerate={startGeneration}
+            onOpenActivity={() => setActivityOpen(true)}
+            onPickFiles={pickFiles}
+            onRemoveFile={(id) => setFiles((current) => current.filter((file) => file.id !== id))}
+            onSetIdea={setIdea}
+          />
         )}
-      </div>
-      {logsOpen && task && <LogDrawer task={task} onClose={() => setLogsOpen(false)} />}
-    </div>
-  );
-}
+      </section>
 
-/* ---------------- input view ---------------- */
-function InputView(props: {
-  idea: string; setIdea: (v: string) => void; files: UploadedAsset[];
-  setFiles: React.Dispatch<React.SetStateAction<UploadedAsset[]>>;
-  onPick: (fl: FileList | null) => void; generate: () => void; busy: boolean;
-}) {
-  const { idea, setIdea, files, setFiles, onPick, generate, busy } = props;
-  const disabled = !idea.trim() || busy;
-  return (
-    <div style={{ maxWidth: 760, margin: "0 auto" }}>
-      <h1 style={{ fontFamily: "'Space Grotesk'", fontSize: 30, fontWeight: 700, letterSpacing: "-.02em", marginBottom: 6 }}>创建一个游戏 <span style={{ color: INDIGO }}>✦</span></h1>
-      <p style={{ fontSize: 15, color: SLATE, marginBottom: 24 }}>描述你的创意、附上参考素材，多 Agent 流水线会把它生成为可游玩的游戏。</p>
-
-      <div style={{ ...card, padding: 22 }}>
-        <label style={{ display: "block", fontSize: 12.5, fontWeight: 700, color: SLATE, marginBottom: 9 }}>描述你想生成的游戏</label>
-        <textarea value={idea} onChange={(e) => setIdea(e.target.value)} placeholder="例如：做一个 2D 像素风塔防小游戏，玩家放置蘑菇塔阻止史莱姆靠近生命水晶，成功防守 5 波后胜利。" style={{ width: "100%", minHeight: 130, resize: "vertical", border: `1px solid ${BORDER}`, borderRadius: 13, padding: 14, fontSize: 14.5, lineHeight: 1.6, outline: "none", background: "#fcfcfe", color: INK }} />
-        <p style={{ fontSize: 12.5, color: SLATE_L, marginTop: 8 }}>你可以描述玩法、角色、风格、胜负条件、操作方式和参考素材用途。</p>
-
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
-          {EXAMPLES.map((ex) => (
-            <button key={ex} onClick={() => setIdea(ex)} style={{ border: `1px dashed #cdd2e3`, background: "#fafbff", cursor: "pointer", color: INDIGO_D, fontSize: 12.5, padding: "6px 12px", borderRadius: 999 }}>✦ {ex}</button>
-          ))}
-        </div>
-
-        <label onDrop={(e) => { e.preventDefault(); onPick(e.dataTransfer.files); }} onDragOver={(e) => e.preventDefault()}
-          style={{ marginTop: 16, display: "flex", flexDirection: "column", alignItems: "center", gap: 6, border: `1.5px dashed #cdd2e3`, borderRadius: 13, padding: 22, cursor: "pointer", background: "#fafbff", textAlign: "center" }}>
-          <div style={{ width: 38, height: 38, borderRadius: 10, background: INDIGO_BG, display: "flex", alignItems: "center", justifyContent: "center", color: INDIGO_D }}>↑</div>
-          <div style={{ fontSize: 13.5, color: SLATE, fontWeight: 600 }}>上传素材 — 拖拽图片/视频/文件，或点击选择</div>
-          <div style={{ fontSize: 12, color: SLATE_L }}>建议至少一张图片作为封面或素材 · 单文件 ≤10MB · 最多 5 个</div>
-          <input type="file" multiple onChange={(e) => { onPick(e.target.files); e.target.value = ""; }} style={{ display: "none" }} />
-        </label>
-
-        {files.length > 0 && (
-          <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginTop: 13 }}>
-            {files.map((f, i) => (
-              <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 8, background: "#f7f8fc", border: `1px solid ${BORDER}`, borderRadius: 10, padding: "7px 9px", maxWidth: 220 }}>
-                {f.kind === "image" ? <div style={{ width: 30, height: 30, borderRadius: 6, flex: "none", backgroundImage: `url(${f.url})`, backgroundSize: "cover", backgroundPosition: "center" }} /> : <div style={{ width: 30, height: 30, borderRadius: 6, background: "#e7e9f4", display: "flex", alignItems: "center", justifyContent: "center", color: SLATE_L }}>▤</div>}
-                <span style={{ fontSize: 12, color: SLATE, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 120 }}>{f.name}</span>
-                <button onClick={() => setFiles((p) => p.filter((_, j) => j !== i))} style={{ border: "none", background: "none", cursor: "pointer", color: SLATE_L, fontSize: 14 }}>✕</button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <button onClick={generate} disabled={disabled} title={!idea.trim() ? "请输入游戏创意后开始生成" : ""}
-          style={{ width: "100%", marginTop: 16, border: "none", borderRadius: 12, padding: 14, fontWeight: 700, fontSize: 15.5, cursor: disabled ? "not-allowed" : "pointer", background: disabled ? "#e2e5f0" : INDIGO, color: disabled ? SLATE_L : "#fff", boxShadow: disabled ? "none" : `0 8px 20px ${INDIGO}44` }}>
-          {busy ? "正在创建生成任务…" : "生成游戏"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* ---------------- generation dashboard ---------------- */
-function Dashboard({ task, onPreview, onPublish, onRegenerate, onOpenLogs, publishing }: {
-  task?: Task; onPreview: () => void; onPublish: () => void; onRegenerate: () => void; onOpenLogs: () => void; publishing: boolean;
-}) {
-  const tokens = useCountUp(task?.tokens ?? 0);
-  const summaries: StepSummary[] = task?.step_summaries ?? STAGES.map((s) => ({ step: s.key, title: s.title, status: "pending" as const }));
-  const status = task?.status ?? "pending";
-  const succeeded = status === "succeeded";
-  const failed = status === "failed";
-
-  let curIdx = summaries.findIndex((s) => s.status === "running");
-  if (curIdx < 0) {
-    let lastDone = -1;
-    summaries.forEach((s, i) => { if (s.status === "completed") lastDone = i; });
-    curIdx = succeeded ? STAGES.length - 1 : Math.min(lastDone + 1, STAGES.length - 1);
-  }
-  const cur = STAGES[curIdx] ?? STAGES[0];
-  const doneCount = summaries.filter((s) => s.status === "completed").length;
-  const stepNo = succeeded ? STAGES.length : Math.min(curIdx + 1, STAGES.length);
-
-  const badge = succeeded ? { t: "已完成", c: EMERALD, bg: EMERALD_BG } : failed ? { t: "失败", c: RED, bg: RED_BG } : status === "pending" ? { t: "排队中", c: SLATE, bg: "#f1f5f9" } : { t: "运行中", c: INDIGO_D, bg: INDIGO_BG };
-
-  return (
-    <>
-      {/* header strip */}
-      <div style={{ ...card, display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", marginBottom: 18 }}>
-        <div style={{ width: 52, height: 52, borderRadius: 14, flex: "none", background: task?.game?.cover || "linear-gradient(135deg,#6366f1,#a855f7)", boxShadow: "inset 0 0 0 1px rgba(0,0,0,.05)" }} />
-        <div style={{ minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontFamily: "'Space Grotesk'", fontWeight: 700, fontSize: 20, letterSpacing: "-.01em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 360 }}>{task?.game_title || "正在命名…"}</span>
-            <span style={{ color: SLATE_L, display: "inline-flex" }}><IcPencil /></span>
-          </div>
-          <div style={{ fontSize: 12.5, color: SLATE_L }}>由多 Agent 流水线生成</div>
-        </div>
-        <div style={{ flex: 1 }} />
-        <ArtifactChip icon={<IcLink />} label="Manifest URL" value={task?.manifest_url ?? null} />
-        <ArtifactChip icon={<IcEye />} label="Preview URL" value={task?.preview_url ?? null} />
-      </div>
-
-      {/* two columns */}
-      <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 18, alignItems: "start" }}>
-        {/* left: title + timeline */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <div>
-            <h1 style={{ fontFamily: "'Space Grotesk'", fontSize: 24, fontWeight: 700, letterSpacing: "-.02em" }}>正在生成你的游戏 <span style={{ color: INDIGO }}>✦</span></h1>
-            <p style={{ fontSize: 13.5, color: SLATE, marginTop: 4, lineHeight: 1.5 }}>我们会把你的创意转换成一个可在浏览器中运行的小游戏。</p>
-          </div>
-          <div style={card}>
-            <div style={{ fontFamily: "'Space Grotesk'", fontWeight: 700, fontSize: 15 }}>生成进度</div>
-            <div style={{ fontSize: 12.5, color: SLATE_L, marginBottom: 14, fontFamily: MONO }}>{STAGES.length} 个阶段中的第 {stepNo} 步</div>
-            <Timeline summaries={summaries} curIdx={curIdx} />
-          </div>
-        </div>
-
-        {/* right: stage detail + cards */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <CurrentStageCard cur={cur} status={status} badge={badge} tokens={tokens} failed={failed} error={task?.error} repair={task?.repair_attempts} replan={task?.replan_attempts} />
-          {task?.design && <DesignDraft design={task.design} cover={task?.game?.cover} />}
-          {(task?.assets?.length ?? 0) > 0 && <AssetGrid assets={task!.assets!} />}
-          <AgentSummary logs={task?.logs ?? []} onOpenLogs={onOpenLogs} />
-        </div>
-      </div>
-
-      {/* action bar */}
-      <ActionBar status={status} onPreview={onPreview} onPublish={onPublish} onRegenerate={onRegenerate} onOpenLogs={onOpenLogs} publishing={publishing} hasGame={!!task?.game} />
-    </>
-  );
-}
-
-function ArtifactChip({ icon, label, value }: { icon: React.ReactNode; label: string; value: string | null }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#f7f8fc", border: `1px solid ${BORDER}`, borderRadius: 12, padding: "9px 14px", minWidth: 190, maxWidth: 280 }}>
-      <span style={{ color: value ? INDIGO_D : SLATE_L, display: "inline-flex" }}>{icon}</span>
-      <div style={{ minWidth: 0 }}>
-        <div style={{ fontSize: 11, color: SLATE_L, fontWeight: 600 }}>{label}</div>
-        <div style={{ fontFamily: MONO, fontSize: 11.5, color: value ? INK : SLATE_L, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{value ? value.replace(/^https?:\/\//, "") : "生成中…"}</div>
-      </div>
-    </div>
-  );
-}
-
-function Timeline({ summaries, curIdx }: { summaries: StepSummary[]; curIdx: number }) {
-  return (
-    <div>
-      {STAGES.map((stage, i) => {
-        const s = summaries.find((x) => x.step === stage.key);
-        const st = s?.status ?? "pending";
-        const active = i === curIdx && st !== "completed" && st !== "failed";
-        const done = st === "completed";
-        const isFailed = st === "failed";
-        const last = i === STAGES.length - 1;
-        const dotColor = done ? EMERALD : isFailed ? RED : active ? INDIGO : "#cbd2e0";
-        return (
-          <div key={stage.key} style={{ display: "flex", gap: 12 }}>
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-              <div style={{ width: 26, height: 26, borderRadius: "50%", flex: "none", display: "flex", alignItems: "center", justifyContent: "center", color: done || isFailed ? "#fff" : active ? INDIGO : SLATE_L, background: done ? EMERALD : isFailed ? RED : "#fff", border: done || isFailed ? "none" : `2px solid ${active ? INDIGO : "#dfe3ee"}` }}>
-                {done ? <IcCheck /> : isFailed ? <IcAlert /> : active ? <Spinner /> : <IcClock s={13} />}
-              </div>
-              {!last && <div style={{ width: 2, flex: 1, minHeight: 18, background: done ? "#bfe9d4" : "#e7e9f1", margin: "3px 0" }} />}
-            </div>
-            <div style={{ flex: 1, padding: "1px 0 16px", borderRadius: 8, ...(active ? { background: INDIGO_BG, margin: "-3px -8px 13px", padding: "5px 10px 9px" } : {}) }}>
-              <div style={{ fontSize: 13.5, fontWeight: 600, color: done ? INK : active ? INDIGO_D : isFailed ? RED : SLATE_L }}>{i + 1}. {stage.title}</div>
-              {active && <div style={{ fontSize: 11.5, color: INDIGO_D, fontFamily: MONO, marginTop: 2, display: "flex", alignItems: "center", gap: 6 }}><Spinner s={10} /> 进行中</div>}
-              {done && s?.summary && <div style={{ fontSize: 11.5, color: SLATE_L, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.summary}</div>}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function CurrentStageCard({ cur, status, badge, tokens, failed, error, repair, replan }: {
-  cur: { title: string; desc: string }; status: string; badge: { t: string; c: string; bg: string };
-  tokens: number; failed: boolean; error?: string | null; repair?: number; replan?: number;
-}) {
-  const succeeded = status === "succeeded";
-  return (
-    <div style={card}>
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
-        <div>
-          <div style={{ fontSize: 12, color: SLATE_L, fontWeight: 600, letterSpacing: ".02em" }}>当前阶段</div>
-          <div style={{ fontFamily: "'Space Grotesk'", fontSize: 21, fontWeight: 700, letterSpacing: "-.01em", marginTop: 3 }}>{succeeded ? "游戏生成完成" : failed ? "生成没有完成" : cur.title}</div>
-        </div>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontFamily: MONO, fontSize: 12, fontWeight: 600, color: badge.c, background: badge.bg, padding: "5px 11px", borderRadius: 999, whiteSpace: "nowrap" }}>
-          {!succeeded && !failed && <Spinner s={11} c={badge.c} />}{badge.t}
-        </span>
-      </div>
-      <p style={{ fontSize: 14, color: SLATE, lineHeight: 1.55, marginTop: 10 }}>
-        {succeeded ? "你现在可以预览、发布到首页，或者重新生成一个版本。" : failed ? (error || "我们在测试游戏时发现了无法自动修复的问题。可以重新生成，或简化创意后再试。") : cur.desc}
-      </p>
-      <div style={{ display: "flex", gap: 22, marginTop: 14, paddingTop: 14, borderTop: `1px solid ${BORDER}` }}>
-        <Metric label="tokens" value={tokens.toLocaleString()} hot={!succeeded && !failed} />
-        <Metric label="自动修复" value={`${repair ?? 0}`} />
-        <Metric label="重新规划" value={`${replan ?? 0}`} />
-      </div>
-    </div>
-  );
-}
-function Metric({ label, value, hot }: { label: string; value: string; hot?: boolean }) {
-  return (
-    <div>
-      <div style={{ fontFamily: "'Space Grotesk'", fontSize: 19, fontWeight: 700, color: hot ? INDIGO_D : INK }}>{value}</div>
-      <div style={{ fontSize: 11.5, color: SLATE_L, fontFamily: MONO }}>{label}</div>
-    </div>
-  );
-}
-
-function DesignDraft({ design, cover }: { design: NonNullable<Task["design"]>; cover?: string }) {
-  const fields = design.fields;
-  const mid = Math.ceil(fields.length / 2);
-  const cols = [fields.slice(0, mid), fields.slice(mid)];
-  return (
-    <div style={card}>
-      <SectionTitle icon={<IcDoc />} text="游戏设计草案" />
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 300px", gap: 18, marginTop: 14, alignItems: "start" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px 18px" }}>
-          {cols.map((col, ci) => (
-            <div key={ci} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {col.map((f) => (
-                <div key={f.label} style={{ fontSize: 13 }}>
-                  <span style={{ color: SLATE_L, marginRight: 8 }}>{f.label}：</span>
-                  <span style={{ color: INK, fontWeight: 500 }}>{f.value}</span>
-                </div>
-              ))}
-            </div>
-          ))}
-        </div>
-        <div style={{ position: "relative", height: 168, borderRadius: 14, overflow: "hidden", background: cover || "linear-gradient(135deg,#34d399,#3b82f6)" }}>
-          <div style={{ position: "absolute", width: 120, height: 120, borderRadius: "50%", background: "rgba(255,255,255,.18)", top: -34, right: -24 }} />
-          <div style={{ position: "absolute", width: 60, height: 60, borderRadius: 16, background: "rgba(0,0,0,.12)", bottom: 20, left: 26, transform: "rotate(16deg)" }} />
-          <span style={{ position: "absolute", bottom: 12, left: 14, fontFamily: MONO, fontSize: 11, color: "#fff", background: "rgba(0,0,0,.32)", padding: "4px 9px", borderRadius: 999 }}>2D Canvas 概念预览</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function AssetGrid({ assets }: { assets: NonNullable<Task["assets"]> }) {
-  const tone = (ty: string) => ty === "uploaded" ? { c: INDIGO_D, bg: INDIGO_BG } : ty === "generated" ? { c: EMERALD, bg: EMERALD_BG } : { c: SLATE, bg: "#f1f5f9" };
-  return (
-    <div style={card}>
-      <SectionTitle icon={<IcFolder />} text="素材处理" />
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(190px,1fr))", gap: 12, marginTop: 14 }}>
-        {assets.map((a, i) => {
-          const t = tone(a.type);
-          return (
-            <div key={i} style={{ display: "flex", alignItems: "center", gap: 11, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 11 }}>
-              {a.kind === "image" && a.url ? <div style={{ width: 38, height: 38, borderRadius: 8, flex: "none", backgroundImage: `url(${a.url})`, backgroundSize: "cover", backgroundPosition: "center" }} /> : <div style={{ width: 38, height: 38, borderRadius: 8, flex: "none", background: "#eef0f7", display: "flex", alignItems: "center", justifyContent: "center", color: SLATE_L }}>▤</div>}
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{a.name}</div>
-                <span style={{ fontSize: 11, fontWeight: 600, color: t.c, background: t.bg, padding: "1px 7px", borderRadius: 999, display: "inline-block", marginTop: 3 }}>{a.status}</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function AgentSummary({ logs, onOpenLogs }: { logs: AgentLogItem[]; onOpenLogs: () => void }) {
-  return (
-    <div style={card}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <SectionTitle icon={<IcBot />} text="Agent 执行摘要" />
-        <button onClick={onOpenLogs} style={{ display: "inline-flex", alignItems: "center", gap: 6, border: `1px solid ${BORDER}`, background: "#fff", cursor: "pointer", color: INDIGO_D, fontSize: 12.5, fontWeight: 600, padding: "6px 11px", borderRadius: 9 }}><IcDoc s={14} /> 查看日志</button>
-      </div>
-      <div style={{ marginTop: 12, display: "flex", flexDirection: "column" }}>
-        {logs.length === 0 && <div style={{ fontSize: 13, color: SLATE_L, padding: "8px 0" }}>等待 Agent 执行…</div>}
-        {logs.map((l, i) => {
-          const running = l.status === "running";
-          const failed = l.status === "failed";
-          return (
-            <div key={i} style={{ display: "flex", alignItems: "center", gap: 11, padding: "9px 0", borderTop: i ? `1px solid #f1f2f7` : "none" }}>
-              <span style={{ width: 8, height: 8, borderRadius: "50%", flex: "none", background: running ? INDIGO : failed ? RED : EMERALD }} />
-              <span style={{ fontFamily: MONO, fontSize: 12, color: INDIGO_D, minWidth: 152 }}>{l.agent_name}</span>
-              <span style={{ fontSize: 13, color: SLATE, flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{l.message}</span>
-              {l.duration && <span style={{ fontFamily: MONO, fontSize: 11.5, color: SLATE_L }}>{l.duration}</span>}
-              <span style={{ color: running ? INDIGO : failed ? RED : EMERALD, display: "inline-flex" }}>{running ? <Spinner s={12} /> : failed ? <IcAlert s={14} /> : <IcCheck s={14} />}</span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function SectionTitle({ icon, text }: { icon: React.ReactNode; text: string }) {
-  return <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "'Space Grotesk'", fontWeight: 700, fontSize: 15 }}><span style={{ color: INDIGO_D, display: "inline-flex" }}>{icon}</span>{text}</div>;
-}
-
-function ActionBar({ status, onPreview, onPublish, onRegenerate, onOpenLogs, publishing, hasGame }: {
-  status: string; onPreview: () => void; onPublish: () => void; onRegenerate: () => void; onOpenLogs: () => void; publishing: boolean; hasGame: boolean;
-}) {
-  const succeeded = status === "succeeded";
-  const failed = status === "failed";
-  const ghost: React.CSSProperties = { border: `1px solid ${BORDER}`, background: "#fff", cursor: "pointer", fontWeight: 600, fontSize: 14, padding: "11px 18px", borderRadius: 11, color: INK, display: "inline-flex", alignItems: "center", gap: 7 };
-  const primary: React.CSSProperties = { border: "none", cursor: "pointer", background: INDIGO, color: "#fff", fontWeight: 700, fontSize: 14, padding: "11px 20px", borderRadius: 11, boxShadow: `0 6px 16px ${INDIGO}44`, display: "inline-flex", alignItems: "center", gap: 7 };
-  return (
-    <div style={{ position: "sticky", bottom: 18, marginTop: 20, display: "flex", alignItems: "center", gap: 12, background: "rgba(255,255,255,.85)", backdropFilter: "blur(8px)", border: `1px solid ${BORDER}`, borderRadius: 14, padding: 14, boxShadow: "0 8px 26px rgba(40,40,80,.08)" }}>
-      <button onClick={onOpenLogs} style={ghost}><IcDoc /> 查看 Agent 执行日志</button>
-      <div style={{ flex: 1 }} />
-      {succeeded ? (
-        <>
-          <button onClick={onRegenerate} style={ghost}>重新生成</button>
-          <button onClick={onPreview} style={ghost}><IcPlay /> 预览游戏</button>
-          <button onClick={onPublish} disabled={publishing} style={{ ...primary, opacity: publishing ? 0.7 : 1 }}>{publishing ? "发布中…" : "发布到首页"}</button>
-        </>
-      ) : failed ? (
-        <>
-          <button onClick={onRegenerate} style={ghost}>编辑创意</button>
-          <button onClick={onRegenerate} style={primary}>重新生成</button>
-        </>
-      ) : (
-        <button disabled aria-disabled style={{ ...primary, background: "#c7cbe0", boxShadow: "none", cursor: "not-allowed" }}><Spinner s={13} c="#fff" /> 生成中，请稍候</button>
+      {activityOpen && <ActivityDrawer onClose={() => setActivityOpen(false)} task={task} />}
+      {tasksOpen && (
+        <TasksDrawer
+          currentTaskId={taskId}
+          loading={tasksQuery.isLoading}
+          now={now}
+          onClose={() => setTasksOpen(false)}
+          onResume={resumeTask}
+          tasks={tasksQuery.data?.items ?? []}
+        />
       )}
     </div>
   );
 }
 
-/* ---------------- log drawer ---------------- */
-function LogDrawer({ task, onClose }: { task: Task; onClose: () => void }) {
-  const logs = task.logs ?? [];
+function CreateInput({
+  busy,
+  files,
+  idea,
+  now,
+  onGenerate,
+  onOpenActivity,
+  onPickFiles,
+  onRemoveFile,
+  onSetIdea,
+}: {
+  busy: boolean;
+  files: UploadedAsset[];
+  idea: string;
+  now: number;
+  onGenerate: () => void;
+  onOpenActivity: () => void;
+  onPickFiles: (files: FileList | File[] | null) => void;
+  onRemoveFile: (id: string) => void;
+  onSetIdea: (idea: string) => void;
+}) {
+  const examples = ["Cyberpunk cat runner", "Cozy forest puzzle", "Pixel racing game"];
+  const canGenerate = idea.trim().length > 0 && !busy;
+
   return (
-    <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(15,23,42,.4)", display: "flex", justifyContent: "flex-end" }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: "min(560px,94vw)", height: "100%", background: "#fff", display: "flex", flexDirection: "column", boxShadow: "-12px 0 40px rgba(0,0,0,.18)", animation: "pfslidein .25s ease" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 22px", borderBottom: `1px solid ${BORDER}` }}>
-          <div style={{ fontFamily: "'Space Grotesk'", fontWeight: 700, fontSize: 17 }}>Agent 执行日志</div>
-          <button onClick={onClose} style={{ border: "none", background: "#f1f2f7", cursor: "pointer", width: 32, height: 32, borderRadius: 9, color: SLATE, display: "flex", alignItems: "center", justifyContent: "center" }}><IcX /></button>
-        </div>
-        <div style={{ flex: 1, overflow: "auto", padding: "16px 22px" }}>
-          {logs.map((l, i) => {
-            const failed = l.status === "failed";
-            const running = l.status === "running";
-            return (
-              <div key={i} style={{ marginBottom: 16 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: running ? INDIGO : failed ? RED : EMERALD }} />
-                  <span style={{ fontFamily: MONO, fontSize: 13, fontWeight: 600, color: INK }}>{l.agent_name}</span>
-                  <span style={{ fontSize: 11.5, color: SLATE_L, fontFamily: MONO }}>· {l.step}</span>
-                  <div style={{ flex: 1 }} />
-                  {l.duration && <span style={{ fontSize: 11.5, color: SLATE_L, fontFamily: MONO }}>{l.duration}</span>}
+    <div className="pf-create-grid">
+      <div className="pf-create-main">
+        <article className="pf-create-card pf-input-card">
+          <div className="pf-input-heading">
+            <span className="pf-orb-icon">
+              <WandSparkles size={30} />
+            </span>
+            <div>
+              <h2>What do you want to create?</h2>
+              <p>Give PlayForge a playable concept, reference style, rules, and win conditions.</p>
+            </div>
+          </div>
+
+          <label className="pf-field-label" htmlFor="idea">
+            Game idea
+          </label>
+          <textarea
+            className="pf-prompt-input"
+            id="idea"
+            onChange={(event) => onSetIdea(event.target.value)}
+            placeholder="Example: Make a 2D cyberpunk runner where a street-smart cat dodges drones, hacks neon terminals, and survives for 90 seconds."
+            value={idea}
+          />
+
+          <div className="pf-example-row">
+            {examples.map((example) => (
+              <button key={example} onClick={() => onSetIdea(example)} type="button">
+                {example}
+              </button>
+            ))}
+          </div>
+
+          <label
+            className="pf-upload-zone"
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault();
+              onPickFiles(event.dataTransfer.files);
+            }}
+          >
+            <UploadCloud size={30} />
+            <strong>Upload references</strong>
+            <span>Drop images, video, or files here. Up to 5 assets, 10MB each.</span>
+            <input
+              multiple
+              onChange={(event) => {
+                onPickFiles(event.target.files);
+                event.currentTarget.value = "";
+              }}
+              type="file"
+            />
+          </label>
+
+          {files.length > 0 && (
+            <div className="pf-uploaded-assets">
+              {files.map((file) => (
+                <div className="pf-uploaded-asset" key={file.id}>
+                  {file.kind === "image" ? (
+                    <img alt="" src={file.url} />
+                  ) : (
+                    <span>
+                      <FileImage size={18} />
+                    </span>
+                  )}
+                  <strong>{file.name}</strong>
+                  <button aria-label={`Remove ${file.name}`} onClick={() => onRemoveFile(file.id)} type="button">
+                    <X size={14} />
+                  </button>
                 </div>
-                <div style={{ marginTop: 7, background: failed ? RED_BG : "#f7f8fc", border: `1px solid ${failed ? "#fadcdc" : BORDER}`, borderLeft: `2.5px solid ${failed ? RED : running ? INDIGO : EMERALD}`, borderRadius: 9, padding: "9px 12px" }}>
-                  {(l.lines.length ? l.lines : [l.message]).map((ln, j) => (
-                    <div key={j} style={{ fontFamily: MONO, fontSize: 11.5, lineHeight: 1.75, color: "#475569", whiteSpace: "pre-wrap", wordBreak: "break-word" }}><span style={{ color: "#aab1c9" }}>›</span> {ln}</div>
+              ))}
+            </div>
+          )}
+
+          <button className="pf-generate-btn" disabled={!canGenerate} onClick={onGenerate} type="button">
+            {busy ? <Loader2 className="pf-spin" size={18} /> : <Sparkles size={18} />}
+            {busy ? "Starting task..." : "Generate Game"}
+          </button>
+        </article>
+      </div>
+
+      <aside className="pf-create-side">
+        <PreviewCard now={now} task={undefined} />
+        <ActionPanel
+          onCancel={() => undefined}
+          onOpenActivity={onOpenActivity}
+          onPreview={() => undefined}
+          onPublish={() => undefined}
+          onRetry={() => undefined}
+          publishing={false}
+          task={undefined}
+        />
+      </aside>
+    </div>
+  );
+}
+
+function CreateWorkspace({
+  connectionStatus,
+  files,
+  now,
+  onCancel,
+  onEditBrief,
+  onOpenActivity,
+  onPreview,
+  onPublish,
+  onRetry,
+  publishing,
+  task,
+}: {
+  connectionStatus: string;
+  files: UploadedAsset[];
+  now: number;
+  onCancel: () => void;
+  onEditBrief: () => void;
+  onOpenActivity: () => void;
+  onPreview: () => void;
+  onPublish: () => void;
+  onRetry: () => void;
+  publishing: boolean;
+  task?: Task;
+}) {
+  const rows = useMemo(() => buildStepRows(task), [task]);
+  const activeIndex = getActiveStepIndex(rows, task);
+  const activeStep = rows[activeIndex] ?? rows[0];
+  const issue = getCurrentIssue(task, activeStep);
+  const recentUpdates = getRecentUpdates(task, now);
+  const brief = getBrief(task, files);
+
+  return (
+    <div className="pf-create-grid">
+      <div className="pf-create-main">
+        <GameBriefCard brief={brief} onEditBrief={onEditBrief} />
+        <ProgressCard
+          activeIndex={activeIndex}
+          activeStep={activeStep}
+          connectionStatus={connectionStatus}
+          issue={issue}
+          now={now}
+          onOpenActivity={onOpenActivity}
+          recentUpdates={recentUpdates}
+          rows={rows}
+          task={task}
+        />
+      </div>
+
+      <aside className="pf-create-side">
+        <PreviewCard now={now} task={task} />
+        <ActionPanel
+          onCancel={onCancel}
+          onOpenActivity={onOpenActivity}
+          onPreview={onPreview}
+          onPublish={onPublish}
+          onRetry={onRetry}
+          publishing={publishing}
+          task={task}
+        />
+      </aside>
+    </div>
+  );
+}
+
+function GameBriefCard({
+  brief,
+  onEditBrief,
+}: {
+  brief: { title: string; assetCount: number; genre: string; style: string; runtime: string };
+  onEditBrief: () => void;
+}) {
+  return (
+    <article className="pf-create-card pf-brief-card">
+      <span className="pf-brief-icon">
+        <FileText size={30} />
+      </span>
+      <div className="pf-brief-copy">
+        <h2>Game brief</h2>
+        <div className="pf-brief-chip">{brief.title}</div>
+        <div className="pf-brief-meta">
+          <ImageIcon size={16} />
+          <span>
+            {brief.assetCount} asset{brief.assetCount === 1 ? "" : "s"} uploaded
+          </span>
+          <i />
+          <span>{brief.genre}</span>
+          <i />
+          <span>{brief.style}</span>
+          <i />
+          <span>{brief.runtime}</span>
+        </div>
+      </div>
+      <button className="pf-edit-brief" onClick={onEditBrief} type="button">
+        <Edit3 size={16} />
+        Edit brief
+      </button>
+    </article>
+  );
+}
+
+function ProgressCard({
+  activeIndex,
+  activeStep,
+  connectionStatus,
+  issue,
+  now,
+  onOpenActivity,
+  recentUpdates,
+  rows,
+  task,
+}: {
+  activeIndex: number;
+  activeStep: StepRow;
+  connectionStatus: string;
+  issue: ReturnType<typeof getCurrentIssue>;
+  now: number;
+  onOpenActivity: () => void;
+  recentUpdates: Array<{ level: "info" | "success" | "warning" | "error"; message: string; time: string }>;
+  rows: StepRow[];
+  task?: Task;
+}) {
+  const statusTitle = getProgressTitle(task);
+  const lastUpdated = formatRelative(task?.updated_at || task?.created_at, now) || "Waiting";
+  const elapsed = formatElapsed(task?.created_at, now);
+
+  return (
+    <article className="pf-create-card pf-progress-card">
+      <div className="pf-progress-head">
+        <span className="pf-orb-icon">
+          <Sparkles size={30} />
+        </span>
+        <div className="pf-progress-title">
+          <h2>{statusTitle}</h2>
+          <p>
+            Step {Math.min(activeIndex + 1, USER_STEPS.length)} of {USER_STEPS.length}
+            <span> - </span>
+            {activeStep?.label || "Preparing task"}
+          </p>
+        </div>
+        <div className="pf-leave-note">
+          <ArrowRight size={15} />
+          You can leave this page
+        </div>
+      </div>
+
+      <div className="pf-status-pills">
+        <span>
+          <Clock3 size={15} />
+          Last update {lastUpdated}
+        </span>
+        <span className={connectionStatus === "Connected" ? "is-connected" : "is-warning"}>
+          <Circle size={10} fill="currentColor" />
+          {connectionStatus}
+        </span>
+        <span>
+          <Timer size={15} />
+          Elapsed {elapsed}
+        </span>
+      </div>
+
+      <div className="pf-step-list">
+        {rows.map((step, index) => {
+          const isActive = index === activeIndex && step.status !== "completed";
+          return (
+            <div className={`pf-step-row is-${step.status}${isActive ? " is-active" : ""}`} key={step.key}>
+              <span className="pf-step-marker">
+                {step.status === "completed" ? <Check size={14} /> : step.status === "failed" ? <AlertCircle size={14} /> : isActive ? <Loader2 className="pf-spin" size={14} /> : null}
+              </span>
+              <div className="pf-step-body">
+                <strong>{step.label}</strong>
+                {isActive && issue && (
+                  <div className={`pf-issue-box is-${issue.level}`}>
+                    <span>
+                      {issue.level === "error" ? <AlertCircle size={17} /> : <WandSparkles size={17} />}
+                    </span>
+                    <div>
+                      <b>{issue.title}</b>
+                      <p>{issue.message}</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="pf-recent-updates">
+        <h3>Recent updates</h3>
+        {recentUpdates.map((update, index) => (
+          <div className={`pf-update-row is-${update.level}`} key={`${update.message}-${index}`}>
+            <span />
+            <time>{update.time}</time>
+            <p>{update.message}</p>
+          </div>
+        ))}
+        <button onClick={onOpenActivity} type="button">
+          View full activity
+          <ArrowRight size={16} />
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function PreviewCard({ now, task }: { now: number; task?: Task }) {
+  const succeeded = task?.status === "succeeded" && task.game;
+  const active = isActiveTask(task?.status);
+  const failed = task?.status === "failed";
+  const cancelled = task?.status === "cancelled";
+  const statusLine = succeeded
+    ? "Preview ready"
+    : failed
+      ? "Preview unavailable"
+      : cancelled
+        ? "Task cancelled"
+        : active
+          ? "Preparing runtime..."
+          : "Your playable preview will appear here.";
+
+  return (
+    <article className="pf-create-card pf-preview-card">
+      <h2>
+        Preview
+        <Gamepad2 size={19} />
+      </h2>
+
+      {succeeded ? (
+        <div className="pf-preview-frame">
+          <iframe src={`/play/${task.game?.id}`} title={`${task.game?.title} preview`} />
+        </div>
+      ) : (
+        <img alt="" className="pf-runtime-art" src="/playforge/create-runtime-preview.png" />
+      )}
+
+      <h3>{statusLine}</h3>
+
+      <div className="pf-runtime-list">
+        <RuntimeRow ready label="Sandbox ready" />
+        <RuntimeRow label={succeeded ? "Manifest uploaded" : "Manifest pending"} ready={Boolean(task?.manifest_url)} />
+        <RuntimeRow label={succeeded ? "Bundle ready" : "Bundle pending"} ready={Boolean(succeeded)} />
+      </div>
+
+      {task && !succeeded && isActiveTask(task.status) && (
+        <p className="pf-heartbeat">
+          Last heartbeat {formatRelative(task.updated_at || task.created_at, now) || "just now"}
+        </p>
+      )}
+    </article>
+  );
+}
+
+function RuntimeRow({ label, ready }: { label: string; ready?: boolean }) {
+  return (
+    <div className={`pf-runtime-row${ready ? " is-ready" : ""}`}>
+      <span>{ready ? <Check size={15} /> : <MoreHorizontal size={17} />}</span>
+      <p>{label}</p>
+    </div>
+  );
+}
+
+function ActionPanel({
+  onCancel,
+  onOpenActivity,
+  onPreview,
+  onPublish,
+  onRetry,
+  publishing,
+  task,
+}: {
+  onCancel: () => void;
+  onOpenActivity: () => void;
+  onPreview: () => void;
+  onPublish: () => void;
+  onRetry: () => void;
+  publishing: boolean;
+  task?: Task;
+}) {
+  const succeeded = task?.status === "succeeded" && task.game;
+  const failed = task?.status === "failed";
+  const cancelled = task?.status === "cancelled";
+  const active = isActiveTask(task?.status);
+
+  return (
+    <article className="pf-create-card pf-action-card">
+      <button className="pf-outline-wide" onClick={onOpenActivity} type="button">
+        <BarChart3 size={18} />
+        View Activity
+      </button>
+
+      {succeeded && (
+        <>
+          <button className="pf-outline-wide" onClick={onPreview} type="button">
+            <Play size={17} />
+            Play Preview
+          </button>
+          <button className="pf-primary-wide" disabled={publishing} onClick={onPublish} type="button">
+            {publishing ? <Loader2 className="pf-spin" size={17} /> : <CheckCircle2 size={17} />}
+            {publishing ? "Publishing..." : "Publish to Home"}
+          </button>
+        </>
+      )}
+
+      {failed && (
+        <>
+          <button className="pf-primary-wide" onClick={onRetry} type="button">
+            <RefreshCcw size={17} />
+            Retry from validation
+          </button>
+          <p className="pf-action-note">{task?.error || "Generation stopped before a playable preview was created."}</p>
+        </>
+      )}
+
+      {cancelled && <p className="pf-action-note">This task was cancelled. Start a new version from the brief when you are ready.</p>}
+
+      {active && (
+        <button className="pf-danger-link" onClick={onCancel} type="button">
+          <Trash2 size={17} />
+          Cancel task
+        </button>
+      )}
+    </article>
+  );
+}
+
+function ActivityDrawer({ onClose, task }: { onClose: () => void; task?: Task }) {
+  const logs = task?.logs ?? [];
+
+  return (
+    <div className="pf-drawer-backdrop" onClick={onClose}>
+      <aside className="pf-drawer" onClick={(event) => event.stopPropagation()}>
+        <header>
+          <div>
+            <h2>Activity</h2>
+            <p>{task?.game_title || "Generation task"}</p>
+          </div>
+          <button aria-label="Close activity" onClick={onClose} type="button">
+            <X size={18} />
+          </button>
+        </header>
+
+        <section className="pf-drawer-section">
+          <h3>Technical details</h3>
+          <div className="pf-tech-grid">
+            <TechItem label="Task status" value={task?.status || "No active task"} />
+            <TechItem label="Manifest" value={task?.manifest_url || "Pending"} />
+            <TechItem label="Preview" value={task?.preview_url || "Pending"} />
+            <TechItem label="Repair attempts" value={`${task?.repair_attempts ?? 0}/${task?.max_repair_attempts ?? 2}`} />
+            <TechItem label="Replan attempts" value={`${task?.replan_attempts ?? 0}/${task?.max_replan_attempts ?? 1}`} />
+            <TechItem label="Tokens" value={(task?.tokens ?? 0).toLocaleString()} />
+          </div>
+        </section>
+
+        <section className="pf-drawer-section">
+          <h3>Agent activity</h3>
+          {logs.length === 0 ? (
+            <p className="pf-empty-state">No activity yet.</p>
+          ) : (
+            logs.map((log, index) => (
+              <div className={`pf-log-block is-${log.status}`} key={`${log.agent_name}-${index}`}>
+                <div className="pf-log-head">
+                  <span />
+                  <strong>{log.agent_name}</strong>
+                  <em>{log.step}</em>
+                  {log.duration && <time>{log.duration}</time>}
+                </div>
+                <div className="pf-log-lines">
+                  {(log.lines.length ? log.lines : [log.message]).map((line, lineIndex) => (
+                    <p key={`${line}-${lineIndex}`}>{line}</p>
                   ))}
                 </div>
               </div>
-            );
-          })}
-          {logs.length === 0 && <div style={{ color: SLATE_L, fontSize: 14, padding: 20, textAlign: "center" }}>暂无日志</div>}
-        </div>
-      </div>
+            ))
+          )}
+        </section>
+      </aside>
     </div>
   );
+}
+
+function TasksDrawer({
+  currentTaskId,
+  loading,
+  now,
+  onClose,
+  onResume,
+  tasks,
+}: {
+  currentTaskId: string | null;
+  loading: boolean;
+  now: number;
+  onClose: () => void;
+  onResume: (id: string) => void;
+  tasks: Task[];
+}) {
+  return (
+    <div className="pf-drawer-backdrop" onClick={onClose}>
+      <aside className="pf-drawer pf-task-drawer" onClick={(event) => event.stopPropagation()}>
+        <header>
+          <div>
+            <h2>My Tasks</h2>
+            <p>Resume recent generation tasks.</p>
+          </div>
+          <button aria-label="Close tasks" onClick={onClose} type="button">
+            <X size={18} />
+          </button>
+        </header>
+
+        <section className="pf-drawer-section">
+          {loading && <p className="pf-empty-state">Loading tasks...</p>}
+          {!loading && tasks.length === 0 && <p className="pf-empty-state">No generation tasks yet.</p>}
+          {tasks.map((task) => (
+            <button className={`pf-task-item${task.id === currentTaskId ? " is-current" : ""}`} key={task.id} onClick={() => onResume(task.id)} type="button">
+              <span className={`pf-task-status is-${task.status}`} />
+              <div>
+                <strong>{getBrief(task, []).title}</strong>
+                <p>
+                  {task.status} - {formatRelative(task.updated_at || task.created_at, now) || "recently"}
+                </p>
+              </div>
+              <ArrowRight size={16} />
+            </button>
+          ))}
+        </section>
+      </aside>
+    </div>
+  );
+}
+
+function TechItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="pf-tech-item">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function buildStepRows(task?: Task): StepRow[] {
+  const backend = new Map<string, StepSummary>((task?.step_summaries ?? []).map((step) => [step.step, step]));
+  const rows = USER_STEPS.map((step) => {
+    if (step.key === "ready") {
+      return {
+        key: step.key,
+        label: step.label,
+        status: task?.status === "succeeded" ? "completed" : "pending",
+      } satisfies StepRow;
+    }
+    const summary = backend.get(step.key);
+    return {
+      key: step.key,
+      label: step.label,
+      status: normalizeStatus(summary?.status),
+      summary: summary?.summary,
+    } satisfies StepRow;
+  });
+
+  if (task?.status === "succeeded") {
+    return rows.map((row) => ({ ...row, status: "completed" }));
+  }
+
+  if (task?.status === "failed" || task?.status === "cancelled") {
+    const failedIndex = rows.findIndex((row) => row.status === "running" || row.status === "failed");
+    const index = failedIndex >= 0 ? failedIndex : Math.min(Math.max((task.current_step || 1) - 1, 0), rows.length - 1);
+    return rows.map((row, rowIndex) => (rowIndex === index ? { ...row, status: "failed" } : row));
+  }
+
+  return rows;
+}
+
+function getActiveStepIndex(rows: StepRow[], task?: Task) {
+  if (task?.status === "succeeded") return rows.length - 1;
+  const failed = rows.findIndex((row) => row.status === "failed");
+  if (failed >= 0) return failed;
+  const running = rows.findIndex((row) => row.status === "running");
+  if (running >= 0) return running;
+  const lastCompleted = rows.reduce((last, row, index) => (row.status === "completed" ? index : last), -1);
+  return Math.min(lastCompleted + 1, rows.length - 1);
+}
+
+function normalizeStatus(status?: string): StepState {
+  if (status === "completed" || status === "running" || status === "failed") return status;
+  if (status === "done") return "completed";
+  return "pending";
+}
+
+function getBrief(task: Task | undefined, uploadedFiles: UploadedAsset[]) {
+  const title = task?.game_title || task?.game?.title || summarizeIdea(task?.idea) || summarizeIdea(uploadedFiles[0]?.name) || "Cyberpunk cat runner";
+  const source = `${title} ${task?.idea || ""}`.toLowerCase();
+  const genre = inferGenre(source);
+  const style = inferStyle(source);
+  const assetCount = task?.assets?.filter((asset) => asset.type === "uploaded").length ?? uploadedFiles.length;
+  return { title, assetCount, genre, style, runtime: "Browser runtime" };
+}
+
+function summarizeIdea(value?: string) {
+  if (!value) return "";
+  const cleaned = value.replace(/\s+/g, " ").trim();
+  if (!cleaned) return "";
+  return cleaned.length > 34 ? `${cleaned.slice(0, 31)}...` : cleaned;
+}
+
+function inferGenre(source: string) {
+  if (source.includes("puzzle") || source.includes("logic")) return "Puzzle";
+  if (source.includes("racing") || source.includes("race") || source.includes("drift")) return "Racing";
+  if (source.includes("runner") || source.includes("dodge") || source.includes("arcade")) return "Arcade";
+  if (source.includes("rpg") || source.includes("quest")) return "RPG";
+  return "Arcade";
+}
+
+function inferStyle(source: string) {
+  if (source.includes("cyberpunk") || source.includes("neon")) return "Cyberpunk";
+  if (source.includes("forest") || source.includes("magic") || source.includes("fantasy")) return "Fantasy";
+  if (source.includes("pixel")) return "Pixel";
+  if (source.includes("cozy")) return "Cozy";
+  return "AI generated";
+}
+
+function getProgressTitle(task?: Task) {
+  if (task?.status === "succeeded") return "Game ready";
+  if (task?.status === "failed") return "Generation stopped";
+  if (task?.status === "cancelled") return "Task cancelled";
+  return "Creating your game";
+}
+
+function getCurrentIssue(task: Task | undefined, activeStep?: StepRow) {
+  if (!task) return null;
+  if (task.status === "failed") {
+    return {
+      level: "error" as const,
+      title: "Issue found",
+      message: task.error || "Build validation could not pass after repair attempts.",
+    };
+  }
+  if (task.status === "cancelled") {
+    return {
+      level: "warning" as const,
+      title: "Cancelled",
+      message: "This task was stopped before preview generation completed.",
+    };
+  }
+  if (task.repair_attempts && activeStep?.key === "build_validation") {
+    return {
+      level: "warning" as const,
+      title: "Issue found - Auto-repairing",
+      message: `Repair attempt ${task.repair_attempts} of ${task.max_repair_attempts || 2} - ${latestReadableLog(task) || "Fixing a runtime validation issue."}`,
+    };
+  }
+  if (task.replan_attempts && activeStep?.key === "build_validation") {
+    return {
+      level: "warning" as const,
+      title: "Design adjusted",
+      message: `Replanning a simpler playable version - Attempt ${task.replan_attempts} of ${task.max_replan_attempts || 1}.`,
+    };
+  }
+  return null;
+}
+
+function latestReadableLog(task?: Task) {
+  const logs = task?.logs ?? [];
+  for (let index = logs.length - 1; index >= 0; index -= 1) {
+    const line = logs[index].message || logs[index].lines.at(-1);
+    if (line) return friendlyMessage(line);
+  }
+  return "";
+}
+
+function getRecentUpdates(task: Task | undefined, now: number) {
+  const logs = task?.logs ?? [];
+  const updates = logs
+    .filter((log) => log.message || log.lines.length)
+    .slice(-3)
+    .reverse()
+    .map((log) => ({
+      level: log.status === "failed" ? ("error" as const) : log.status === "completed" ? ("success" as const) : ("info" as const),
+      message: friendlyMessage(log.message || log.lines.at(-1) || "Task updated"),
+      time: formatRelative(log.created_at || task?.updated_at || task?.created_at, now) || "just now",
+    }));
+
+  if (updates.length > 0) return updates;
+  if (!task) {
+    return [
+      { level: "info" as const, message: "Runtime sandbox ready", time: "now" },
+      { level: "info" as const, message: "Object storage ready", time: "now" },
+      { level: "info" as const, message: "Waiting for your game brief", time: "now" },
+    ];
+  }
+  if (task.status === "succeeded") {
+    return [
+      { level: "success" as const, message: "Preview ready", time: formatRelative(task.finished_at || task.updated_at, now) || "just now" },
+      { level: "success" as const, message: "Manifest uploaded", time: formatRelative(task.finished_at || task.updated_at, now) || "just now" },
+      { level: "success" as const, message: "Runtime validation passed", time: formatRelative(task.finished_at || task.updated_at, now) || "just now" },
+    ];
+  }
+  return [
+    { level: "info" as const, message: "Generation task created", time: formatRelative(task.created_at, now) || "just now" },
+    { level: "info" as const, message: "Agent pipeline connected", time: "now" },
+    { level: "info" as const, message: "Waiting for the next update", time: "now" },
+  ];
+}
+
+function friendlyMessage(message: string) {
+  const compact = message.replace(/\s+/g, " ").trim();
+  const lower = compact.toLowerCase();
+  if (lower.includes("repair")) return "Repair attempt started";
+  if (lower.includes("validation") && lower.includes("issue")) return "Validation found an issue";
+  if (lower.includes("asset")) return "Assets processed successfully";
+  if (lower.includes("manifest")) return "Manifest uploaded";
+  if (lower.includes("preview")) return "Preview prepared";
+  if (lower.includes("design")) return "Game designed";
+  if (lower.includes("code")) return "Files generated";
+  return compact.length > 86 ? `${compact.slice(0, 83)}...` : compact || "Task updated";
+}
+
+function isActiveTask(status?: string) {
+  return status === "pending" || status === "running";
+}
+
+function formatRelative(value: string | null | undefined, now: number) {
+  if (!value) return "";
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) return "";
+  const seconds = Math.max(0, Math.round((now - timestamp) / 1000));
+  if (seconds < 5) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function formatElapsed(value: string | null | undefined, now: number) {
+  if (!value) return "0s";
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) return "0s";
+  const seconds = Math.max(0, Math.floor((now - timestamp) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remaining = seconds % 60;
+  if (minutes < 60) return `${minutes}m ${remaining}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+function useNow(intervalMs: number) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(interval);
+  }, [intervalMs]);
+  return now;
 }
