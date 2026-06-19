@@ -567,7 +567,8 @@ function imageSource(cover: string) {
 }
 
 function heroImageForGame(game: HomeGame, index: number) {
-  return game.title === "Neon Alley Cat" ? "/playforge/neon-trending.jpg" : heroImagePool[index % heroImagePool.length];
+  if (game.title === "Neon Alley Cat") return "/playforge/neon-trending.jpg";
+  return game.image || heroImagePool[index % heroImagePool.length];
 }
 
 function scrollToId(id: string) {

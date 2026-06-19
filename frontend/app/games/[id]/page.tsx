@@ -57,7 +57,7 @@ export default function DetailPage() {
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 30, alignItems: "start" }}>
         <div>
           <div style={{ position: "relative", height: 300, borderRadius: 20, overflow: "hidden", boxShadow: "0 14px 40px rgba(40,30,20,.16)", background: "#181613" }}>
-            <div style={{ position: "absolute", inset: 0, background: g.cover }} />
+            <div style={{ position: "absolute", inset: 0, background: coverBackground(g.cover) }} />
             <div style={{ position: "absolute", width: 220, height: 220, borderRadius: "50%", background: "rgba(255,255,255,.15)", top: -70, right: -50 }} />
             <div style={{ position: "absolute", width: 120, height: 120, borderRadius: 32, background: "rgba(0,0,0,.13)", bottom: -30, left: 30, transform: "rotate(18deg)" }} />
             <span style={{ position: "absolute", top: 16, left: 16, fontFamily: mono, fontSize: 11, fontWeight: 600, letterSpacing: ".08em", color: "#fff", background: "rgba(0,0,0,.3)", padding: "5px 11px", borderRadius: 999 }}>{g.genre}</span>
@@ -110,4 +110,11 @@ function DetailStat({ value, label }: { value: string; label: string }) {
       <div style={{ fontSize: 12, color: "#7a756c", fontFamily: mono }}>{label}</div>
     </div>
   );
+}
+
+function coverBackground(cover: string) {
+  if (cover.startsWith("/") || cover.startsWith("http://") || cover.startsWith("https://")) {
+    return `url("${cover}") center / cover`;
+  }
+  return cover;
 }

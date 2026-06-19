@@ -11,7 +11,7 @@ export default function GameCard({ game }: { game: Game }) {
       style={{ background: "#fff", border: "1px solid #e8e3d8", borderRadius: 18, overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 2px 8px rgba(40,30,20,.05)", cursor: "pointer" }}
     >
       <div style={{ position: "relative", height: 150, overflow: "hidden", background: "#181613" }}>
-        <div style={{ position: "absolute", inset: 0, background: game.cover }} />
+        <div style={{ position: "absolute", inset: 0, background: coverBackground(game.cover) }} />
         <div style={{ position: "absolute", width: 130, height: 130, borderRadius: "50%", background: "rgba(255,255,255,.16)", top: -40, right: -30 }} />
         <div style={{ position: "absolute", width: 80, height: 80, borderRadius: 24, background: "rgba(0,0,0,.12)", bottom: -22, left: 18, transform: "rotate(18deg)" }} />
         <span style={{ position: "absolute", top: 12, left: 13, fontFamily: "'IBM Plex Mono'", fontSize: 10.5, fontWeight: 600, letterSpacing: ".08em", color: "#fff", background: "rgba(0,0,0,.28)", padding: "4px 9px", borderRadius: 999, backdropFilter: "blur(4px)" }}>{game.genre}</span>
@@ -45,4 +45,11 @@ export default function GameCard({ game }: { game: Game }) {
       </div>
     </div>
   );
+}
+
+function coverBackground(cover: string) {
+  if (cover.startsWith("/") || cover.startsWith("http://") || cover.startsWith("https://")) {
+    return `url("${cover}") center / cover`;
+  }
+  return cover;
 }
