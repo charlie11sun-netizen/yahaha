@@ -421,7 +421,7 @@ img {
 
 .pf-trending-feature {
   border-radius: 11px;
-  min-height: 362px;
+  height: 362px;
   overflow: hidden;
   position: relative;
   text-align: left;
@@ -994,7 +994,7 @@ img {
   }
 
   .pf-trending-feature {
-    min-height: 320px;
+    height: 320px;
   }
 
   .pf-explore-toolbar {
@@ -1083,7 +1083,7 @@ img {
   }
 
   .pf-trending-feature {
-    min-height: 420px;
+    height: 420px;
   }
 
   .pf-featured-meta {
