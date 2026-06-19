@@ -1,14 +1,22 @@
+import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 import app.models  # noqa: F401  注册所有表到 Base.metadata
-from app.api.routers import auth, games, tasks, uploads
+from app.api.routers import auth, games, oauth, tasks, uploads
 from app.core.config import settings
 from app.db.base import Base
 from app.db.session import engine
 from app.storage.s3 import ensure_bucket
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+logger = logging.getLogger("playforge")
 
 
 @asynccontextmanager
@@ -38,7 +46,23 @@ async def security_headers(request, call_next):
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     return response
 
+
+@app.middleware("http")
+async def access_log(request, call_next):
+    request_id = uuid.uuid4().hex[:12]
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = (time.perf_counter() - start) * 1000
+    response.headers["X-Request-ID"] = request_id
+    logger.info(
+        "%s %s -> %s %.1fms [%s]",
+        request.method, request.url.path, response.status_code, duration_ms, request_id,
+    )
+    return response
+
+
 app.include_router(auth.router)
+app.include_router(oauth.router)
 app.include_router(games.router)
 app.include_router(tasks.router)
 app.include_router(uploads.router)
@@ -47,3 +71,33 @@ app.include_router(uploads.router)
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/health/ready")
+def readiness():
+    checks = {"db": False, "redis": False, "s3": False}
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        checks["db"] = True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from app.api.deps import _get_rl_redis
+
+        _get_rl_redis().ping()
+        checks["redis"] = True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from app.storage.s3 import client
+
+        client().head_bucket(Bucket=settings.S3_BUCKET)
+        checks["s3"] = True
+    except Exception:  # noqa: BLE001
+        pass
+    ok = all(checks.values())
+    return JSONResponse(
+        status_code=200 if ok else 503,
+        content={"status": "ready" if ok else "degraded", "checks": checks},
+    )

@@ -61,6 +61,8 @@ export const api = {
   logout: () => req("/auth/logout", { method: "POST" }),
   oauthDemo: (provider: string) =>
     req<{ token: string; user: User }>(`/auth/oauth/${provider}/demo`, { method: "POST" }),
+  oauthProviders: () => req<Record<string, boolean>>("/auth/oauth/providers"),
+  oauthStartUrl: (provider: string) => `${BASE}/auth/oauth/${provider}/start`,
 
   games: (q = "", tag = "All", opts: { sort?: string; limit?: number; offset?: number } = {}) => {
     const params = new URLSearchParams({ q, tag });

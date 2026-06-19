@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     GITHUB_CLIENT_ID: str = ""
     GITHUB_CLIENT_SECRET: str = ""
     OAUTH_REDIRECT_BASE: str = "http://localhost:8000"
+    FRONTEND_BASE_URL: str = "http://localhost:3000"
 
     # CORS
     CORS_ORIGINS: str = "http://localhost:3000"

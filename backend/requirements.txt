@@ -9,6 +9,7 @@ python-multipart>=0.0.9      # 文件上传
 # 数据库
 sqlalchemy>=2.0
 psycopg[binary]>=3.2
+alembic>=1.13                # 数据库迁移
 
 # 鉴权（MVP 脚手架用最小 JWT 实现；生产换 fastapi-users，见 README）
 bcrypt>=4.0

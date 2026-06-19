@@ -1,6 +1,6 @@
 "use client";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 
 import { ApiError, api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -32,12 +32,36 @@ function LoginInner() {
   const [name, setName] = useState("");
   const [err, setErr] = useState("");
   const isSignup = mode === "signup";
+  const [providers, setProviders] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    api.oauthProviders().then(setProviders).catch(() => setProviders({}));
+  }, []);
 
   const done = (token: string, user: { name: string }) => {
     setSession(token, user as never);
     flash(`Signed in as ${user.name}`);
     router.push(intent === "create" ? "/create" : "/");
   };
+
+  // OAuth 回调：后端把 token 重定向回 /login?token=...，这里落地 session
+  useEffect(() => {
+    const token = params.get("token");
+    if (!token) return;
+    localStorage.setItem("pf_token", token);
+    api
+      .me()
+      .then((user) => {
+        setSession(token, user);
+        flash(`Signed in as ${user.name}`);
+        router.replace(intent === "create" ? "/create" : "/");
+      })
+      .catch(() => {
+        localStorage.removeItem("pf_token");
+        setErr("OAuth sign-in failed");
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const submit = async () => {
     setErr("");
@@ -53,10 +77,14 @@ function LoginInner() {
   };
 
   const oauth = async (provider: string) => {
+    if (providers[provider]) {
+      window.location.href = api.oauthStartUrl(provider);
+      return;
+    }
     try {
       const r = await api.oauthDemo(provider);
       setSession(r.token, r.user);
-      flash(`Connected via ${provider} OAuth`);
+      flash(`Connected via ${provider} OAuth (demo)`);
       router.push(intent === "create" ? "/create" : "/");
     } catch {
       setErr("OAuth demo failed");
