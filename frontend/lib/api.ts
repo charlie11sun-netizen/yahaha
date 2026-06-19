@@ -53,16 +53,22 @@ export const api = {
   login: (email: string, password: string) =>
     req<{ token: string; user: User }>("/auth/login", { json: { email, password } }),
   me: () => req<User>("/auth/me"),
-  updateMe: (display_name: string) =>
-    req<User>("/auth/me", { method: "PATCH", json: { display_name } }),
+  updateMe: (patch: { display_name?: string; email?: string }) =>
+    req<User>("/auth/me", { method: "PATCH", json: patch }),
+  changePassword: (current_password: string, new_password: string) =>
+    req<{ ok: boolean }>("/auth/change-password", { json: { current_password, new_password } }),
+  deleteAccount: () => req<{ ok: boolean }>("/auth/me", { method: "DELETE" }),
   logout: () => req("/auth/logout", { method: "POST" }),
   oauthDemo: (provider: string) =>
     req<{ token: string; user: User }>(`/auth/oauth/${provider}/demo`, { method: "POST" }),
 
-  games: (q = "", tag = "All") =>
-    req<{ items: Game[]; total: number }>(
-      `/games?q=${encodeURIComponent(q)}&tag=${encodeURIComponent(tag)}`,
-    ),
+  games: (q = "", tag = "All", opts: { sort?: string; limit?: number; offset?: number } = {}) => {
+    const params = new URLSearchParams({ q, tag });
+    if (opts.sort) params.set("sort", opts.sort);
+    if (opts.limit != null) params.set("limit", String(opts.limit));
+    if (opts.offset != null) params.set("offset", String(opts.offset));
+    return req<{ items: Game[]; total: number; has_more?: boolean }>(`/games?${params.toString()}`);
+  },
   game: (id: string) => req<Game>(`/games/${id}`),
   myGames: () => req<{ items: Game[] }>("/me/games"),
   myFavorites: () => req<{ items: Game[] }>("/me/favorites"),
@@ -71,6 +77,10 @@ export const api = {
   tags: () => req<{ tags: string[] }>("/tags"),
   play: (id: string) => req<{ plays: number; plays_str: string }>(`/games/${id}/play`, { method: "POST" }),
   publish: (id: string) => req<Game>(`/games/${id}/publish`, { method: "POST" }),
+  unpublish: (id: string) => req<Game>(`/games/${id}/unpublish`, { method: "POST" }),
+  updateGame: (id: string, patch: { title?: string; summary?: string; tags?: string[] }) =>
+    req<Game>(`/games/${id}`, { method: "PATCH", json: patch }),
+  deleteGame: (id: string) => req<{ ok: boolean }>(`/games/${id}`, { method: "DELETE" }),
   like: (id: string) => req<{ liked: boolean; likes: number }>(`/games/${id}/like`, { method: "POST" }),
   unlike: (id: string) => req<{ liked: boolean; likes: number }>(`/games/${id}/like`, { method: "DELETE" }),
   favorite: (id: string) => req<{ favorited: boolean }>(`/games/${id}/favorite`, { method: "POST" }),
@@ -87,4 +97,5 @@ export const api = {
   task: (id: string) => req<Task>(`/tasks/${id}`),
   retryTask: (id: string) => req<{ task_id: string }>(`/tasks/${id}/retry`, { method: "POST" }),
   cancelTask: (id: string) => req<Task>(`/tasks/${id}/cancel`, { method: "POST" }),
+  deleteTask: (id: string) => req<{ ok: boolean }>(`/tasks/${id}`, { method: "DELETE" }),
 };

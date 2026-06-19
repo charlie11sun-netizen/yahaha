@@ -1,7 +1,7 @@
 "use client";
 
 import type { CSSProperties } from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import type { LucideIcon } from "lucide-react";
@@ -207,11 +207,16 @@ export default function HomePage() {
   const [query, setQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState("All");
 
+  const [limit, setLimit] = useState(12);
   const backendTag = activeFilter === "AI Generated" ? "All" : activeFilter;
   const gamesQ = useQuery({
-    queryKey: ["games", query, backendTag],
-    queryFn: () => api.games(query, backendTag),
+    queryKey: ["games", query, backendTag, limit],
+    queryFn: () => api.games(query, backendTag, { limit }),
   });
+
+  useEffect(() => {
+    setLimit(12);
+  }, [query, activeFilter]);
   const allGamesQ = useQuery({
     queryKey: ["games", "", "All"],
     queryFn: () => api.games("", "All"),
@@ -393,11 +398,20 @@ export default function HomePage() {
         ) : visibleGames.length === 0 ? (
           <div className="pf-grid-state">No published games match this search.</div>
         ) : (
-          <div className="pf-game-grid">
-            {visibleGames.map((game) => (
-              <GameCard game={game} key={game.id ?? game.title} onOpen={() => goDetail(game.id)} onPlay={() => goPlay(game.id)} />
-            ))}
-          </div>
+          <>
+            <div className="pf-game-grid">
+              {visibleGames.map((game) => (
+                <GameCard game={game} key={game.id ?? game.title} onOpen={() => goDetail(game.id)} onPlay={() => goPlay(game.id)} />
+              ))}
+            </div>
+            {gamesQ.data?.has_more ? (
+              <div style={{ display: "flex", justifyContent: "center", marginTop: 28 }}>
+                <button className="pf-secondary-btn" onClick={() => setLimit((value) => value + 12)} type="button">
+                  Load more games
+                </button>
+              </div>
+            ) : null}
+          </>
         )}
       </section>
 

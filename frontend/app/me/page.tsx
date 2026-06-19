@@ -6,15 +6,18 @@ import {
   ChevronRight,
   ExternalLink,
   Eye,
+  EyeOff,
   FileText,
   Gamepad2,
   House,
+  KeyRound,
   Pencil,
   Play,
   Rocket,
   Settings,
   Sparkles,
   Star,
+  Trash2,
   Upload,
   User as UserIcon,
 } from "lucide-react";
@@ -48,7 +51,7 @@ export default function ProfilePage() {
 }
 
 function StudioPage() {
-  const { user, loading, setSession } = useAuth();
+  const { user, loading, setSession, logout } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
@@ -56,14 +59,23 @@ function StudioPage() {
   const [section, setSection] = useState<Section>("overview");
   const [savingProfile, setSavingProfile] = useState(false);
   const [publishingId, setPublishingId] = useState<string | null>(null);
+  const [busyGameId, setBusyGameId] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState("");
+  const [email, setEmail] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [changingPassword, setChangingPassword] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     if (!loading && !user) router.replace("/login");
   }, [loading, user, router]);
 
   useEffect(() => {
-    if (user) setDisplayName(user.name);
+    if (user) {
+      setDisplayName(user.name);
+      setEmail(user.email);
+    }
   }, [user]);
 
   useEffect(() => {
@@ -116,7 +128,9 @@ function StudioPage() {
     }
     try {
       setSavingProfile(true);
-      const updated = await api.updateMe(name);
+      const patch: { display_name?: string; email?: string } = { display_name: name };
+      if (email.trim() && email.trim() !== (user?.email ?? "")) patch.email = email.trim();
+      const updated = await api.updateMe(patch);
       const token = localStorage.getItem("pf_token");
       if (token) setSession(token, updated);
       flash("Profile updated");
@@ -124,6 +138,76 @@ function StudioPage() {
       flash(err instanceof Error ? err.message : "Could not update profile");
     } finally {
       setSavingProfile(false);
+    }
+  };
+
+  const changePassword = async () => {
+    if (newPassword.length < 6) {
+      flash("New password must be at least 6 characters");
+      return;
+    }
+    try {
+      setChangingPassword(true);
+      await api.changePassword(currentPassword, newPassword);
+      setCurrentPassword("");
+      setNewPassword("");
+      flash("Password updated");
+    } catch (err) {
+      flash(err instanceof Error ? err.message : "Could not change password");
+    } finally {
+      setChangingPassword(false);
+    }
+  };
+
+  const deleteAccount = async () => {
+    if (!window.confirm("Delete your account permanently? This removes your games, tasks, and data. This cannot be undone.")) {
+      return;
+    }
+    try {
+      setDeleting(true);
+      await api.deleteAccount();
+      logout();
+      flash("Account deleted");
+      router.push("/");
+    } catch (err) {
+      flash(err instanceof Error ? err.message : "Could not delete account");
+      setDeleting(false);
+    }
+  };
+
+  const invalidateGameLists = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["me-games"] }),
+      queryClient.invalidateQueries({ queryKey: ["games"] }),
+      queryClient.invalidateQueries({ queryKey: ["stats"] }),
+    ]);
+
+  const unpublishGame = async (game: Game) => {
+    try {
+      setBusyGameId(game.id);
+      await api.unpublish(game.id);
+      await invalidateGameLists();
+      flash(`${game.title} unpublished`);
+    } catch (err) {
+      flash(err instanceof Error ? err.message : "Unpublish failed");
+    } finally {
+      setBusyGameId(null);
+    }
+  };
+
+  const removeGame = async (game: Game) => {
+    if (!window.confirm(`Delete "${game.title}"? This permanently removes the game and its bundle.`)) {
+      return;
+    }
+    try {
+      setBusyGameId(game.id);
+      await api.deleteGame(game.id);
+      await invalidateGameLists();
+      flash(`${game.title} deleted`);
+    } catch (err) {
+      flash(err instanceof Error ? err.message : "Delete failed");
+    } finally {
+      setBusyGameId(null);
     }
   };
 
@@ -197,7 +281,10 @@ function StudioPage() {
                     emptyLabel={gamesQ.isLoading ? "Loading games..." : "No games yet"}
                     games={games.slice(0, 3)}
                     onPublish={publishGame}
+                    onUnpublish={unpublishGame}
+                    onDelete={removeGame}
                     publishingId={publishingId}
+                    busyId={busyGameId}
                   />
                 </Panel>
 
@@ -221,7 +308,10 @@ function StudioPage() {
                   emptyLabel={gamesQ.isLoading ? "Loading games..." : "No games yet"}
                   games={games}
                   onPublish={publishGame}
+                  onUnpublish={unpublishGame}
+                  onDelete={removeGame}
                   publishingId={publishingId}
+                  busyId={busyGameId}
                 />
               </Panel>
             )}
@@ -232,7 +322,10 @@ function StudioPage() {
                   emptyLabel={gamesQ.isLoading ? "Loading drafts..." : "No draft games yet"}
                   games={drafts}
                   onPublish={publishGame}
+                  onUnpublish={unpublishGame}
+                  onDelete={removeGame}
                   publishingId={publishingId}
+                  busyId={busyGameId}
                 />
               </Panel>
             )}
@@ -260,33 +353,70 @@ function StudioPage() {
             )}
 
             {section === "settings" && (
-              <Panel title="Account Settings">
-                <div className="pf-studio-settings">
+              <div className="pf-studio-settings">
+                <Panel title="Public profile">
                   <div className="pf-studio-settings-card">
                     <Avatar user={user} size="medium" />
                     <div>
-                      <h3>Public profile</h3>
-                      <p>This name appears on your published games and generated previews.</p>
+                      <h3>{user.name}</h3>
+                      <p>Your name and email appear on your published games and account.</p>
                     </div>
                   </div>
-
                   <label className="pf-studio-field">
                     <span>Display name</span>
-                    <input
-                      maxLength={120}
-                      onChange={(event) => setDisplayName(event.target.value)}
-                      value={displayName}
-                    />
+                    <input maxLength={120} onChange={(event) => setDisplayName(event.target.value)} value={displayName} />
                   </label>
-
+                  <label className="pf-studio-field">
+                    <span>Email</span>
+                    <input onChange={(event) => setEmail(event.target.value)} type="email" value={email} />
+                  </label>
                   <div className="pf-studio-settings-actions">
                     <button className="pf-studio-primary" disabled={savingProfile} onClick={saveProfile} type="button">
                       <BadgeCheck size={16} />
                       {savingProfile ? "Saving..." : "Save Profile"}
                     </button>
                   </div>
-                </div>
-              </Panel>
+                </Panel>
+
+                <Panel title="Change password">
+                  <label className="pf-studio-field">
+                    <span>Current password</span>
+                    <input
+                      onChange={(event) => setCurrentPassword(event.target.value)}
+                      placeholder="Leave blank if you joined via Google / GitHub"
+                      type="password"
+                      value={currentPassword}
+                    />
+                  </label>
+                  <label className="pf-studio-field">
+                    <span>New password</span>
+                    <input onChange={(event) => setNewPassword(event.target.value)} type="password" value={newPassword} />
+                  </label>
+                  <div className="pf-studio-settings-actions">
+                    <button className="pf-studio-secondary" disabled={changingPassword} onClick={changePassword} type="button">
+                      <KeyRound size={16} />
+                      {changingPassword ? "Updating..." : "Update password"}
+                    </button>
+                  </div>
+                </Panel>
+
+                <Panel title="Danger zone">
+                  <p style={{ fontSize: 13.5, color: "#9b7a74", lineHeight: 1.55, margin: "2px 0 14px" }}>
+                    Deleting your account permanently removes your games, generation tasks, and data. This cannot be undone.
+                  </p>
+                  <div className="pf-studio-settings-actions">
+                    <button
+                      disabled={deleting}
+                      onClick={deleteAccount}
+                      style={{ border: "1px solid #f0c2bb", background: "#fff4f2", color: "#c0392b", cursor: "pointer", fontWeight: 700, fontSize: 14, padding: "11px 18px", borderRadius: 11, display: "inline-flex", alignItems: "center", gap: 8 }}
+                      type="button"
+                    >
+                      <Trash2 size={16} />
+                      {deleting ? "Deleting..." : "Delete account"}
+                    </button>
+                  </div>
+                </Panel>
+              </div>
             )}
           </main>
         </div>
@@ -340,13 +470,19 @@ function GameGrid({
   emptyLabel,
   games,
   onPublish,
+  onUnpublish,
+  onDelete,
   publishingId,
+  busyId,
   readonly = false,
 }: {
   emptyLabel: string;
   games: Game[];
   onPublish: (game: Game) => void;
+  onUnpublish?: (game: Game) => void;
+  onDelete?: (game: Game) => void;
   publishingId: string | null;
+  busyId?: string | null;
   readonly?: boolean;
 }) {
   if (games.length === 0) {
@@ -357,10 +493,12 @@ function GameGrid({
     <div className="pf-studio-game-grid">
       {games.map((game) => (
         <StudioGameCard
+          busy={publishingId === game.id || busyId === game.id}
           game={game}
           key={game.id}
+          onDelete={onDelete}
           onPublish={onPublish}
-          publishing={publishingId === game.id}
+          onUnpublish={onUnpublish}
           readonly={readonly}
         />
       ))}
@@ -369,14 +507,18 @@ function GameGrid({
 }
 
 function StudioGameCard({
+  busy,
   game,
+  onDelete,
   onPublish,
-  publishing,
+  onUnpublish,
   readonly,
 }: {
+  busy: boolean;
   game: Game;
+  onDelete?: (game: Game) => void;
   onPublish: (game: Game) => void;
-  publishing: boolean;
+  onUnpublish?: (game: Game) => void;
   readonly: boolean;
 }) {
   const router = useRouter();
@@ -407,22 +549,35 @@ function StudioGameCard({
             {isPublished ? <Play size={15} /> : <Eye size={15} />}
             {isPublished ? "Play" : "Preview"}
           </button>
-          {isPublished || readonly ? (
+          {isPublished ? (
             <button className="is-muted" onClick={() => router.push(`/games/${game.id}`)} type="button">
-              View on Home
+              View
               <ExternalLink size={14} />
             </button>
-          ) : (
+          ) : null}
+          {!readonly && !isPublished ? (
+            <button className="is-primary" disabled={busy} onClick={() => onPublish(game)} type="button">
+              <Upload size={15} />
+              {busy ? "Working..." : "Publish"}
+            </button>
+          ) : null}
+          {!readonly && isPublished && onUnpublish ? (
+            <button className="is-muted" disabled={busy} onClick={() => onUnpublish(game)} type="button">
+              <EyeOff size={14} />
+              Unpublish
+            </button>
+          ) : null}
+          {!readonly && onDelete ? (
             <button
-              className="is-primary"
-              disabled={publishing}
-              onClick={() => onPublish(game)}
+              aria-label="Delete game"
+              disabled={busy}
+              onClick={() => onDelete(game)}
+              style={{ marginLeft: "auto", border: "1px solid #f0c2bb", background: "#fff4f2", color: "#c0392b", cursor: "pointer", padding: "7px 10px", borderRadius: 9, display: "inline-flex", alignItems: "center", gap: 6 }}
               type="button"
             >
-              <Upload size={15} />
-              {publishing ? "Publishing..." : "Publish"}
+              <Trash2 size={14} />
             </button>
-          )}
+          ) : null}
         </div>
       </div>
     </article>

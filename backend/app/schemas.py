@@ -14,7 +14,19 @@ class LoginIn(BaseModel):
 
 
 class ProfileUpdateIn(BaseModel):
-    display_name: str = Field(min_length=1, max_length=120)
+    display_name: str | None = Field(default=None, min_length=1, max_length=120)
+    email: EmailStr | None = None
+
+
+class ChangePasswordIn(BaseModel):
+    current_password: str = ""
+    new_password: str = Field(min_length=6)
+
+
+class GameUpdateIn(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    summary: str | None = Field(default=None, max_length=2000)
+    tags: list[str] | None = None
 
 
 class TaskCreateIn(BaseModel):

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, rate_limit
 from app.db.session import get_db
 from app.models import Asset, GenerationTask
 from app.models.common import TaskStatus, now_utc
@@ -21,7 +21,7 @@ def _owned_task(task_id: str, user, db: Session) -> GenerationTask:
     return task
 
 
-@router.post("")
+@router.post("", dependencies=[Depends(rate_limit(20, 3600, "task_create"))])
 def create_task(body: TaskCreateIn, user=Depends(get_current_user), db: Session = Depends(get_db)):
     task = GenerationTask(user_id=user.id, idea=body.idea, status=TaskStatus.PENDING)
     if body.asset_ids:
@@ -80,3 +80,13 @@ def cancel_task(task_id: str, user=Depends(get_current_user), db: Session = Depe
     db.commit()
     db.refresh(task)
     return task_out(task)
+
+
+@router.delete("/{task_id}")
+def delete_task(task_id: str, user=Depends(get_current_user), db: Session = Depends(get_db)):
+    task = _owned_task(task_id, user, db)
+    if task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
+        raise HTTPException(status_code=400, detail="Cancel the task before deleting")
+    db.delete(task)
+    db.commit()
+    return {"ok": True}
