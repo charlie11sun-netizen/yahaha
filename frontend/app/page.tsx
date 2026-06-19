@@ -4,7 +4,6 @@ import type { CSSProperties } from "react";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import type { LucideIcon } from "lucide-react";
 import {
   ArrowRight,
   BadgeCheck,
@@ -23,7 +22,8 @@ import {
   Sparkles,
   UploadCloud,
   WandSparkles,
-} from "lucide-react";
+  type IconComponent,
+} from "@/components/icons";
 
 import { api } from "@/lib/api";
 import type { Game as ApiGame } from "@/lib/types";
@@ -48,7 +48,7 @@ type HomeGame = {
 type Step = {
   title: string;
   detail: string;
-  icon: LucideIcon;
+  icon: IconComponent;
   color: string;
 };
 

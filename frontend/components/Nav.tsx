@@ -1,8 +1,8 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { Box } from "lucide-react";
 
+import { Box } from "@/components/icons";
 import { useAuth } from "@/lib/auth";
 
 function navClass(path: string, target: string) {
