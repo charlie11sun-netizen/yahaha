@@ -361,8 +361,8 @@ function ActivityFeed({ lines }: { lines: string[] }) {
   if (!lines.length) return null;
   return (
     <div className="pf-play-activity">
-      {lines.map((line) => (
-        <p key={line}>{line}</p>
+      {lines.map((line, index) => (
+        <p key={`${index}-${line}`}>{line}</p>
       ))}
     </div>
   );

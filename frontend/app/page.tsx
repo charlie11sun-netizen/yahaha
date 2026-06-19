@@ -37,6 +37,7 @@ type HomeGame = {
   genre: string;
   image: string;
   thumb: string;
+  heroImage?: string;
   tags: string[];
   date: string;
   plays: string;
@@ -52,33 +53,125 @@ type Step = {
   color: string;
 };
 
-const imagePool = [
-  "/playforge/neon-featured.jpg",
-  "/playforge/pixel-drifter.jpg",
-  "/playforge/skybound-chronicles.jpg",
-  "/playforge/dungeon-dice.jpg",
-  "/playforge/circuit-breakers.jpg",
-  "/playforge/echoes-deep.jpg",
-  "/playforge/mystic-grove.jpg",
+type BoundArt = { image: string; thumb: string; hero: string };
+
+const ART = {
+  neon: {
+    image: "/playforge/neon-featured.jpg",
+    thumb: "/playforge/neon-trending.jpg",
+    hero: "/playforge/neon-trending.jpg",
+  },
+  pixel: {
+    image: "/playforge/pixel-drifter.jpg",
+    thumb: "/playforge/thumb-pixel.jpg",
+    hero: "/playforge/pixel-drifter.jpg",
+  },
+  sky: {
+    image: "/playforge/skybound-chronicles.jpg",
+    thumb: "/playforge/thumb-skybound.jpg",
+    hero: "/playforge/skybound-chronicles.jpg",
+  },
+  dungeon: {
+    image: "/playforge/dungeon-dice.jpg",
+    thumb: "/playforge/dungeon-dice.jpg",
+    hero: "/playforge/dungeon-dice.jpg",
+  },
+  circuit: {
+    image: "/playforge/circuit-breakers.jpg",
+    thumb: "/playforge/thumb-circuit.jpg",
+    hero: "/playforge/circuit-breakers.jpg",
+  },
+  echoes: {
+    image: "/playforge/echoes-deep.jpg",
+    thumb: "/playforge/thumb-echoes.jpg",
+    hero: "/playforge/echoes-deep.jpg",
+  },
+  mystic: {
+    image: "/playforge/mystic-grove.jpg",
+    thumb: "/playforge/thumb-mystic.jpg",
+    hero: "/playforge/mystic-grove.jpg",
+  },
+  moonlit: {
+    image: "/playforge/covers/moonlit-koi.jpg",
+    thumb: "/playforge/covers/moonlit-koi.jpg",
+    hero: "/playforge/covers/moonlit-koi.jpg",
+  },
+  rune: {
+    image: "/playforge/covers/rune-circuit.jpg",
+    thumb: "/playforge/covers/rune-circuit.jpg",
+    hero: "/playforge/covers/rune-circuit.jpg",
+  },
+  cloud: {
+    image: "/playforge/covers/cloud-courier.jpg",
+    thumb: "/playforge/covers/cloud-courier.jpg",
+    hero: "/playforge/covers/cloud-courier.jpg",
+  },
+  orbit: {
+    image: "/playforge/covers/orbit-bloom.jpg",
+    thumb: "/playforge/covers/orbit-bloom.jpg",
+    hero: "/playforge/covers/orbit-bloom.jpg",
+  },
+  star: {
+    image: "/playforge/covers/star-catcher.jpg",
+    thumb: "/playforge/covers/star-catcher.jpg",
+    hero: "/playforge/covers/star-catcher.jpg",
+  },
+  color: {
+    image: "/playforge/covers/color-echo.jpg",
+    thumb: "/playforge/covers/color-echo.jpg",
+    hero: "/playforge/covers/color-echo.jpg",
+  },
+} satisfies Record<string, BoundArt>;
+
+const boundArtPool = [
+  ART.neon,
+  ART.pixel,
+  ART.sky,
+  ART.dungeon,
+  ART.circuit,
+  ART.echoes,
+  ART.mystic,
+  ART.moonlit,
+  ART.rune,
+  ART.cloud,
+  ART.orbit,
+  ART.star,
+  ART.color,
 ];
 
-const heroImagePool = [
-  "/playforge/neon-trending.jpg",
-  "/playforge/pixel-drifter.jpg",
-  "/playforge/skybound-chronicles.jpg",
-  "/playforge/dungeon-dice.jpg",
-  "/playforge/circuit-breakers.jpg",
-  "/playforge/echoes-deep.jpg",
-  "/playforge/mystic-grove.jpg",
-];
+const titleArtMap: Record<string, BoundArt> = {
+  "neon alley cat": ART.neon,
+  "neon drift dodge": ART.neon,
+  "pixel drifter": ART.pixel,
+  "skybound chronicles": ART.sky,
+  "circuit breakers": ART.circuit,
+  "dungeon & dice": ART.dungeon,
+  "echoes of the deep": ART.echoes,
+  "mystic grove": ART.mystic,
+  "lumen path": ART.dungeon,
+  "moonlit koi": ART.moonlit,
+  "rune circuit": ART.rune,
+  "cloud courier": ART.cloud,
+  "orbit bloom": ART.orbit,
+  "star catcher": ART.star,
+  "color echo": ART.color,
+  "黄金矿工": ART.dungeon,
+  "海底金币大冒险": ART.echoes,
+  "魔法森林守卫战": ART.mystic,
+  "迷你俄罗斯方块": ART.rune,
+};
 
-const thumbPool = [
-  "/playforge/thumb-pixel.jpg",
-  "/playforge/thumb-skybound.jpg",
-  "/playforge/thumb-mystic.jpg",
-  "/playforge/thumb-circuit.jpg",
-  "/playforge/thumb-echoes.jpg",
-  "/playforge/thumb-lumen.jpg",
+const keywordArtMap: Array<{ keywords: string[]; art: BoundArt }> = [
+  { keywords: ["gold", "miner", "mine", "coin", "treasure", "黄金", "矿工", "金币", "宝石"], art: ART.dungeon },
+  { keywords: ["forest", "magic", "grove", "森林", "魔法"], art: ART.mystic },
+  { keywords: ["koi", "pond", "ocean", "deep", "sea", "海底", "水", "鱼"], art: ART.echoes },
+  { keywords: ["tetris", "block", "rune", "circuit", "logic", "俄罗斯方块", "方块", "符文"], art: ART.rune },
+  { keywords: ["space", "orbit", "star", "rocket", "宇宙", "太空", "星"], art: ART.orbit },
+  { keywords: ["cloud", "flight", "courier", "sky", "云", "飞行"], art: ART.cloud },
+  { keywords: ["neon", "cat", "cyberpunk", "runner", "霓虹", "赛博", "猫"], art: ART.neon },
+  { keywords: ["drift", "race", "pixel", "racing", "像素", "赛车"], art: ART.pixel },
+  { keywords: ["adventure", "chronicle", "fantasy", "quest", "冒险"], art: ART.sky },
+  { keywords: ["echo", "color", "palette", "颜色"], art: ART.color },
 ];
 
 const fallbackGames: HomeGame[] = [
@@ -313,7 +406,7 @@ export default function HomePage() {
           </div>
           <div className="pf-trending-grid">
             <button className="pf-trending-feature" onClick={() => goDetail(featured.id)} type="button">
-              <img src={heroImageForGame(featured, 0)} alt={`${featured.title} game art`} />
+              <img src={heroImageForGame(featured)} alt={`${featured.title} game art`} />
               <span>
                 <CirclePlay size={13} />
                 Featured
@@ -574,8 +667,8 @@ function Decorations() {
   );
 }
 
-function toHomeGame(game: ApiGame, index: number): HomeGame {
-  const image = imageSource(game.cover) ?? imagePool[index % imagePool.length];
+function toHomeGame(game: ApiGame): HomeGame {
+  const art = artForGame(game);
   return {
     id: game.id,
     title: game.title,
@@ -583,8 +676,9 @@ function toHomeGame(game: ApiGame, index: number): HomeGame {
     authorInit: game.author_init || "?",
     summary: game.summary,
     genre: game.genre,
-    image,
-    thumb: imageSource(game.cover) ?? thumbPool[index % thumbPool.length],
+    image: art.image,
+    thumb: art.thumb,
+    heroImage: art.hero,
     tags: game.tags,
     date: game.date,
     plays: game.plays_str,
@@ -594,15 +688,42 @@ function toHomeGame(game: ApiGame, index: number): HomeGame {
   };
 }
 
+function artForGame(game: ApiGame): BoundArt {
+  const cover = imageSource(game.cover);
+  if (cover) return { image: cover, thumb: cover, hero: cover };
+
+  const titleKey = normalizeArtKey(game.title);
+  const titleArt = titleArtMap[titleKey];
+  if (titleArt) return titleArt;
+
+  const searchable = normalizeArtKey(`${game.title} ${game.genre} ${game.summary} ${game.tags.join(" ")}`);
+  const keywordArt = keywordArtMap.find((entry) => entry.keywords.some((keyword) => searchable.includes(normalizeArtKey(keyword))));
+  if (keywordArt) return keywordArt.art;
+
+  const stableSeed = `${game.id || game.title}|${game.genre}|${game.tags.join("|")}`;
+  return boundArtPool[stableHash(stableSeed) % boundArtPool.length];
+}
+
 function imageSource(cover: string) {
   if (!cover || cover.includes("gradient(")) return null;
   if (cover.startsWith("http://") || cover.startsWith("https://") || cover.startsWith("/")) return cover;
   return null;
 }
 
-function heroImageForGame(game: HomeGame, index: number) {
-  if (game.title === "Neon Alley Cat") return "/playforge/neon-trending.jpg";
-  return game.image || heroImagePool[index % heroImagePool.length];
+function heroImageForGame(game: HomeGame) {
+  return game.heroImage || game.image;
+}
+
+function normalizeArtKey(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function stableHash(value: string) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
 }
 
 function scrollToId(id: string) {

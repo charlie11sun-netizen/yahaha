@@ -13,7 +13,6 @@ import {
   KeyRound,
   Pencil,
   Play,
-  Rocket,
   Settings,
   Sparkles,
   Star,
@@ -23,7 +22,7 @@ import {
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, ElementType, ReactNode } from "react";
 
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -33,7 +32,7 @@ import type { Game, Task } from "@/lib/types";
 
 type Section = "overview" | "games" | "tasks" | "drafts" | "favorites" | "settings";
 
-const SECTIONS: { id: Section; label: string; icon: React.ElementType }[] = [
+const SECTIONS: { id: Section; label: string; icon: ElementType }[] = [
   { id: "overview", label: "Overview", icon: House },
   { id: "games", label: "My Games", icon: Gamepad2 },
   { id: "tasks", label: "Generation Tasks", icon: Sparkles },
@@ -90,7 +89,6 @@ function StudioPage() {
   const games = gamesQ.data?.items ?? [];
   const favorites = favQ.data?.items ?? [];
   const tasks = tasksQ.data?.items ?? [];
-
   const published = useMemo(() => games.filter((game) => game.status === "published"), [games]);
   const drafts = useMemo(() => games.filter((game) => game.status !== "published"), [games]);
   const totalPlays = useMemo(() => games.reduce((sum, game) => sum + (game.plays || 0), 0), [games]);
@@ -103,20 +101,50 @@ function StudioPage() {
     window.history.replaceState(null, "", suffix);
   };
 
+  const invalidateGameLists = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["me-games"] }),
+      queryClient.invalidateQueries({ queryKey: ["games"] }),
+      queryClient.invalidateQueries({ queryKey: ["stats"] }),
+    ]);
+
   const publishGame = async (game: Game) => {
     try {
       setPublishingId(game.id);
       await api.publish(game.id);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["me-games"] }),
-        queryClient.invalidateQueries({ queryKey: ["games"] }),
-        queryClient.invalidateQueries({ queryKey: ["stats"] }),
-      ]);
+      await invalidateGameLists();
       flash(`${game.title} published`);
     } catch (err) {
       flash(err instanceof Error ? err.message : "Publish failed");
     } finally {
       setPublishingId(null);
+    }
+  };
+
+  const unpublishGame = async (game: Game) => {
+    try {
+      setBusyGameId(game.id);
+      await api.unpublish(game.id);
+      await invalidateGameLists();
+      flash(`${game.title} unpublished`);
+    } catch (err) {
+      flash(err instanceof Error ? err.message : "Unpublish failed");
+    } finally {
+      setBusyGameId(null);
+    }
+  };
+
+  const removeGame = async (game: Game) => {
+    if (!window.confirm(`Delete "${game.title}"? This permanently removes the game and its bundle.`)) return;
+    try {
+      setBusyGameId(game.id);
+      await api.deleteGame(game.id);
+      await invalidateGameLists();
+      flash(`${game.title} deleted`);
+    } catch (err) {
+      flash(err instanceof Error ? err.message : "Delete failed");
+    } finally {
+      setBusyGameId(null);
     }
   };
 
@@ -129,7 +157,7 @@ function StudioPage() {
     try {
       setSavingProfile(true);
       const patch: { display_name?: string; email?: string } = { display_name: name };
-      if (email.trim() && email.trim() !== (user?.email ?? "")) patch.email = email.trim();
+      if (email.trim() && email.trim() !== user.email) patch.email = email.trim();
       const updated = await api.updateMe(patch);
       const token = localStorage.getItem("pf_token");
       if (token) setSession(token, updated);
@@ -171,9 +199,7 @@ function StudioPage() {
   };
 
   const deleteAccount = async () => {
-    if (!window.confirm("Delete your account permanently? This removes your games, tasks, and data. This cannot be undone.")) {
-      return;
-    }
+    if (!window.confirm("Delete your account permanently? This removes your games, tasks, and data. This cannot be undone.")) return;
     try {
       setDeleting(true);
       await api.deleteAccount();
@@ -186,45 +212,13 @@ function StudioPage() {
     }
   };
 
-  const invalidateGameLists = () =>
-    Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["me-games"] }),
-      queryClient.invalidateQueries({ queryKey: ["games"] }),
-      queryClient.invalidateQueries({ queryKey: ["stats"] }),
-    ]);
-
-  const unpublishGame = async (game: Game) => {
-    try {
-      setBusyGameId(game.id);
-      await api.unpublish(game.id);
-      await invalidateGameLists();
-      flash(`${game.title} unpublished`);
-    } catch (err) {
-      flash(err instanceof Error ? err.message : "Unpublish failed");
-    } finally {
-      setBusyGameId(null);
-    }
-  };
-
-  const removeGame = async (game: Game) => {
-    if (!window.confirm(`Delete "${game.title}"? This permanently removes the game and its bundle.`)) {
+  const openTask = (task: Task) => {
+    if (task.status === "succeeded" && task.game) {
+      router.push(`/play/${task.game.id}`);
       return;
     }
-    try {
-      setBusyGameId(game.id);
-      await api.deleteGame(game.id);
-      await invalidateGameLists();
-      flash(`${game.title} deleted`);
-    } catch (err) {
-      flash(err instanceof Error ? err.message : "Delete failed");
-    } finally {
-      setBusyGameId(null);
-    }
-  };
-
-  const openTask = (task: Task) => {
     localStorage.setItem("pf_last_create_task", task.id);
-    router.push("/create");
+    router.push(`/create?task=${encodeURIComponent(task.id)}`);
   };
 
   return (
@@ -283,31 +277,23 @@ function StudioPage() {
 
             {section === "overview" && (
               <>
-                <Panel
-                  title="Recent Games"
-                  actionLabel="View all games"
-                  onAction={() => switchSection("games")}
-                >
+                <Panel title="Recent Games" actionLabel="View all games" onAction={() => switchSection("games")}>
                   <GameGrid
                     emptyLabel={gamesQ.isLoading ? "Loading games..." : "No games yet"}
                     games={games.slice(0, 3)}
+                    onDelete={removeGame}
                     onPublish={publishGame}
                     onUnpublish={unpublishGame}
-                    onDelete={removeGame}
                     publishingId={publishingId}
                     busyId={busyGameId}
                   />
                 </Panel>
 
-                <Panel
-                  title="Recent Generation Tasks"
-                  actionLabel="View all tasks"
-                  onAction={() => switchSection("tasks")}
-                >
+                <Panel title="Recent Generation Tasks" actionLabel="View all tasks" onAction={() => switchSection("tasks")}>
                   <TaskTable
                     emptyLabel={tasksQ.isLoading ? "Loading tasks..." : "No generation tasks yet"}
-                    tasks={tasks.slice(0, 4)}
                     onOpen={openTask}
+                    tasks={tasks.slice(0, 4)}
                   />
                 </Panel>
               </>
@@ -318,9 +304,9 @@ function StudioPage() {
                 <GameGrid
                   emptyLabel={gamesQ.isLoading ? "Loading games..." : "No games yet"}
                   games={games}
+                  onDelete={removeGame}
                   onPublish={publishGame}
                   onUnpublish={unpublishGame}
-                  onDelete={removeGame}
                   publishingId={publishingId}
                   busyId={busyGameId}
                 />
@@ -332,9 +318,9 @@ function StudioPage() {
                 <GameGrid
                   emptyLabel={gamesQ.isLoading ? "Loading drafts..." : "No draft games yet"}
                   games={drafts}
+                  onDelete={removeGame}
                   onPublish={publishGame}
                   onUnpublish={unpublishGame}
-                  onDelete={removeGame}
                   publishingId={publishingId}
                   busyId={busyGameId}
                 />
@@ -357,45 +343,50 @@ function StudioPage() {
               <Panel title="Generation Tasks" actionLabel="Create game" onAction={() => router.push("/create")}>
                 <TaskTable
                   emptyLabel={tasksQ.isLoading ? "Loading tasks..." : "No generation tasks yet"}
-                  tasks={tasks}
                   onOpen={openTask}
+                  tasks={tasks}
                 />
               </Panel>
             )}
 
             {section === "settings" && (
-              <div className="pf-studio-settings">
+              <div className="pf-studio-settings pf-studio-settings-layout">
                 <Panel title="Public profile">
                   <div className="pf-studio-settings-card">
                     <Avatar user={user} size="medium" />
                     <div>
                       <h3>{user.name}</h3>
-                      <p>Your name and email appear on your published games and account.</p>
+                      <p>Your public creator identity is used across published games, comments, and playable results.</p>
                     </div>
                   </div>
-                  <label className="pf-studio-field">
-                    <span>Display name</span>
-                    <input maxLength={120} onChange={(event) => setDisplayName(event.target.value)} value={displayName} />
-                  </label>
-                  <label className="pf-studio-field">
-                    <span>Email</span>
-                    <input onChange={(event) => setEmail(event.target.value)} type="email" value={email} />
-                  </label>
-                  <div style={{ marginTop: 4 }}>
-                    <span style={{ display: "block", fontSize: 12.5, fontWeight: 600, color: "#5c574e", marginBottom: 8 }}>Avatar</span>
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      {["🎮", "🕹️", "👾", "🚀", "🐱", "🌟", "🔥", "🎨"].map((emoji) => (
+
+                  <div className="pf-studio-field-grid">
+                    <label className="pf-studio-field">
+                      <span>Display name</span>
+                      <input maxLength={120} onChange={(event) => setDisplayName(event.target.value)} value={displayName} />
+                    </label>
+                    <label className="pf-studio-field">
+                      <span>Email</span>
+                      <input onChange={(event) => setEmail(event.target.value)} type="email" value={email} />
+                    </label>
+                  </div>
+
+                  <div className="pf-avatar-palette">
+                    <span>Avatar mark</span>
+                    <div>
+                      {avatarChoices(user.name).map((mark) => (
                         <button
-                          key={emoji}
-                          onClick={() => setAvatar(emoji)}
+                          className={user.init === mark ? "is-selected" : ""}
+                          key={mark}
+                          onClick={() => setAvatar(mark)}
                           type="button"
-                          style={{ width: 38, height: 38, borderRadius: 10, border: `1px solid ${user.init === emoji ? "#ff6b35" : "#e8e3d8"}`, background: user.init === emoji ? "#fff1ea" : "#fff", cursor: "pointer", fontSize: 18 }}
                         >
-                          {emoji}
+                          {mark}
                         </button>
                       ))}
                     </div>
                   </div>
+
                   <div className="pf-studio-settings-actions">
                     <button className="pf-studio-primary" disabled={savingProfile} onClick={saveProfile} type="button">
                       <BadgeCheck size={16} />
@@ -404,44 +395,41 @@ function StudioPage() {
                   </div>
                 </Panel>
 
-                <Panel title="Change password">
-                  <label className="pf-studio-field">
-                    <span>Current password</span>
-                    <input
-                      onChange={(event) => setCurrentPassword(event.target.value)}
-                      placeholder="Leave blank if you joined via Google / GitHub"
-                      type="password"
-                      value={currentPassword}
-                    />
-                  </label>
-                  <label className="pf-studio-field">
-                    <span>New password</span>
-                    <input onChange={(event) => setNewPassword(event.target.value)} type="password" value={newPassword} />
-                  </label>
-                  <div className="pf-studio-settings-actions">
-                    <button className="pf-studio-secondary" disabled={changingPassword} onClick={changePassword} type="button">
-                      <KeyRound size={16} />
-                      {changingPassword ? "Updating..." : "Update password"}
-                    </button>
-                  </div>
-                </Panel>
+                <div className="pf-studio-settings-side">
+                  <Panel title="Change password">
+                    <label className="pf-studio-field">
+                      <span>Current password</span>
+                      <input
+                        onChange={(event) => setCurrentPassword(event.target.value)}
+                        placeholder="Required for password accounts"
+                        type="password"
+                        value={currentPassword}
+                      />
+                    </label>
+                    <label className="pf-studio-field">
+                      <span>New password</span>
+                      <input onChange={(event) => setNewPassword(event.target.value)} type="password" value={newPassword} />
+                    </label>
+                    <div className="pf-studio-settings-actions">
+                      <button className="pf-studio-secondary" disabled={changingPassword} onClick={changePassword} type="button">
+                        <KeyRound size={16} />
+                        {changingPassword ? "Updating..." : "Update password"}
+                      </button>
+                    </div>
+                  </Panel>
 
-                <Panel title="Danger zone">
-                  <p style={{ fontSize: 13.5, color: "#9b7a74", lineHeight: 1.55, margin: "2px 0 14px" }}>
-                    Deleting your account permanently removes your games, generation tasks, and data. This cannot be undone.
-                  </p>
-                  <div className="pf-studio-settings-actions">
-                    <button
-                      disabled={deleting}
-                      onClick={deleteAccount}
-                      style={{ border: "1px solid #f0c2bb", background: "#fff4f2", color: "#c0392b", cursor: "pointer", fontWeight: 700, fontSize: 14, padding: "11px 18px", borderRadius: 11, display: "inline-flex", alignItems: "center", gap: 8 }}
-                      type="button"
-                    >
-                      <Trash2 size={16} />
-                      {deleting ? "Deleting..." : "Delete account"}
-                    </button>
-                  </div>
-                </Panel>
+                  <Panel title="Danger zone">
+                    <p className="pf-danger-copy">
+                      Deleting your account permanently removes your games, generation tasks, and data. This cannot be undone.
+                    </p>
+                    <div className="pf-studio-settings-actions">
+                      <button className="pf-danger-btn" disabled={deleting} onClick={deleteAccount} type="button">
+                        <Trash2 size={16} />
+                        {deleting ? "Deleting..." : "Delete account"}
+                      </button>
+                    </div>
+                  </Panel>
+                </div>
               </div>
             )}
           </main>
@@ -451,7 +439,7 @@ function StudioPage() {
   );
 }
 
-function StatCard({ icon: Icon, label, value }: { icon: React.ElementType; label: string; value: string }) {
+function StatCard({ icon: Icon, label, value }: { icon: ElementType; label: string; value: string }) {
   return (
     <article className="pf-studio-stat">
       <span>
@@ -472,7 +460,7 @@ function Panel({
   title,
 }: {
   actionLabel?: string;
-  children: React.ReactNode;
+  children: ReactNode;
   onAction?: () => void;
   title: string;
 }) {
@@ -511,9 +499,7 @@ function GameGrid({
   busyId?: string | null;
   readonly?: boolean;
 }) {
-  if (games.length === 0) {
-    return <div className="pf-studio-empty">{emptyLabel}</div>;
-  }
+  if (games.length === 0) return <div className="pf-studio-empty">{emptyLabel}</div>;
 
   return (
     <div className="pf-studio-game-grid">
@@ -571,34 +557,36 @@ function StudioGameCard({
         </div>
         <p>{game.summary}</p>
         <div className="pf-studio-card-actions">
-          <button onClick={() => router.push(`/play/${game.id}`)} type="button">
-            {isPublished ? <Play size={15} /> : <Eye size={15} />}
-            {isPublished ? "Play" : "Preview"}
-          </button>
-          {isPublished ? (
-            <button className="is-muted" onClick={() => router.push(`/games/${game.id}`)} type="button">
-              View
-              <ExternalLink size={14} />
+          <div className="pf-studio-action-group">
+            <button onClick={() => router.push(`/play/${game.id}`)} type="button">
+              {isPublished ? <Play size={15} /> : <Eye size={15} />}
+              {isPublished ? "Play" : "Preview"}
             </button>
-          ) : null}
-          {!readonly && !isPublished ? (
-            <button className="is-primary" disabled={busy} onClick={() => onPublish(game)} type="button">
-              <Upload size={15} />
-              {busy ? "Working..." : "Publish"}
-            </button>
-          ) : null}
-          {!readonly && isPublished && onUnpublish ? (
-            <button className="is-muted" disabled={busy} onClick={() => onUnpublish(game)} type="button">
-              <EyeOff size={14} />
-              Unpublish
-            </button>
-          ) : null}
+            {isPublished ? (
+              <button className="is-muted" onClick={() => router.push(`/games/${game.id}`)} type="button">
+                View
+                <ExternalLink size={14} />
+              </button>
+            ) : null}
+            {!readonly && !isPublished ? (
+              <button className="is-primary" disabled={busy} onClick={() => onPublish(game)} type="button">
+                <Upload size={15} />
+                {busy ? "Working..." : "Publish"}
+              </button>
+            ) : null}
+            {!readonly && isPublished && onUnpublish ? (
+              <button className="is-muted" disabled={busy} onClick={() => onUnpublish(game)} type="button">
+                <EyeOff size={14} />
+                Unpublish
+              </button>
+            ) : null}
+          </div>
           {!readonly && onDelete ? (
             <button
               aria-label="Delete game"
+              className="pf-studio-delete-btn"
               disabled={busy}
               onClick={() => onDelete(game)}
-              style={{ marginLeft: "auto", border: "1px solid #f0c2bb", background: "#fff4f2", color: "#c0392b", cursor: "pointer", padding: "7px 10px", borderRadius: 9, display: "inline-flex", alignItems: "center", gap: 6 }}
               type="button"
             >
               <Trash2 size={14} />
@@ -610,18 +598,8 @@ function StudioGameCard({
   );
 }
 
-function TaskTable({
-  emptyLabel,
-  onOpen,
-  tasks,
-}: {
-  emptyLabel: string;
-  onOpen: (task: Task) => void;
-  tasks: Task[];
-}) {
-  if (tasks.length === 0) {
-    return <div className="pf-studio-empty">{emptyLabel}</div>;
-  }
+function TaskTable({ emptyLabel, onOpen, tasks }: { emptyLabel: string; onOpen: (task: Task) => void; tasks: Task[] }) {
+  if (tasks.length === 0) return <div className="pf-studio-empty">{emptyLabel}</div>;
 
   return (
     <div className="pf-studio-task-table">
@@ -662,6 +640,11 @@ function Avatar({ size, user }: { size: "large" | "medium"; user: { init: string
       {user.init}
     </div>
   );
+}
+
+function avatarChoices(name: string) {
+  const initial = (name.trim().slice(0, 1) || "A").toUpperCase();
+  return Array.from(new Set([initial, "AI", "PF", "XP", "01", "GG"]));
 }
 
 function coverStyle(cover?: string): CSSProperties {

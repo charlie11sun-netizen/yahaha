@@ -25,8 +25,8 @@ import {
   WandSparkles,
   X,
 } from "lucide-react";
-import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
 import { api } from "@/lib/api";
@@ -52,11 +52,22 @@ type StepState = "pending" | "running" | "completed" | "failed";
 type StepRow = { key: string; label: string; status: StepState; summary?: string | null };
 
 export default function CreatePage() {
+  return (
+    <Suspense fallback={null}>
+      <CreatePageInner />
+    </Suspense>
+  );
+}
+
+function CreatePageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const flash = useToast();
   const { user, loading } = useAuth();
   const now = useNow(1000);
+  const taskParam = searchParams.get("task");
+  const resumeLast = searchParams.get("resume") === "1";
 
   const [idea, setIdea] = useState("");
   const [files, setFiles] = useState<UploadedAsset[]>([]);
@@ -85,11 +96,17 @@ export default function CreatePage() {
   }, []);
 
   useEffect(() => {
-    const lastTask = localStorage.getItem(LAST_TASK_KEY);
-    if (lastTask) {
-      setTaskId(lastTask);
+    if (taskParam) {
+      setTaskId(taskParam);
+      localStorage.setItem(LAST_TASK_KEY, taskParam);
+      return;
     }
-  }, []);
+    if (resumeLast) {
+      setTaskId(localStorage.getItem(LAST_TASK_KEY));
+      return;
+    }
+    setTaskId(null);
+  }, [resumeLast, taskParam]);
 
   const saveDraft = useCallback(() => {
     if (!idea.trim() && files.length === 0) {
@@ -147,6 +164,7 @@ export default function CreatePage() {
       );
       setTaskId(result.task_id);
       localStorage.setItem(LAST_TASK_KEY, result.task_id);
+      router.replace(`/create?task=${encodeURIComponent(result.task_id)}`);
       flash("Generation task started");
     } catch {
       flash("Could not start generation");
@@ -161,6 +179,7 @@ export default function CreatePage() {
       const result = await api.retryTask(task.id);
       setTaskId(result.task_id);
       localStorage.setItem(LAST_TASK_KEY, result.task_id);
+      router.replace(`/create?task=${encodeURIComponent(result.task_id)}`);
       await queryClient.invalidateQueries({ queryKey: ["task", result.task_id] });
       await queryClient.invalidateQueries({ queryKey: ["tasks"] });
       flash("Retry started");
@@ -206,11 +225,13 @@ export default function CreatePage() {
   const editBrief = () => {
     setTaskId(null);
     localStorage.removeItem(LAST_TASK_KEY);
+    router.replace("/create");
   };
 
   const resumeTask = (id: string) => {
     setTaskId(id);
     localStorage.setItem(LAST_TASK_KEY, id);
+    router.replace(`/create?task=${encodeURIComponent(id)}`);
     setTasksOpen(false);
   };
 
