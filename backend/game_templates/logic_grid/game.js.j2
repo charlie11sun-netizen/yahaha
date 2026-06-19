@@ -1,4 +1,5 @@
 var ACCENT="{{ accent }}",ROUND={{ duration }},TARGET={{ target_score }};
+var TUTORIAL={{ tutorial_json }},REWARD_NAMES={{ reward_names_json }},POWERUPS={{ powerup_names_json }},WAVES={{ wave_script_json }};
 var c=document.getElementById("stage"),x=c.getContext("2d"),W=0,H=0,N=5,grid=[],moves=0,timeLeft=ROUND,run=true,last=0;
 function size(){W=c.width=innerWidth;H=c.height=innerHeight}size();onresize=size;
 function piece(type,rot,path){return{type:type,rot:rot,path:!!path}}
@@ -32,6 +33,7 @@ function draw(){
   var a=area();x.fillStyle="rgba(255,255,255,.06)";x.beginPath();x.roundRect(a.ox-18,a.oy-18,a.s+36,a.s+36,24);x.fill();
   for(var y=0;y<N;y++){for(var xx=0;xx<N;xx++){var cx=a.ox+a.cell*(xx+.5),cy=a.oy+a.cell*(y+.5);x.fillStyle="rgba(255,255,255,.08)";x.beginPath();x.roundRect(a.ox+xx*a.cell+6,a.oy+y*a.cell+6,a.cell-12,a.cell-12,12);x.fill();drawPipe(cx,cy,a.cell,grid[y][xx],grid[y][xx].path)}}
   x.fillStyle=ACCENT;x.font="700 16px ui-monospace,monospace";x.fillText("IN",a.ox-44,a.oy+a.cell*2.58);x.fillText("OUT",a.ox+a.s+12,a.oy+a.cell*2.58);
+  x.fillStyle="rgba(255,255,255,.72)";x.font="700 13px ui-monospace,monospace";x.textAlign="center";x.fillText(TUTORIAL,W/2,H-28);x.textAlign="left";
   document.getElementById("sc").textContent=moves;document.getElementById("tm").textContent=Math.ceil(timeLeft)
 }
 function tick(now){if(!run)return;var dt=Math.min(.033,(now-last)/1000);last=now;update(dt);draw();requestAnimationFrame(tick)}

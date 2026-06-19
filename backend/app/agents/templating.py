@@ -4,6 +4,7 @@ The model plans GameSpec/GameDesign. Code generation renders a fixed local
 template with bounded config so artifacts stay validateable and sandbox-safe.
 """
 import os
+import json
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -60,6 +61,8 @@ def build_config(game_spec: dict, game_design: dict, asset_manifest: dict, balan
     spec = game_spec or {}
     design = game_design or {}
     balance = balance_config or (design.get("balance") if isinstance(design.get("balance"), dict) else {}) or {}
+    mechanics = design.get("mechanic_plan") if isinstance(design.get("mechanic_plan"), dict) else {}
+    content = design.get("content_plan") if isinstance(design.get("content_plan"), dict) else {}
     theme = str(spec.get("theme", "")).lower()
     accent = next((v for k, v in _ACCENT_BY_THEME.items() if k in theme), "#ff6b35")
 
@@ -89,6 +92,13 @@ def build_config(game_spec: dict, game_design: dict, asset_manifest: dict, balan
         "lives": _integer(balance.get("lives"), 3, 1, 9),
         "lanes": _integer(balance.get("lanes"), 3, 3, 5),
         "archetype": str(spec.get("archetype") or design.get("archetype") or DEFAULT_TEMPLATE),
+        "mechanic_label": str(content.get("mechanic_label") or mechanics.get("secondary_action") or mechanics.get("primary_action") or "core loop")[:80],
+        "tutorial_json": json.dumps(str(content.get("tutorial") or hint)[:140], ensure_ascii=False),
+        "hazard_names_json": json.dumps([str(item)[:32] for item in (content.get("hazard_names") or ["hazard"])][:5], ensure_ascii=False),
+        "reward_names_json": json.dumps([str(item)[:32] for item in (content.get("reward_names") or ["reward"])][:5], ensure_ascii=False),
+        "powerup_names_json": json.dumps([str(item)[:32] for item in (content.get("powerups") or ["shield", "slow field"])][:5], ensure_ascii=False),
+        "wave_script_json": json.dumps(content.get("waves") or [], ensure_ascii=False),
+        "wave_count": len(content.get("waves") or []),
         "duration": duration,
         "hint": str(hint)[:100],
     }

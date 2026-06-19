@@ -42,9 +42,9 @@ type UserStep = { key: string; label: string; backendKeys?: readonly string[]; o
 
 const USER_STEPS: UserStep[] = [
   { key: "safety_intake", label: "Idea checked" },
-  { key: "intent_spec", label: "Game spec created", backendKeys: ["intent_spec", "archetype_router"] },
+  { key: "intent_spec", label: "Game spec created", backendKeys: ["intent_spec", "brief_expansion", "mechanic_planner", "archetype_router"] },
   { key: "asset_processing", label: "Assets processed" },
-  { key: "game_design", label: "Game designed", backendKeys: ["game_design", "balance_plan"] },
+  { key: "game_design", label: "Game designed", backendKeys: ["game_design", "content_plan", "balance_plan"] },
   { key: "code_generation", label: "Files generated" },
   { key: "build_validation", label: "Validating build", backendKeys: ["build_validation", "static_validation"] },
   { key: "gameplay_qa", label: "Playtesting game", backendKeys: GAMEPLAY_STEP_KEYS, optional: true },
@@ -757,7 +757,9 @@ function ActivityDrawer({ onClose, task }: { onClose: () => void; task?: Task })
   const logs = task?.logs ?? [];
   const gameplayStatus = getGameplayQaStatus(task);
   const archetype = designField(task, "玩法原型");
+  const mechanic = designField(task, "核心机制");
   const balance = designField(task, "平衡参数");
+  const contentWaves = designField(task, "内容波次");
 
   return (
     <div className="pf-drawer-backdrop" onClick={onClose}>
@@ -780,7 +782,9 @@ function ActivityDrawer({ onClose, task }: { onClose: () => void; task?: Task })
             <TechItem label="Preview" value={task?.preview_url || "Pending"} />
             {gameplayStatus && <TechItem label="Gameplay QA" value={gameplayTechLabel(gameplayStatus)} />}
             {archetype && <TechItem label="Archetype" value={archetype} />}
+            {mechanic && <TechItem label="Mechanic" value={mechanic} />}
             {balance && <TechItem label="Balance" value={balance} />}
+            {contentWaves && <TechItem label="Content" value={contentWaves} />}
             <TechItem label="Repair attempts" value={`${task?.repair_attempts ?? 0}/${task?.max_repair_attempts ?? 2}`} />
             <TechItem label="Replan attempts" value={`${task?.replan_attempts ?? 0}/${task?.max_replan_attempts ?? 1}`} />
             <TechItem label="Tokens" value={(task?.tokens ?? 0).toLocaleString()} />

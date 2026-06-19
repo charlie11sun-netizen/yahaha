@@ -9,9 +9,12 @@ MAX_GAMEPLAY_REPAIR = 2
 STEP_META: dict[str, tuple[str, str]] = {
     "safety_intake": ("SafetyIntakeAgent", "Safety Intake"),
     "intent_spec": ("IntentSpecAgent", "Intent Spec"),
+    "brief_expansion": ("BriefExpansionAgent", "Brief Expansion"),
+    "mechanic_planner": ("MechanicPlannerAgent", "Mechanic Planner"),
     "archetype_router": ("ArchetypeRouterAgent", "Archetype Router"),
     "asset_processing": ("AssetAgent", "Asset Processing"),
     "game_design": ("GameDesignAgent", "Game Design"),
+    "content_plan": ("ContentPlanAgent", "Content Plan"),
     "balance_plan": ("BalanceAgent", "Balance Plan"),
     "code_generation": ("GameCodeAgent", "Code Generation"),
     "build_validation": ("BuildValidateAgent", "Build Validation"),
@@ -37,9 +40,12 @@ class GenerationState(TypedDict, total=False):
 
     safety_result: dict
     game_spec: dict
+    expanded_brief: dict
+    mechanic_plan: dict
     archetype_result: dict
     asset_manifest: dict
     game_design: dict
+    content_plan: dict
     balance_config: dict
 
     generated_files: list  # [{"path": str, "content": str}]

@@ -350,11 +350,200 @@ def _validation_log_lines(result: dict) -> list[str]:
     return lines
 
 
-def _route_archetype(spec: dict, prompt: str) -> dict:
+def _brief_keywords(prompt: str, spec: dict) -> list[str]:
+    cues = _prompt_cues(prompt)
+    for tag in spec.get("tags") or []:
+        tag = str(tag).lower()
+        if tag and tag not in cues:
+            cues.append(tag)
+    for word in re.findall(r"[\u4e00-\u9fff]{2,6}", prompt):
+        if word not in cues:
+            cues.append(word)
+    return cues[:8]
+
+
+def _heuristic_brief(prompt: str, spec: dict) -> dict:
+    genre = str(spec.get("genre") or "arcade").lower()
+    title = spec.get("title") or bundles.title_from(prompt)
+    keywords = _brief_keywords(prompt, spec)
+    if genre == "puzzle":
+        verbs = ["inspect", "rotate", "connect", "optimize"]
+        mechanics = ["visible solution path", "move-efficient scoring", "timed pressure"]
+        fantasy = f"repair a living circuit in {title}"
+    elif genre == "runner":
+        verbs = ["switch lanes", "read patterns", "collect boosts", "recover from hits"]
+        mechanics = ["lane telegraphing", "bonus chains", "forgiving lives", "late-round pressure"]
+        fantasy = f"pilot the hero through a fast readable course in {title}"
+    else:
+        verbs = ["navigate", "collect", "bait hazards", "chain rewards"]
+        mechanics = ["combo collection", "soft homing hazards", "temporary powerups", "safe opening"]
+        fantasy = f"guide the hero through a compact arena in {title}"
+    return {
+        "player_fantasy": fantasy,
+        "objective": spec.get("win_condition") or "reach the score goal before the round ends",
+        "core_verbs": verbs,
+        "mechanic_requirements": mechanics,
+        "reward_loop": "small rewards every few seconds, larger payoff for chaining clean play",
+        "difficulty_beats": ["0-10s tutorial-safe opening", "10-35s readable pattern pressure", "35s+ mastery challenge"],
+        "feedback": ["clear hit flash", "score pop", "life/timer HUD", "restart affordance"],
+        "keywords": keywords,
+        "minimum_content": {"hazards": 2, "rewards": 3, "powerups": 2, "waves": 4},
+    }
+
+
+def _coerce_brief(data: dict, prompt: str, spec: dict) -> dict:
+    base = _heuristic_brief(prompt, spec)
+    if isinstance(data, dict):
+        for key in ("player_fantasy", "objective", "reward_loop"):
+            if data.get(key):
+                base[key] = str(data[key])[:240]
+        for key in ("core_verbs", "mechanic_requirements", "difficulty_beats", "feedback", "keywords"):
+            if isinstance(data.get(key), list) and data[key]:
+                base[key] = [str(item)[:80] for item in data[key]][:8]
+        if isinstance(data.get("minimum_content"), dict):
+            base["minimum_content"].update({k: int(v) for k, v in data["minimum_content"].items() if str(v).isdigit()})
+    return base
+
+
+def _brief_log_lines(brief: dict, source: str) -> list[str]:
+    return [
+        f"source: {source}",
+        f"player fantasy: {_clip(brief.get('player_fantasy'), 120)}",
+        f"objective: {_clip(brief.get('objective'), 120)}",
+        "core verbs: " + ", ".join(brief.get("core_verbs") or []),
+        "mechanic requirements: " + ", ".join(brief.get("mechanic_requirements") or []),
+        "difficulty beats: " + " / ".join(brief.get("difficulty_beats") or []),
+    ]
+
+
+def _heuristic_mechanic_plan(spec: dict, brief: dict, prompt: str) -> dict:
+    genre = str(spec.get("genre") or "").lower()
+    text = " ".join([prompt, " ".join(brief.get("mechanic_requirements") or []), " ".join(brief.get("keywords") or [])]).lower()
+    if genre == "puzzle" or _has_any(text, ["connect", "circuit", "puzzle", "logic"]):
+        archetype_hint = "logic_grid"
+        secondary = "route preview pulses"
+        enemies = [{"name": "locked node", "behavior": "blocks inefficient routes"}, {"name": "timer drain", "behavior": "forces decisive rotations"}]
+        rewards = [{"name": "clean link", "effect": "score bonus"}, {"name": "few moves", "effect": "efficiency bonus"}]
+        powerups = [{"name": "hint pulse", "effect": "briefly shows connected tiles"}, {"name": "time crystal", "effect": "adds seconds"}]
+    elif genre == "runner" or _has_any(text, ["runner", "lane", "dash", "dodge", "race"]):
+        archetype_hint = "lane_runner"
+        secondary = "one-lane dash recovery"
+        enemies = [{"name": "drone gate", "behavior": "blocks one lane"}, {"name": "sweeper", "behavior": "encourages early lane change"}]
+        rewards = [{"name": "energy orb", "effect": "score chain"}, {"name": "route badge", "effect": "lane streak bonus"}]
+        powerups = [{"name": "phase dash", "effect": "forgive the next hit"}, {"name": "magnet trail", "effect": "pulls nearby bonuses"}]
+    else:
+        archetype_hint = "topdown_collect"
+        secondary = "short shield after clean combo"
+        enemies = [{"name": "drifter", "behavior": "soft-homes toward the player"}, {"name": "sentinel", "behavior": "crosses the arena slowly"}]
+        rewards = [{"name": "glow shard", "effect": "combo score"}, {"name": "cache", "effect": "larger timed bonus"}]
+        powerups = [{"name": "shield bloom", "effect": "temporary invulnerability"}, {"name": "slow field", "effect": "slows hazards"}, {"name": "spark dash", "effect": "quick reposition"}]
+    return {
+        "archetype_hint": archetype_hint,
+        "primary_action": _clip((brief.get("core_verbs") or ["move"])[0], 60),
+        "secondary_action": secondary,
+        "risk_model": "mistakes cost lives, but the first seconds are safe and recovery is possible",
+        "reward_model": brief.get("reward_loop") or "chain rewards for score",
+        "enemy_behaviors": enemies,
+        "reward_items": rewards,
+        "powerups": powerups,
+        "feedback": brief.get("feedback") or ["score pop", "hit flash", "restart"],
+        "skill_tests": brief.get("difficulty_beats") or [],
+    }
+
+
+def _coerce_mechanic_plan(data: dict, spec: dict, brief: dict, prompt: str) -> dict:
+    base = _heuristic_mechanic_plan(spec, brief, prompt)
+    if isinstance(data, dict):
+        for key in ("archetype_hint", "primary_action", "secondary_action", "risk_model", "reward_model"):
+            if data.get(key):
+                base[key] = str(data[key])[:180]
+        for key in ("enemy_behaviors", "reward_items", "powerups"):
+            if isinstance(data.get(key), list) and data[key]:
+                base[key] = [item if isinstance(item, dict) else {"name": str(item), "effect": "gameplay variation"} for item in data[key]][:5]
+        if isinstance(data.get("feedback"), list) and data["feedback"]:
+            base["feedback"] = [str(item)[:80] for item in data["feedback"]][:6]
+    if base.get("archetype_hint") not in _ARCHETYPES:
+        base["archetype_hint"] = _heuristic_mechanic_plan(spec, brief, prompt)["archetype_hint"]
+    return base
+
+
+def _mechanic_log_lines(plan: dict, source: str) -> list[str]:
+    enemies = ", ".join(str(item.get("name", "?")) for item in plan.get("enemy_behaviors") or [])
+    rewards = ", ".join(str(item.get("name", "?")) for item in plan.get("reward_items") or [])
+    powerups = ", ".join(str(item.get("name", "?")) for item in plan.get("powerups") or [])
+    return [
+        f"source: {source}",
+        f"archetype hint: {plan.get('archetype_hint')}",
+        f"primary/secondary: {plan.get('primary_action')} / {plan.get('secondary_action')}",
+        f"risk model: {_clip(plan.get('risk_model'), 120)}",
+        f"reward model: {_clip(plan.get('reward_model'), 120)}",
+        f"enemy behaviors: {enemies}",
+        f"rewards/powerups: {rewards} / {powerups}",
+    ]
+
+
+def _content_plan(archetype: str, spec: dict, brief: dict, mechanics: dict) -> dict:
+    enemy_names = [str(item.get("name", "hazard"))[:28] for item in mechanics.get("enemy_behaviors") or []] or ["hazard", "blocker"]
+    reward_names = [str(item.get("name", "reward"))[:28] for item in mechanics.get("reward_items") or []] or ["reward", "bonus"]
+    powerups = [str(item.get("name", "boost"))[:28] for item in mechanics.get("powerups") or []] or ["shield", "slow field"]
+    beats = brief.get("difficulty_beats") or ["opening", "pressure", "mastery"]
+    if archetype == "logic_grid":
+        waves = [
+            {"time": 0, "pressure": "learn", "note": beats[0]},
+            {"time": 18, "pressure": "optimize", "note": beats[min(1, len(beats) - 1)]},
+            {"time": 40, "pressure": "rush", "note": beats[-1]},
+        ]
+        tutorial = "click tiles to rotate the live route from IN to OUT"
+    elif archetype == "lane_runner":
+        waves = [
+            {"time": 0, "hazards": 1, "reward": 1, "note": beats[0]},
+            {"time": 12, "hazards": 2, "reward": 1, "note": beats[min(1, len(beats) - 1)]},
+            {"time": 28, "hazards": 3, "reward": 2, "note": "introduce paired lane reads"},
+            {"time": 45, "hazards": 4, "reward": 2, "note": beats[-1]},
+        ]
+        tutorial = "tap left or right to switch lanes; chase bonuses, not every gap"
+    else:
+        waves = [
+            {"time": 0, "hazards": 1, "reward": 2, "note": beats[0]},
+            {"time": 14, "hazards": 2, "reward": 2, "note": beats[min(1, len(beats) - 1)]},
+            {"time": 32, "hazards": 3, "reward": 3, "note": "use powerups to reset danger"},
+            {"time": 50, "hazards": 4, "reward": 3, "note": beats[-1]},
+        ]
+        tutorial = "move smoothly, collect chains, use powerups when the arena tightens"
+    return {
+        "tutorial": tutorial,
+        "waves": waves,
+        "hazard_names": enemy_names[:4],
+        "reward_names": reward_names[:4],
+        "powerups": powerups[:4],
+        "pacing": beats,
+        "mechanic_label": mechanics.get("secondary_action") or mechanics.get("primary_action") or "core loop",
+    }
+
+
+def _content_log_lines(plan: dict) -> list[str]:
+    return [
+        f"tutorial: {_clip(plan.get('tutorial'), 120)}",
+        "waves: " + "; ".join(f"{w.get('time')}s {w.get('note')}" for w in plan.get("waves", [])[:5]),
+        "hazards: " + ", ".join(plan.get("hazard_names") or []),
+        "rewards: " + ", ".join(plan.get("reward_names") or []),
+        "powerups: " + ", ".join(plan.get("powerups") or []),
+        f"mechanic label: {plan.get('mechanic_label')}",
+    ]
+
+
+def _route_archetype(spec: dict, prompt: str, brief: dict | None = None, mechanics: dict | None = None) -> dict:
+    if mechanics and mechanics.get("archetype_hint") in _ARCHETYPES:
+        archetype = mechanics["archetype_hint"]
+        meta = _ARCHETYPES[archetype]
+        return {"archetype": archetype, "genre": meta["genre"], "label": meta["label"], "core_loop": meta["loop"], "reason": "mechanic planner hint"}
     text = " ".join(
         str(value)
         for value in [
             prompt,
+            (brief or {}).get("player_fantasy"),
+            (brief or {}).get("objective"),
+            " ".join((brief or {}).get("mechanic_requirements") or []),
             spec.get("title"),
             spec.get("genre"),
             spec.get("theme"),
@@ -459,6 +648,8 @@ def _gameplay_qa(state: dict) -> dict:
     spec = state.get("game_spec") or {}
     design = state.get("game_design") or {}
     balance = state.get("balance_config") or design.get("balance") or {}
+    mechanics = state.get("mechanic_plan") or design.get("mechanic_plan") or {}
+    content = state.get("content_plan") or design.get("content_plan") or {}
     archetype = spec.get("archetype") or design.get("archetype") or "canvas_arcade"
     validation_result = state.get("validation_result") or {}
     files = state.get("generated_files") or []
@@ -486,6 +677,12 @@ def _gameplay_qa(state: dict) -> dict:
         warnings.append("target score may feel grindy for the round length")
     if "reset(" not in js or "document.getElementById(\"rs\").onclick" not in js:
         issues.append("restart path is not visible in generated code")
+    if len(mechanics.get("powerups") or []) < 2 and archetype != "logic_grid":
+        warnings.append("fewer than 2 powerups reduces replay variety")
+    if len(content.get("waves") or []) < 3:
+        issues.append("content plan needs at least 3 pacing waves")
+    if len(content.get("reward_names") or []) < 2 and archetype != "logic_grid":
+        warnings.append("reward table is thin")
 
     if archetype == "topdown_collect":
         if hazard_spawn < 1300:
@@ -521,6 +718,8 @@ def _gameplay_qa(state: dict) -> dict:
             "player_speed": player_speed,
             "player_to_hazard_ratio": ratio,
             "hazard_density_per_minute": density,
+            "content_waves": len(content.get("waves") or []),
+            "powerups": len(mechanics.get("powerups") or []),
         },
     }
 
@@ -642,10 +841,55 @@ def intent_spec_node(state: dict) -> dict:
     return {"game_spec": spec, "_agent": "IntentSpecAgent", "_logs": _spec_log_lines(spec, "offline heuristic")}
 
 
+def brief_expansion_node(state: dict) -> dict:
+    prompt = state.get("normalized_prompt") or state.get("prompt", "")
+    spec = state.get("game_spec") or {}
+    if state.get("use_real"):
+        try:
+            raw, tokens = llm.chat(
+                "Expand a short game prompt into compact JSON for a playable browser mini-game. Do not add unsafe APIs.",
+                (
+                    "Return JSON with keys player_fantasy, objective, core_verbs, mechanic_requirements, "
+                    "reward_loop, difficulty_beats, feedback, keywords, minimum_content. "
+                    f"Prompt: {prompt}\nSpec: {json.dumps(spec, ensure_ascii=False)}"
+                ),
+            )
+            brief = _coerce_brief(_parse_json(raw), prompt, spec)
+            return {"expanded_brief": brief, "_agent": "BriefExpansionAgent", "_tokens_delta": tokens, "_logs": _brief_log_lines(brief, "model brief expansion")}
+        except Exception as exc:  # noqa: BLE001
+            brief = _heuristic_brief(prompt, spec)
+            return {"expanded_brief": brief, "_agent": "BriefExpansionAgent", "_logs": [f"model failed: {_clip(exc, 120)}"] + _brief_log_lines(brief, "heuristic fallback")}
+    brief = _heuristic_brief(prompt, spec)
+    return {"expanded_brief": brief, "_agent": "BriefExpansionAgent", "_logs": _brief_log_lines(brief, "offline heuristic")}
+
+
+def mechanic_planner_node(state: dict) -> dict:
+    prompt = state.get("normalized_prompt") or state.get("prompt", "")
+    spec = state.get("game_spec") or {}
+    brief = state.get("expanded_brief") or _heuristic_brief(prompt, spec)
+    if state.get("use_real"):
+        try:
+            raw, tokens = llm.chat(
+                "Plan concrete mini-game mechanics as bounded JSON. Prefer proven mechanics over novelty.",
+                (
+                    "Return JSON with keys archetype_hint, primary_action, secondary_action, risk_model, reward_model, "
+                    "enemy_behaviors, reward_items, powerups, feedback, skill_tests. "
+                    f"Spec: {json.dumps(spec, ensure_ascii=False)}\nBrief: {json.dumps(brief, ensure_ascii=False)}"
+                ),
+            )
+            plan = _coerce_mechanic_plan(_parse_json(raw), spec, brief, prompt)
+            return {"mechanic_plan": plan, "_agent": "MechanicPlannerAgent", "_tokens_delta": tokens, "_logs": _mechanic_log_lines(plan, "model mechanic plan")}
+        except Exception as exc:  # noqa: BLE001
+            plan = _heuristic_mechanic_plan(spec, brief, prompt)
+            return {"mechanic_plan": plan, "_agent": "MechanicPlannerAgent", "_logs": [f"model failed: {_clip(exc, 120)}"] + _mechanic_log_lines(plan, "heuristic fallback")}
+    plan = _heuristic_mechanic_plan(spec, brief, prompt)
+    return {"mechanic_plan": plan, "_agent": "MechanicPlannerAgent", "_logs": _mechanic_log_lines(plan, "offline heuristic")}
+
+
 def archetype_router_node(state: dict) -> dict:
     prompt = state.get("normalized_prompt") or state.get("prompt", "")
     spec = dict(state.get("game_spec") or {})
-    result = _route_archetype(spec, prompt)
+    result = _route_archetype(spec, prompt, state.get("expanded_brief"), state.get("mechanic_plan"))
     spec["archetype"] = result["archetype"]
     spec["genre"] = result["genre"]
     spec["core_loop"] = result["core_loop"]
@@ -699,12 +943,33 @@ def game_design_node(state: dict) -> dict:
     return {"game_design": design, "_agent": "GameDesignAgent", "_logs": ["source: offline heuristic"] + _design_log_lines(design)}
 
 
+def content_plan_node(state: dict) -> dict:
+    spec = state.get("game_spec") or {}
+    brief = state.get("expanded_brief") or _heuristic_brief(state.get("normalized_prompt") or state.get("prompt", ""), spec)
+    mechanics = state.get("mechanic_plan") or _heuristic_mechanic_plan(spec, brief, state.get("normalized_prompt") or state.get("prompt", ""))
+    archetype = spec.get("archetype") or (state.get("archetype_result") or {}).get("archetype") or mechanics.get("archetype_hint") or "topdown_collect"
+    plan = _content_plan(archetype, spec, brief, mechanics)
+    design = dict(state.get("game_design") or _heuristic_design(spec))
+    design["mechanic_plan"] = mechanics
+    design["content_plan"] = plan
+    return {
+        "game_design": design,
+        "content_plan": plan,
+        "_agent": "ContentPlanAgent",
+        "_logs": _content_log_lines(plan),
+    }
+
+
 def balance_plan_node(state: dict) -> dict:
     prompt = state.get("normalized_prompt") or state.get("prompt", "")
     spec = dict(state.get("game_spec") or {})
     archetype = spec.get("archetype") or (state.get("archetype_result") or {}).get("archetype") or "topdown_collect"
     balance = _balance_plan(archetype, spec, prompt)
     design = _merge_balance_into_design(state.get("game_design") or _heuristic_design(spec), archetype, balance)
+    if state.get("mechanic_plan"):
+        design["mechanic_plan"] = state["mechanic_plan"]
+    if state.get("content_plan"):
+        design["content_plan"] = state["content_plan"]
     return {
         "game_spec": spec,
         "game_design": design,
@@ -724,6 +989,7 @@ def code_generation_node(state: dict) -> dict:
         f"selected template: {tname}",
         f"runtime config: archetype={cfg.get('archetype')}, duration={cfg.get('duration')}s, target={cfg.get('target_score')}, lives={cfg.get('lives')}",
         f"difficulty config: hazard_speed={cfg.get('hazard_speed')}, hazard_spawn={cfg.get('hazard_spawn_ms')}ms, max_hazards={cfg.get('max_hazards')}",
+        f"mechanic content: {cfg.get('mechanic_label')} with {cfg.get('wave_count')} wave(s)",
         f"control hint: {_clip(cfg.get('hint'), 90)}",
         f"game.js source: {mode}",
     ] + _file_log_lines(files)
