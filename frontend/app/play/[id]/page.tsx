@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   Box,
@@ -10,10 +10,13 @@ import {
   Maximize2,
   Minimize2,
   RefreshCw,
+  Share2,
   ShieldCheck,
+  Trophy,
 } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 
 import { api } from "@/lib/api";
 import type { Game } from "@/lib/types";
@@ -34,10 +37,13 @@ export default function PlayPage() {
   const stageRef = useRef<HTMLDivElement>(null);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const played = useRef(false);
+  const qc = useQueryClient();
   const { data: game, error, isLoading, refetch } = useQuery({
     queryKey: ["game", id],
     queryFn: () => api.game(id),
   });
+  const lbQ = useQuery({ queryKey: ["leaderboard", id], queryFn: () => api.leaderboard(id) });
+  const relatedQ = useQuery({ queryKey: ["related", id], queryFn: () => api.relatedGames(id) });
 
   const [phase, setPhase] = useState<Phase>("loading");
   const [runtime, setRuntime] = useState<Record<RuntimeKey, RuntimeStatus>>(INITIAL_RUNTIME);
@@ -59,23 +65,35 @@ export default function PlayPage() {
     setActivity((current) => [...current.slice(-3), line]);
   };
 
-  const runLoad = (nextGame: Game) => {
+  const runLoad = async (nextGame: Game) => {
     clearTimers();
     setPhase("loading");
     setRuntime({ manifest: "running", sandbox: "pending", bundle: "pending" });
-    setActivity(["Resolving manifest from object storage"]);
+    setActivity(["Fetching manifest from object storage…"]);
 
-    const T = timers.current;
-    T.push(setTimeout(() => {
+    // 真实拉取 manifest（后端从 OSS 读取），替代此前的纯动画
+    try {
+      const m = await api.gameManifest(nextGame.id);
       patchRuntime("manifest", "ready");
-      patchRuntime("sandbox", "running");
-      addActivity("Manifest verified. Preparing isolated browser runtime");
-    }, 420));
+      const sha = m.sha256 ? ` · sha256=${String(m.sha256).slice(0, 12)}` : "";
+      addActivity(
+        `Manifest ${m._source === "oss" ? "fetched from OSS" : "resolved"} ✓ entry=${m.entry || "index.html"} · runtime=${m.runtime || "iframe"}${sha}`,
+      );
+    } catch {
+      patchRuntime("manifest", "failed");
+      addActivity("Manifest fetch failed");
+      setPhase("error");
+      return;
+    }
+
+    patchRuntime("sandbox", "running");
+    addActivity("Preparing isolated browser runtime");
+    const T = timers.current;
     T.push(setTimeout(() => {
       patchRuntime("sandbox", "ready");
       patchRuntime("bundle", "running");
       addActivity("Sandbox ready. Mounting generated bundle");
-    }, 950));
+    }, 400));
     T.push(setTimeout(() => {
       if (!nextGame.bundle_url) {
         patchRuntime("bundle", "failed");
@@ -87,7 +105,7 @@ export default function PlayPage() {
       addActivity("Bundle mounted. Starting preview");
       setIframeKey((key) => key + 1);
       setPhase("ready");
-    }, 1450));
+    }, 850));
   };
 
   useEffect(() => {
@@ -120,6 +138,21 @@ export default function PlayPage() {
     if (error) setPhase("error");
   }, [error]);
 
+  // iframe 游戏可回传分数：window.parent.postMessage({type:"playforge:score", points, name})
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const d = event.data;
+      if (d && typeof d === "object" && d.type === "playforge:score" && typeof d.points === "number") {
+        api
+          .submitScore(id, Math.max(0, Math.floor(d.points)), typeof d.name === "string" ? d.name : undefined)
+          .then(() => qc.invalidateQueries({ queryKey: ["leaderboard", id] }))
+          .catch(() => {});
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [id, qc]);
+
   const restart = () => {
     if (!game) return;
     played.current = false;
@@ -130,6 +163,16 @@ export default function PlayPage() {
     if (played.current) return;
     played.current = true;
     api.play(id).catch(() => {});
+  };
+
+  const share = async () => {
+    const url = typeof window !== "undefined" ? window.location.href : "";
+    try {
+      if (navigator.share) await navigator.share({ title: game?.title || "PlayForge game", url });
+      else await navigator.clipboard.writeText(url);
+    } catch {
+      /* cancelled */
+    }
   };
 
   const toggleFullScreen = async () => {
@@ -181,6 +224,10 @@ export default function PlayPage() {
             {isFullScreen || isTheater ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
             {isFullScreen || isTheater ? "Exit Fullscreen" : "Fullscreen"}
           </button>
+          <button onClick={share} type="button">
+            <Share2 size={17} />
+            Share
+          </button>
         </div>
       </header>
 
@@ -194,6 +241,34 @@ export default function PlayPage() {
             {game?.oss_path && <span>{game.oss_path}</span>}
           </div>
           <RuntimeList runtime={runtime} />
+          {(lbQ.data?.items?.length ?? 0) > 0 && (
+            <div style={panelStyle}>
+              <h3 style={panelTitle}>
+                <Trophy size={14} /> Leaderboard
+              </h3>
+              <ol style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+                {lbQ.data!.items.map((s) => (
+                  <li key={`${s.rank}-${s.name}`} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5, color: "#cdc7bb" }}>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.rank}. {s.name}</span>
+                    <strong style={{ color: "#faf8f3" }}>{s.points}</strong>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+          {(relatedQ.data?.items?.length ?? 0) > 0 && (
+            <div style={panelStyle}>
+              <h3 style={panelTitle}>More games</h3>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {relatedQ.data!.items.slice(0, 4).map((r) => (
+                  <button key={r.id} onClick={() => router.push(`/play/${r.id}`)} type="button" style={{ display: "flex", gap: 10, alignItems: "center", textAlign: "left", border: "1px solid #2c2823", background: "#161412", cursor: "pointer", borderRadius: 9, padding: 7 }}>
+                    <span style={{ width: 42, height: 30, borderRadius: 6, flex: "none", background: coverBg(r.cover) }} />
+                    <b style={{ fontSize: 12.5, color: "#faf8f3", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title}</b>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
 
         <section className={`pf-play-stage-shell is-${phase}${isTheater ? " is-theater" : ""}`} ref={stageRef}>
@@ -298,4 +373,28 @@ function runtimeLabel(status: RuntimeStatus) {
   if (status === "running") return "Running";
   if (status === "failed") return "Failed";
   return "Pending";
+}
+
+const panelStyle: CSSProperties = {
+  marginTop: 14,
+  background: "#1b1916",
+  border: "1px solid #2c2823",
+  borderRadius: 12,
+  padding: "13px 14px",
+};
+
+const panelTitle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  color: "#faf8f3",
+  fontSize: 13,
+  fontWeight: 700,
+  fontFamily: "'Space Grotesk'",
+  marginBottom: 10,
+};
+
+function coverBg(cover: string) {
+  if (cover && (cover.startsWith("/") || cover.startsWith("http"))) return `url("${cover}") center / cover`;
+  return cover || "linear-gradient(135deg,#101844,#4f7dff)";
 }

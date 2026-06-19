@@ -321,3 +321,33 @@ def leaderboard(game_id: str, db: Session = Depends(get_db)):
         .all()
     )
     return {"items": [score_out(s, rank=i + 1) for i, s in enumerate(rows)]}
+
+
+@router.get("/games/{game_id}/manifest")
+def game_manifest(game_id: str, db: Session = Depends(get_db)):
+    """从对象存储真实读取 manifest.json（证明远端产物），失败回退 DB 版本元信息。"""
+    import json as _json
+
+    from app.models import GameVersion
+    from app.storage import s3
+
+    g = db.get(Game, game_id)
+    if not g:
+        raise HTTPException(status_code=404, detail="Game not found")
+    key = f"games/{g.id}/{g.current_version}/manifest.json"
+    raw = s3.get_object(key)
+    if raw:
+        try:
+            data = _json.loads(raw.decode("utf-8"))
+            data["_source"] = "oss"
+            data["_url"] = s3.public_url(key)
+            return data
+        except Exception:  # noqa: BLE001
+            pass
+    v = db.query(GameVersion).filter_by(game_id=g.id, version=g.current_version).first()
+    if not v:
+        raise HTTPException(status_code=404, detail="Manifest not found")
+    return {
+        "entry": v.entry, "runtime": v.runtime, "sha256": v.sha256, "size": v.size_bytes,
+        "_source": "db", "_url": s3.public_url(key),
+    }

@@ -75,3 +75,12 @@ def test_non_owner_cannot_delete(client, db_session_factory):
     gid = _seed_game(db_session_factory, title="NotMine")
     h, _ = _auth(client, email="x@x.com")
     assert client.delete(f"/games/{gid}", headers=h).status_code == 403
+
+
+def test_manifest_endpoint(client, db_session_factory):
+    gid = _seed_game(db_session_factory)
+    r = client.get(f"/games/{gid}/manifest")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["entry"] == "index.html"
+    assert body["_source"] == "oss"

@@ -37,6 +37,13 @@ def put_object(key: str, body: bytes | str, content_type: str) -> str:
     return key
 
 
+def get_object(key: str) -> bytes | None:
+    try:
+        return client().get_object(Bucket=settings.S3_BUCKET, Key=key)["Body"].read()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def public_url(key: str) -> str:
     """浏览器可直接访问的远端地址（桶 games 前缀已设匿名只读）。"""
     return f"{settings.S3_PUBLIC_ENDPOINT}/{settings.S3_BUCKET}/{key}"

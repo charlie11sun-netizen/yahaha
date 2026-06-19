@@ -16,6 +16,7 @@ class LoginIn(BaseModel):
 class ProfileUpdateIn(BaseModel):
     display_name: str | None = Field(default=None, min_length=1, max_length=120)
     email: EmailStr | None = None
+    avatar: str | None = Field(default=None, max_length=8)
 
 
 class ChangePasswordIn(BaseModel):

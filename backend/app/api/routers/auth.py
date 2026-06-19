@@ -55,6 +55,8 @@ def update_me(body: ProfileUpdateIn, user: User = Depends(get_current_user), db:
         if db.query(User).filter(User.email == body.email, User.id != user.id).first():
             raise HTTPException(status_code=409, detail="Email already in use")
         user.email = body.email
+    if body.avatar is not None and body.avatar.strip():
+        user.avatar_initial = body.avatar.strip()[:4]
     db.commit()
     db.refresh(user)
     return user_out(user)

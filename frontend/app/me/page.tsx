@@ -141,6 +141,17 @@ function StudioPage() {
     }
   };
 
+  const setAvatar = async (avatar: string) => {
+    try {
+      const updated = await api.updateMe({ avatar });
+      const token = localStorage.getItem("pf_token");
+      if (token) setSession(token, updated);
+      flash("Avatar updated");
+    } catch {
+      flash("Could not update avatar");
+    }
+  };
+
   const changePassword = async () => {
     if (newPassword.length < 6) {
       flash("New password must be at least 6 characters");
@@ -370,6 +381,21 @@ function StudioPage() {
                     <span>Email</span>
                     <input onChange={(event) => setEmail(event.target.value)} type="email" value={email} />
                   </label>
+                  <div style={{ marginTop: 4 }}>
+                    <span style={{ display: "block", fontSize: 12.5, fontWeight: 600, color: "#5c574e", marginBottom: 8 }}>Avatar</span>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      {["🎮", "🕹️", "👾", "🚀", "🐱", "🌟", "🔥", "🎨"].map((emoji) => (
+                        <button
+                          key={emoji}
+                          onClick={() => setAvatar(emoji)}
+                          type="button"
+                          style={{ width: 38, height: 38, borderRadius: 10, border: `1px solid ${user.init === emoji ? "#ff6b35" : "#e8e3d8"}`, background: user.init === emoji ? "#fff1ea" : "#fff", cursor: "pointer", fontSize: 18 }}
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                   <div className="pf-studio-settings-actions">
                     <button className="pf-studio-primary" disabled={savingProfile} onClick={saveProfile} type="button">
                       <BadgeCheck size={16} />

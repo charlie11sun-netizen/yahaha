@@ -67,6 +67,10 @@ def client(db_session_factory, monkeypatch):
     )
     monkeypatch.setattr(s3, "ensure_bucket", lambda: None)
     monkeypatch.setattr(
+        s3, "get_object",
+        lambda key: b'{"entry": "index.html", "runtime": "iframe-html", "sha256": "deadbeef"}',
+    )
+    monkeypatch.setattr(
         "app.api.routers.tasks.generate_game",
         types.SimpleNamespace(delay=lambda *a, **k: None),
     )

@@ -53,7 +53,7 @@ export const api = {
   login: (email: string, password: string) =>
     req<{ token: string; user: User }>("/auth/login", { json: { email, password } }),
   me: () => req<User>("/auth/me"),
-  updateMe: (patch: { display_name?: string; email?: string }) =>
+  updateMe: (patch: { display_name?: string; email?: string; avatar?: string }) =>
     req<User>("/auth/me", { method: "PATCH", json: patch }),
   changePassword: (current_password: string, new_password: string) =>
     req<{ ok: boolean }>("/auth/change-password", { json: { current_password, new_password } }),
@@ -106,6 +106,8 @@ export const api = {
     req<{ items: { rank: number; name: string; points: number; ago: string }[] }>(`/games/${id}/leaderboard`),
   submitScore: (id: string, points: number, player_name?: string) =>
     req<{ ok: boolean }>(`/games/${id}/score`, { json: { points, player_name } }),
+  gameManifest: (id: string) =>
+    req<{ entry?: string; runtime?: string; sha256?: string; _source?: string; _url?: string }>(`/games/${id}/manifest`),
 
   upload: (files: FileList | File[]) => {
     const fd = new FormData();
