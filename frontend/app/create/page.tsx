@@ -36,17 +36,21 @@ import type { AgentLogItem, StepSummary, Task, UploadedAsset } from "@/lib/types
 
 const DRAFT_KEY = "pf_create_draft_v2";
 const LAST_TASK_KEY = "pf_last_create_task";
+const GAMEPLAY_STEP_KEYS = ["gameplay_qa", "gameplay_repair"] as const;
 
-const USER_STEPS = [
+type UserStep = { key: string; label: string; backendKeys?: readonly string[]; optional?: boolean };
+
+const USER_STEPS: UserStep[] = [
   { key: "safety_intake", label: "Idea checked" },
-  { key: "intent_spec", label: "Game spec created" },
+  { key: "intent_spec", label: "Game spec created", backendKeys: ["intent_spec", "archetype_router"] },
   { key: "asset_processing", label: "Assets processed" },
-  { key: "game_design", label: "Game designed" },
+  { key: "game_design", label: "Game designed", backendKeys: ["game_design", "balance_plan"] },
   { key: "code_generation", label: "Files generated" },
-  { key: "build_validation", label: "Validating build" },
+  { key: "build_validation", label: "Validating build", backendKeys: ["build_validation", "static_validation"] },
+  { key: "gameplay_qa", label: "Playtesting game", backendKeys: GAMEPLAY_STEP_KEYS, optional: true },
   { key: "publish_artifact", label: "Preparing preview" },
   { key: "ready", label: "Ready to publish" },
-] as const;
+];
 
 type StepState = "pending" | "running" | "completed" | "failed";
 type StepRow = { key: string; label: string; status: StepState; summary?: string | null };
@@ -545,7 +549,7 @@ function ProgressCard({
         <div className="pf-progress-title">
           <h2>{statusTitle}</h2>
           <p>
-            Step {Math.min(activeIndex + 1, USER_STEPS.length)} of {USER_STEPS.length}
+            Step {Math.min(activeIndex + 1, rows.length)} of {rows.length}
             <span> - </span>
             {activeStep?.label || "Preparing task"}
           </p>
@@ -622,6 +626,7 @@ function PreviewCard({ now, task }: { now: number; task?: Task }) {
   const active = isActiveTask(task?.status);
   const failed = task?.status === "failed";
   const cancelled = task?.status === "cancelled";
+  const gameplayStatus = getGameplayQaStatus(task);
   const statusLine = succeeded
     ? "Preview ready"
     : failed
@@ -655,6 +660,9 @@ function PreviewCard({ now, task }: { now: number; task?: Task }) {
 
       <div className="pf-runtime-list">
         <RuntimeRow ready label="Sandbox ready" />
+        {gameplayStatus && (
+          <RuntimeRow label={gameplayRuntimeLabel(gameplayStatus)} ready={gameplayStatus === "completed"} />
+        )}
         <RuntimeRow label={succeeded ? "Manifest uploaded" : "Manifest pending"} ready={Boolean(task?.manifest_url)} />
         <RuntimeRow label={succeeded ? "Bundle ready" : "Bundle pending"} ready={Boolean(succeeded)} />
       </div>
@@ -743,6 +751,7 @@ function ActionPanel({
 
 function ActivityDrawer({ onClose, task }: { onClose: () => void; task?: Task }) {
   const logs = task?.logs ?? [];
+  const gameplayStatus = getGameplayQaStatus(task);
 
   return (
     <div className="pf-drawer-backdrop" onClick={onClose}>
@@ -763,6 +772,7 @@ function ActivityDrawer({ onClose, task }: { onClose: () => void; task?: Task })
             <TechItem label="Task status" value={task?.status || "No active task"} />
             <TechItem label="Manifest" value={task?.manifest_url || "Pending"} />
             <TechItem label="Preview" value={task?.preview_url || "Pending"} />
+            {gameplayStatus && <TechItem label="Gameplay QA" value={gameplayTechLabel(gameplayStatus)} />}
             <TechItem label="Repair attempts" value={`${task?.repair_attempts ?? 0}/${task?.max_repair_attempts ?? 2}`} />
             <TechItem label="Replan attempts" value={`${task?.replan_attempts ?? 0}/${task?.max_replan_attempts ?? 1}`} />
             <TechItem label="Tokens" value={(task?.tokens ?? 0).toLocaleString()} />
@@ -856,7 +866,8 @@ function TechItem({ label, value }: { label: string; value: string }) {
 
 function buildStepRows(task?: Task): StepRow[] {
   const backend = new Map<string, StepSummary>((task?.step_summaries ?? []).map((step) => [step.step, step]));
-  const rows = USER_STEPS.map((step) => {
+  const visibleSteps = USER_STEPS.filter((step) => !step.optional || stepHasBackendSummary(step, backend));
+  const rows = visibleSteps.map((step) => {
     if (step.key === "ready") {
       return {
         key: step.key,
@@ -864,12 +875,12 @@ function buildStepRows(task?: Task): StepRow[] {
         status: task?.status === "succeeded" ? "completed" : "pending",
       } satisfies StepRow;
     }
-    const summary = backend.get(step.key);
+    const summaries = stepSummariesFor(step, backend);
     return {
       key: step.key,
       label: step.label,
-      status: normalizeStatus(summary?.status),
-      summary: summary?.summary,
+      status: mergedStepStatus(summaries),
+      summary: displayStepSummary(summaries),
     } satisfies StepRow;
   });
 
@@ -884,6 +895,38 @@ function buildStepRows(task?: Task): StepRow[] {
   }
 
   return rows;
+}
+
+function stepKeys(step: UserStep) {
+  return step.backendKeys ?? [step.key];
+}
+
+function stepSummariesFor(step: UserStep, backend: Map<string, StepSummary>) {
+  return stepKeys(step)
+    .map((key) => backend.get(key))
+    .filter((summary): summary is StepSummary => Boolean(summary));
+}
+
+function stepHasBackendSummary(step: UserStep, backend: Map<string, StepSummary>) {
+  return stepSummariesFor(step, backend).length > 0;
+}
+
+function mergedStepStatus(summaries: StepSummary[]): StepState {
+  if (summaries.length === 0) return "pending";
+  const statuses = summaries.map((summary) => normalizeStatus(summary.status));
+  if (statuses.includes("running")) return "running";
+  if (statuses.includes("failed")) return "failed";
+  if (statuses.every((status) => status === "completed")) return "completed";
+  return "pending";
+}
+
+function displayStepSummary(summaries: StepSummary[]) {
+  return (
+    summaries.find((summary) => normalizeStatus(summary.status) === "running")?.summary ||
+    summaries.find((summary) => normalizeStatus(summary.status) === "failed")?.summary ||
+    [...summaries].reverse().find((summary) => summary.summary)?.summary ||
+    null
+  );
 }
 
 function getActiveStepIndex(rows: StepRow[], task?: Task) {
@@ -971,6 +1014,20 @@ function getCurrentIssue(task: Task | undefined, activeStep?: StepRow) {
       message: `Replanning a simpler playable version - Attempt ${task.replan_attempts} of ${task.max_replan_attempts || 1}.`,
     };
   }
+  if (activeStep?.key === "gameplay_qa" && activeStep.status === "running") {
+    return {
+      level: "warning" as const,
+      title: "Playtest running",
+      message: latestReadableLog(task) || "Checking restart, input response, scoring, and difficulty before preview.",
+    };
+  }
+  if (activeStep?.key === "gameplay_qa" && activeStep.status === "failed") {
+    return {
+      level: "error" as const,
+      title: "Gameplay issue found",
+      message: latestReadableLog(task) || "The generated game needs a balance or logic repair before publishing.",
+    };
+  }
   return null;
 }
 
@@ -1021,6 +1078,8 @@ function friendlyMessage(message: string) {
   const compact = message.replace(/\s+/g, " ").trim();
   const lower = compact.toLowerCase();
   if (lower.includes("repair")) return "Repair attempt started";
+  if (lower.includes("playtest") || lower.includes("gameplay") || lower.includes("qa")) return "Gameplay playtest updated";
+  if (lower.includes("difficulty") || lower.includes("balance")) return "Difficulty balance adjusted";
   if (lower.includes("validation") && lower.includes("issue")) return "Validation found an issue";
   if (lower.includes("asset")) return "Assets processed successfully";
   if (lower.includes("manifest")) return "Manifest uploaded";
@@ -1028,6 +1087,25 @@ function friendlyMessage(message: string) {
   if (lower.includes("design")) return "Game designed";
   if (lower.includes("code")) return "Files generated";
   return compact.length > 86 ? `${compact.slice(0, 83)}...` : compact || "Task updated";
+}
+
+function getGameplayQaStatus(task?: Task): StepState | null {
+  const summaries = (task?.step_summaries ?? []).filter((summary) => GAMEPLAY_STEP_KEYS.includes(summary.step as (typeof GAMEPLAY_STEP_KEYS)[number]));
+  return summaries.length > 0 ? mergedStepStatus(summaries) : null;
+}
+
+function gameplayRuntimeLabel(status: StepState) {
+  if (status === "completed") return "Playtest passed";
+  if (status === "running") return "Playtest running";
+  if (status === "failed") return "Playtest needs repair";
+  return "Playtest pending";
+}
+
+function gameplayTechLabel(status: StepState) {
+  if (status === "completed") return "Passed";
+  if (status === "running") return "Running";
+  if (status === "failed") return "Needs repair";
+  return "Pending";
 }
 
 function isActiveTask(status?: string) {
