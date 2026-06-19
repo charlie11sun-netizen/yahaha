@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 import app.models  # noqa: F401  注册所有表到 Base.metadata
-from app.api.routers import auth, games, oauth, tasks, uploads
+from app.api.routers import auth, games, oauth, tasks, uploads, users
 from app.core.config import settings
 from app.db.base import Base
 from app.db.session import engine
@@ -66,6 +66,7 @@ app.include_router(oauth.router)
 app.include_router(games.router)
 app.include_router(tasks.router)
 app.include_router(uploads.router)
+app.include_router(users.router)
 
 
 @app.get("/health")

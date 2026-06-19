@@ -56,6 +56,7 @@ def game_card(g) -> dict:
         "status": g.status,
         "author": g.author.display_name if g.author else "—",
         "author_init": g.author.avatar_initial if g.author else "?",
+        "author_id": g.author_id,
         "tags": [t.name for t in g.tags],
         "plays": g.plays_count,
         "plays_str": fmt(g.plays_count),
@@ -83,6 +84,23 @@ def user_out(u) -> dict:
         "init": u.avatar_initial,
         "created_at": _iso(u.created_at),
     }
+
+
+def comment_out(c) -> dict:
+    return {
+        "id": c.id,
+        "body": c.body,
+        "created_at": _iso(c.created_at),
+        "ago": relative_time(c.created_at),
+        "author": c.user.display_name if c.user else "—",
+        "author_init": c.user.avatar_initial if c.user else "?",
+        "author_id": c.user_id,
+    }
+
+
+def score_out(s, rank: int | None = None) -> dict:
+    name = s.player_name or (s.user.display_name if s.user else "Anonymous")
+    return {"rank": rank, "name": name, "points": s.points, "ago": relative_time(s.created_at)}
 
 
 def _parse(raw):

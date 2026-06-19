@@ -14,11 +14,15 @@ from app.models.task import (
     GenerationTask,
     task_assets,
 )
+from app.models.social import Comment, Follow, Score
 from app.models.user import OAuthAccount, User
 
 __all__ = [
     "User",
     "OAuthAccount",
+    "Comment",
+    "Follow",
+    "Score",
     "Game",
     "GameVersion",
     "Tag",

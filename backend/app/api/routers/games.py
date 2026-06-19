@@ -6,10 +6,10 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_optional_user, rate_limit
 from app.db.session import get_db
-from app.models import Favorite, Game, Like, PlayEvent, Tag
+from app.models import Comment, Favorite, Game, Like, PlayEvent, Score, Tag
 from app.models.common import GameStatus, now_utc
-from app.schemas import GameUpdateIn
-from app.services.serialize import fmt, game_card, game_detail
+from app.schemas import CommentIn, GameUpdateIn, ScoreIn
+from app.services.serialize import comment_out, fmt, game_card, game_detail, score_out
 
 router = APIRouter(tags=["games"])
 
@@ -245,3 +245,79 @@ def delete_game(game_id: str, user=Depends(get_current_user), db: Session = Depe
     db.delete(g)
     db.commit()
     return {"ok": True}
+
+
+# ---------- comments ----------
+@router.get("/games/{game_id}/comments")
+def list_comments(game_id: str, db: Session = Depends(get_db)):
+    rows = (
+        db.query(Comment)
+        .filter(Comment.game_id == game_id)
+        .order_by(Comment.created_at.desc())
+        .limit(100)
+        .all()
+    )
+    return {"items": [comment_out(c) for c in rows]}
+
+
+@router.post("/games/{game_id}/comments", dependencies=[Depends(rate_limit(30, 3600, "comment"))])
+def add_comment(game_id: str, body: CommentIn, user=Depends(get_current_user), db: Session = Depends(get_db)):
+    if not db.get(Game, game_id):
+        raise HTTPException(status_code=404, detail="Game not found")
+    c = Comment(game_id=game_id, user_id=user.id, body=body.body.strip())
+    db.add(c)
+    db.commit()
+    db.refresh(c)
+    return comment_out(c)
+
+
+@router.delete("/games/{game_id}/comments/{comment_id}")
+def delete_comment(game_id: str, comment_id: str, user=Depends(get_current_user), db: Session = Depends(get_db)):
+    c = db.get(Comment, comment_id)
+    if not c or c.game_id != game_id:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    game = db.get(Game, game_id)
+    if c.user_id != user.id and (not game or game.author_id != user.id):
+        raise HTTPException(status_code=403, detail="Not allowed")
+    db.delete(c)
+    db.commit()
+    return {"ok": True}
+
+
+# ---------- related ----------
+@router.get("/games/{game_id}/related")
+def related_games(game_id: str, limit: int = 6, db: Session = Depends(get_db)):
+    g = db.get(Game, game_id)
+    if not g:
+        raise HTTPException(status_code=404, detail="Game not found")
+    tag_names = {t.name for t in g.tags}
+    scored = []
+    for c in _published(db).filter(Game.id != g.id).all():
+        overlap = len(tag_names & {t.name for t in c.tags}) + (1 if c.genre == g.genre else 0)
+        scored.append((overlap, c.plays_count, c))
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    picks = [c for _, _, c in scored[: max(1, min(limit, 12))]]
+    return {"items": [game_card(c) for c in picks]}
+
+
+# ---------- scores / leaderboard ----------
+@router.post("/games/{game_id}/score", dependencies=[Depends(rate_limit(60, 3600, "score"))])
+def submit_score(game_id: str, body: ScoreIn, user=Depends(get_optional_user), db: Session = Depends(get_db)):
+    if not db.get(Game, game_id):
+        raise HTTPException(status_code=404, detail="Game not found")
+    name = (body.player_name or (user.display_name if user else "Anonymous")).strip()[:80] or "Anonymous"
+    db.add(Score(game_id=game_id, user_id=user.id if user else None, player_name=name, points=body.points))
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/games/{game_id}/leaderboard")
+def leaderboard(game_id: str, db: Session = Depends(get_db)):
+    rows = (
+        db.query(Score)
+        .filter(Score.game_id == game_id)
+        .order_by(Score.points.desc(), Score.created_at.asc())
+        .limit(10)
+        .all()
+    )
+    return {"items": [score_out(s, rank=i + 1) for i, s in enumerate(rows)]}

@@ -29,6 +29,15 @@ class GameUpdateIn(BaseModel):
     tags: list[str] | None = None
 
 
+class CommentIn(BaseModel):
+    body: str = Field(min_length=1, max_length=2000)
+
+
+class ScoreIn(BaseModel):
+    points: int = Field(ge=0, le=100_000_000)
+    player_name: str | None = Field(default=None, max_length=80)
+
+
 class TaskCreateIn(BaseModel):
     idea: str = Field(min_length=1)
     asset_ids: list[str] = []
