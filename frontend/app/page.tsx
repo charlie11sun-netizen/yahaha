@@ -208,15 +208,16 @@ export default function HomePage() {
   const [activeFilter, setActiveFilter] = useState("All");
 
   const [limit, setLimit] = useState(12);
+  const [sort, setSort] = useState<"newest" | "popular">("newest");
   const backendTag = activeFilter === "AI Generated" ? "All" : activeFilter;
   const gamesQ = useQuery({
-    queryKey: ["games", query, backendTag, limit],
-    queryFn: () => api.games(query, backendTag, { limit }),
+    queryKey: ["games", query, backendTag, sort, limit],
+    queryFn: () => api.games(query, backendTag, { sort, limit }),
   });
 
   useEffect(() => {
     setLimit(12);
-  }, [query, activeFilter]);
+  }, [query, activeFilter, sort]);
   const allGamesQ = useQuery({
     queryKey: ["games", "", "All"],
     queryFn: () => api.games("", "All"),
@@ -255,6 +256,13 @@ export default function HomePage() {
   const goCreate = () => router.push("/create");
   const goDetail = (id?: string) => (id ? router.push(`/games/${id}`) : scrollToId("explore"));
   const goPlay = (id?: string) => (id ? router.push(`/play/${id}`) : scrollToId("explore"));
+  const goFooter = (label: string) => {
+    const map: Record<string, string> = {
+      Explore: "/", Create: "/create", "My Games": "/me", "How It Works": "/#how",
+      About: "/about", Contact: "/about", Blog: "/about", Careers: "/about", Documentation: "/about",
+    };
+    router.push(map[label] || "/");
+  };
 
   return (
     <div className="pf-page">
@@ -391,6 +399,18 @@ export default function HomePage() {
               </button>
             ))}
           </div>
+          <div style={{ display: "flex", gap: 6 }} aria-label="Sort games">
+            {(["newest", "popular"] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => setSort(s)}
+                type="button"
+                style={{ border: "1px solid #e8e3d8", background: sort === s ? "#181613" : "#fff", color: sort === s ? "#fff" : "#5c574e", cursor: "pointer", fontWeight: 600, fontSize: 12.5, padding: "7px 13px", borderRadius: 9, textTransform: "capitalize" }}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
         </div>
 
         {gamesQ.isLoading ? (
@@ -477,16 +497,16 @@ export default function HomePage() {
             <div className="pf-footer-col" key={column.title}>
               <strong>{column.title}</strong>
               {column.links.map((link) => (
-                <button key={link} type="button">
+                <button key={link} onClick={() => goFooter(link)} type="button">
                   {link}
                 </button>
               ))}
             </div>
           ))}
           <div className="pf-footer-links">
-            <button type="button">Privacy Policy</button>
-            <button type="button">Terms of Service</button>
-            <button type="button">Docs</button>
+            <button onClick={() => router.push("/privacy")} type="button">Privacy Policy</button>
+            <button onClick={() => router.push("/terms")} type="button">Terms of Service</button>
+            <button onClick={() => router.push("/about")} type="button">Docs</button>
           </div>
           <p className="pf-copyright">&copy; 2024 PlayForge AI. All rights reserved.</p>
         </div>

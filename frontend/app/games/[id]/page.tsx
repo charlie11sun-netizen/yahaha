@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/lib/toast";
+import type { Comment, Game } from "@/lib/types";
 
 const ORANGE = "#ff6b35";
 const mono = "'IBM Plex Mono'";
@@ -28,6 +29,10 @@ export default function DetailPage() {
   const { user } = useAuth();
   const flash = useToast();
   const qc = useQueryClient();
+  const commentsQ = useQuery({ queryKey: ["comments", id], queryFn: () => api.comments(id) });
+  const relatedQ = useQuery({ queryKey: ["related", id], queryFn: () => api.relatedGames(id) });
+  const [commentText, setCommentText] = useState("");
+  const [posting, setPosting] = useState(false);
   const [liked, setLiked] = useState(false);
   const [favorited, setFavorited] = useState(false);
   const [likes, setLikes] = useState(0);
@@ -51,6 +56,29 @@ export default function DetailPage() {
     qc.invalidateQueries({ queryKey: ["me-favorites"] });
   };
 
+  const share = async () => {
+    const url = window.location.href;
+    try {
+      if (navigator.share) await navigator.share({ title: g.title, url });
+      else { await navigator.clipboard.writeText(url); flash("Link copied"); }
+    } catch { /* cancelled */ }
+  };
+  const postComment = async () => {
+    if (!user) { flash("Sign in to comment"); router.push("/login"); return; }
+    const body = commentText.trim();
+    if (!body) return;
+    try {
+      setPosting(true);
+      await api.addComment(g.id, body);
+      setCommentText("");
+      qc.invalidateQueries({ queryKey: ["comments", id] });
+    } catch { flash("Could not post comment"); } finally { setPosting(false); }
+  };
+  const removeComment = async (cid: string) => {
+    try { await api.deleteComment(g.id, cid); qc.invalidateQueries({ queryKey: ["comments", id] }); }
+    catch { flash("Could not delete"); }
+  };
+
   return (
     <div style={{ maxWidth: 980, width: "100%", margin: "0 auto", padding: "24px 28px 80px" }}>
       <button onClick={() => router.push("/")} style={{ border: "none", background: "none", cursor: "pointer", color: "#7a756c", fontSize: 14, fontWeight: 500, marginBottom: 20, padding: "6px 0" }}>← Back to arcade</button>
@@ -69,14 +97,17 @@ export default function DetailPage() {
         <div>
           <h1 style={{ fontFamily: "'Space Grotesk'", fontSize: 34, fontWeight: 700, letterSpacing: "-.02em", lineHeight: 1.1, marginBottom: 12 }}>{g.title}</h1>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
-            <div style={{ width: 30, height: 30, borderRadius: "50%", background: "#181613", color: "#faf8f3", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, fontFamily: "'Space Grotesk'" }}>{g.author_init}</div>
-            <span style={{ fontSize: 14.5, fontWeight: 600 }}>{g.author}</span>
+            <button onClick={() => router.push(`/users/${g.author_id}`)} style={{ display: "inline-flex", alignItems: "center", gap: 10, border: "none", background: "none", cursor: "pointer", padding: 0 }}>
+              <div style={{ width: 30, height: 30, borderRadius: "50%", background: "#181613", color: "#faf8f3", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, fontFamily: "'Space Grotesk'" }}>{g.author_init}</div>
+              <span style={{ fontSize: 14.5, fontWeight: 600 }}>{g.author}</span>
+            </button>
             <span style={{ color: "#cfc8b8" }}>·</span>
             <span style={{ fontSize: 13.5, color: "#7a756c" }}>{g.date}</span>
           </div>
           <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
             <button onClick={toggleLike} style={pillBtn(liked)}>{liked ? "♥" : "♡"} {likes}</button>
             <button onClick={toggleFav} style={pillBtn(favorited)}>{favorited ? "★" : "☆"} 收藏</button>
+            <button onClick={share} style={pillBtn(false)}>↗ Share</button>
           </div>
           <p style={{ fontSize: 15.5, color: "#3a362f", lineHeight: 1.6, marginBottom: 20 }}>{g.summary}</p>
           <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 22 }}>
@@ -99,9 +130,88 @@ export default function DetailPage() {
           )}
         </div>
       </div>
+
+      <RelatedAndComments
+        related={relatedQ.data?.items ?? []}
+        comments={commentsQ.data?.items ?? []}
+        commentText={commentText}
+        setCommentText={setCommentText}
+        onPost={postComment}
+        posting={posting}
+        onDelete={removeComment}
+        canModerate={(authorId) => !!user && (user.id === authorId || user.id === g.author_id)}
+        onOpen={(rid) => router.push(`/games/${rid}`)}
+      />
     </div>
   );
 }
+
+function RelatedAndComments(props: {
+  related: Game[];
+  comments: Comment[];
+  commentText: string;
+  setCommentText: (v: string) => void;
+  onPost: () => void;
+  posting: boolean;
+  onDelete: (id: string) => void;
+  canModerate: (authorId: string) => boolean;
+  onOpen: (id: string) => void;
+}) {
+  const { related, comments, commentText, setCommentText, onPost, posting, onDelete, canModerate, onOpen } = props;
+  return (
+    <div style={{ marginTop: 40, display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 30, alignItems: "start" }}>
+      <div>
+        <h2 style={sectionTitle}>Comments</h2>
+        <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+          <input
+            value={commentText}
+            onChange={(e) => setCommentText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") onPost(); }}
+            placeholder="Add a comment…"
+            style={{ flex: 1, border: "1px solid #e8e3d8", borderRadius: 10, padding: "10px 12px", fontSize: 14, outline: "none" }}
+          />
+          <button onClick={onPost} disabled={posting} style={{ border: "none", cursor: "pointer", background: ORANGE, color: "#fff", fontWeight: 700, fontSize: 13.5, padding: "10px 16px", borderRadius: 10 }}>{posting ? "…" : "Post"}</button>
+        </div>
+        {comments.length === 0 ? (
+          <p style={{ color: "#a8a294", fontFamily: mono, fontSize: 13 }}>No comments yet. Be the first.</p>
+        ) : (
+          comments.map((c) => (
+            <div key={c.id} style={{ display: "flex", gap: 10, padding: "12px 0", borderTop: "1px solid #f0ece2" }}>
+              <div style={{ width: 30, height: 30, borderRadius: "50%", flex: "none", background: "#efe9dc", color: "#5c574e", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, fontFamily: "'Space Grotesk'" }}>{c.author_init}</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{c.author} <span style={{ color: "#a8a294", fontWeight: 400, fontFamily: mono, fontSize: 11 }}>· {c.ago}</span></div>
+                <p style={{ fontSize: 14, color: "#3a362f", marginTop: 2, lineHeight: 1.5 }}>{c.body}</p>
+              </div>
+              {canModerate(c.author_id) && (
+                <button onClick={() => onDelete(c.id)} aria-label="Delete comment" style={{ border: "none", background: "none", cursor: "pointer", color: "#c0392b", fontSize: 13 }}>✕</button>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+      <div>
+        <h2 style={sectionTitle}>Related games</h2>
+        {related.length === 0 ? (
+          <p style={{ color: "#a8a294", fontFamily: mono, fontSize: 13 }}>Nothing related yet.</p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {related.slice(0, 5).map((r) => (
+              <button key={r.id} onClick={() => onOpen(r.id)} style={{ display: "flex", gap: 11, alignItems: "center", textAlign: "left", border: "1px solid #e8e3d8", background: "#fff", cursor: "pointer", borderRadius: 12, padding: 10 }}>
+                <div style={{ width: 54, height: 40, borderRadius: 8, flex: "none", background: coverBackground(r.cover) }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.title}</div>
+                  <div style={{ fontSize: 11.5, color: "#7a756c", fontFamily: mono }}>▶ {r.plays_str}</div>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const sectionTitle: React.CSSProperties = { fontFamily: "'Space Grotesk'", fontSize: 20, fontWeight: 700, marginBottom: 14 };
 
 function DetailStat({ value, label }: { value: string; label: string }) {
   return (

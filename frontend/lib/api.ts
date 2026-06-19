@@ -1,4 +1,4 @@
-import type { Game, Task, UploadedAsset, User } from "./types";
+import type { Comment, Game, Task, UploadedAsset, User } from "./types";
 
 export const BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -87,6 +87,25 @@ export const api = {
   unlike: (id: string) => req<{ liked: boolean; likes: number }>(`/games/${id}/like`, { method: "DELETE" }),
   favorite: (id: string) => req<{ favorited: boolean }>(`/games/${id}/favorite`, { method: "POST" }),
   unfavorite: (id: string) => req<{ favorited: boolean }>(`/games/${id}/favorite`, { method: "DELETE" }),
+
+  // social / discovery
+  userProfile: (id: string) =>
+    req<{
+      id: string; name: string; init: string; game_count: number; total_plays: number;
+      followers: number; following: number; is_following: boolean; is_self: boolean;
+    }>(`/users/${id}`),
+  userGames: (id: string) => req<{ items: Game[] }>(`/users/${id}/games`),
+  followUser: (id: string) => req<{ following: boolean }>(`/users/${id}/follow`, { method: "POST" }),
+  unfollowUser: (id: string) => req<{ following: boolean }>(`/users/${id}/follow`, { method: "DELETE" }),
+  comments: (id: string) => req<{ items: Comment[] }>(`/games/${id}/comments`),
+  addComment: (id: string, body: string) => req<Comment>(`/games/${id}/comments`, { json: { body } }),
+  deleteComment: (gameId: string, commentId: string) =>
+    req<{ ok: boolean }>(`/games/${gameId}/comments/${commentId}`, { method: "DELETE" }),
+  relatedGames: (id: string) => req<{ items: Game[] }>(`/games/${id}/related`),
+  leaderboard: (id: string) =>
+    req<{ items: { rank: number; name: string; points: number; ago: string }[] }>(`/games/${id}/leaderboard`),
+  submitScore: (id: string, points: number, player_name?: string) =>
+    req<{ ok: boolean }>(`/games/${id}/score`, { json: { points, player_name } }),
 
   upload: (files: FileList | File[]) => {
     const fd = new FormData();

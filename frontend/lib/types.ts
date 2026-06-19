@@ -18,6 +18,7 @@ export interface Game {
   status: string;
   author: string;
   author_init: string;
+  author_id: string;
   tags: string[];
   plays: number;
   plays_str: string;
@@ -106,4 +107,14 @@ export interface UploadedAsset {
   kind: string;
   size: number;
   url: string;
+}
+
+export interface Comment {
+  id: string;
+  body: string;
+  created_at?: string | null;
+  ago: string;
+  author: string;
+  author_init: string;
+  author_id: string;
 }
