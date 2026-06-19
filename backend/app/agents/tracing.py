@@ -11,6 +11,16 @@ from app.db.session import SessionLocal
 from app.models import AgentLog, AgentStep, GenerationTask
 from app.models.common import StepStatus, now_utc
 
+_START_HINTS = {
+    "Safety Intake": "checking prompt length, uploaded asset ids, and blocked patterns",
+    "Intent Spec": "extracting title, genre, theme, controls, and win/loss conditions",
+    "Asset Processing": "loading uploaded references and preparing the asset manifest",
+    "Game Design": "planning screen layout, entities, rules, and HUD behavior",
+    "Code Generation": "rendering HTML, CSS, and game.js for the browser runtime",
+    "Build Validation": "checking required files, forbidden APIs, references, and bundle size",
+    "Publish Artifact": "uploading files, writing manifest metadata, and saving preview records",
+}
+
 
 def begin_step(task_id: str, agent: str, display: str) -> str | None:
     db = SessionLocal()
@@ -22,6 +32,9 @@ def begin_step(task_id: str, agent: str, display: str) -> str | None:
         step = AgentStep(task_id=task_id, seq=seq, agent=agent, name=display,
                          status=StepStatus.RUNNING, started_at=now_utc())
         db.add(step)
+        db.flush()
+        hint = _START_HINTS.get(display, "running agent node")
+        db.add(AgentLog(step_id=step.id, seq=0, line=f"started {display}: {hint}"))
         task.current_step = seq
         task.current_agent = agent
         db.commit()
@@ -39,8 +52,9 @@ def finish_step(task_id, step_id, logs, tokens=0, repair=None, replan=None, fail
             if step:
                 step.status = StepStatus.FAILED if failed else StepStatus.DONE
                 step.finished_at = now_utc()
+                base_seq = len(step.logs or [])
                 for i, line in enumerate(logs or []):
-                    db.add(AgentLog(step_id=step_id, seq=i, line=str(line)))
+                    db.add(AgentLog(step_id=step_id, seq=base_seq + i, line=str(line)))
         task = db.get(GenerationTask, task_id)
         if task:
             task.tokens_used = (task.tokens_used or 0) + int(tokens or 0)

@@ -192,5 +192,5 @@ def task_out(t) -> dict:
              "logs": [log.line for log in s.logs]}
             for s in t.steps
         ],
-        "game": game_card(game) if game else None,
+        "game": game_detail(game) if game else None,
     }

@@ -137,6 +137,115 @@ def _extract_js(raw: str) -> str:
     return re.sub(r"</?script[^>]*>", "", s, flags=re.I).strip()
 
 
+def _clip(value, limit: int = 140) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _prompt_cues(prompt: str) -> list[str]:
+    stop = {
+        "make", "game", "with", "where", "that", "this", "into", "from", "using", "player",
+        "players", "collect", "avoid", "survive", "seconds", "the", "and", "for", "you",
+    }
+    cues: list[str] = []
+    for token in re.findall(r"[a-zA-Z][a-zA-Z0-9'-]{2,}", prompt.lower()):
+        if token in stop or token in cues:
+            continue
+        cues.append(token)
+        if len(cues) == 6:
+            break
+    return cues
+
+
+def _controls_line(controls: dict) -> str:
+    keys = controls.get("keyboard") if isinstance(controls.get("keyboard"), list) else []
+    pointer = controls.get("pointer") if isinstance(controls.get("pointer"), list) else []
+    parts = []
+    if keys:
+        parts.append("keyboard=" + ", ".join(str(k) for k in keys[:4]))
+    if pointer:
+        parts.append("pointer=" + ", ".join(str(p) for p in pointer[:3]))
+    if controls.get("hint"):
+        parts.append("hint=" + _clip(controls.get("hint"), 70))
+    return "; ".join(parts) if parts else "default keyboard + pointer controls"
+
+
+def _spec_log_lines(spec: dict, source: str) -> list[str]:
+    controls = spec.get("controls") if isinstance(spec.get("controls"), dict) else {}
+    tags = ", ".join(str(t) for t in (spec.get("tags") or [])[:5]) or "none"
+    return [
+        f"source: {source}",
+        f"title: {_clip(spec.get('title'), 80)}",
+        f"genre/theme/runtime: {spec.get('genre', 'arcade')} / {spec.get('theme', 'retro')} / {spec.get('target_runtime', 'canvas')}",
+        f"core loop: {_clip(spec.get('core_loop'), 120)}",
+        f"win/lose: {spec.get('win_condition', 'survive_time')} / {spec.get('lose_condition', 'hit_hazard')}",
+        f"controls: {_controls_line(controls)}",
+        f"tags: {tags}",
+    ]
+
+
+def _entity_line(entity: dict) -> str:
+    name = entity.get("name", "?")
+    etype = entity.get("type", "?")
+    movement = entity.get("movement") or entity.get("spawn") or entity.get("behavior") or "static"
+    return f"{name}({etype}, {movement})"
+
+
+def _design_log_lines(design: dict) -> list[str]:
+    screen = design.get("screen") if isinstance(design.get("screen"), dict) else {}
+    entities = design.get("entities") if isinstance(design.get("entities"), list) else []
+    rules = design.get("rules") if isinstance(design.get("rules"), dict) else {}
+    ui = design.get("ui") if isinstance(design.get("ui"), dict) else {}
+    entity_text = ", ".join(_entity_line(e) for e in entities[:8]) or "none"
+    rule_bits = []
+    for key in ("collision_player_hazard", "collision_player_star", "survive_seconds"):
+        if key in rules:
+            rule_bits.append(f"{key}={rules[key]}")
+    ui_bits = [key for key, enabled in ui.items() if enabled][:6]
+    return [
+        f"screen: {screen.get('width', 800)}x{screen.get('height', 600)} canvas",
+        f"entities: {entity_text}",
+        "rules: " + (", ".join(str(bit) for bit in rule_bits) or "default arcade collisions"),
+        "ui: " + (", ".join(ui_bits) or "minimal HUD"),
+    ]
+
+
+def _asset_log_lines(uploaded: list[dict], manifest: dict, spec: dict) -> list[str]:
+    lines = [f"uploaded references loaded: {len(uploaded)}"]
+    for asset in uploaded[:4]:
+        lines.append(f"reference: {asset.get('key')} ({asset.get('type', 'file')})")
+    if len(uploaded) > 4:
+        lines.append(f"reference overflow: {len(uploaded) - 4} additional asset(s)")
+    lines.append(f"cover strategy: theme={spec.get('theme', 'retro')} -> {manifest.get('cover')}")
+    lines.append(f"asset manifest entries: cover + {len(uploaded)} uploaded reference(s)")
+    return lines
+
+
+def _file_log_lines(files: list[dict]) -> list[str]:
+    if not files:
+        return ["generated files: none"]
+    total = sum(len((f.get("content") or "").encode("utf-8")) for f in files)
+    names = ", ".join(f.get("path", "?") for f in files)
+    lines = [f"generated files: {names}", f"bundle size: {total} bytes"]
+    for f in files:
+        lines.append(f"{f.get('path', '?')}: {len((f.get('content') or '').encode('utf-8'))} bytes")
+    return lines
+
+
+def _validation_log_lines(result: dict) -> list[str]:
+    files = result.get("files") or []
+    total = sum(int(f.get("size") or 0) for f in files)
+    lines = [
+        "checked files: " + (", ".join(str(f.get("path")) for f in files) or "none"),
+        f"bundle size checked: {total} bytes",
+        f"security scan: {len(validation.FORBIDDEN_PATTERNS)} forbidden patterns",
+        "reference scan: index.html must load local game.js",
+    ]
+    if result.get("warnings"):
+        lines.append("warnings: " + "; ".join(str(w) for w in result["warnings"][:3]))
+    return lines
+
+
 def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[dict], int, str]:
     """渲染模板外壳；real 模式让模型写 game.js（真正生成不同的游戏），失败/兜底用模板 game.js。"""
     spec = state.get("game_spec") or {}
@@ -185,6 +294,19 @@ def safety_intake_node(state: dict) -> dict:
                     "error_message": "Prompt rejected by safety rule",
                     "_agent": "SafetyIntakeAgent", "_logs": [f"blocked pattern matched ({pat}) -> rejected"]}
     n = len(state.get("asset_ids") or [])
+    cues = _prompt_cues(p)
+    return {
+        "normalized_prompt": p.strip(),
+        "safety_result": {"passed": True, "risk_level": "low"},
+        "_agent": "SafetyIntakeAgent",
+        "_logs": [
+            f"prompt accepted: {len(p)} chars, {len(p.split())} word(s)",
+            "intent cues: " + (", ".join(cues) if cues else "none detected"),
+            f"uploaded asset ids received: {n}",
+            f"policy scan passed: {len(_BLOCKED)} blocked-pattern checks",
+            f"normalized prompt: {_clip(p, 160)}",
+        ],
+    }
     return {
         "normalized_prompt": p.strip(),
         "safety_result": {"passed": True, "risk_level": "low"},
@@ -201,12 +323,18 @@ def intent_spec_node(state: dict) -> dict:
                                prompts.build_intent_spec_prompt(prompt, len(state.get("asset_ids") or [])))
             spec = _coerce_spec(_parse_json(raw), prompt)
             return {"game_spec": spec, "_agent": "IntentSpecAgent", "_tokens_delta": tk,
+                    "_logs": _spec_log_lines(spec, "model GameSpec JSON")}
+            return {"game_spec": spec, "_agent": "IntentSpecAgent", "_tokens_delta": tk,
                     "_logs": ["calling model -> GameSpec JSON", f"spec: {spec['genre']} · {spec['title']}"]}
         except Exception as exc:  # noqa: BLE001
             spec = _heuristic_spec(prompt)
             return {"game_spec": spec, "_agent": "IntentSpecAgent",
+                    "_logs": [f"model failed: {_clip(exc, 120)}"] + _spec_log_lines(spec, "heuristic fallback")}
+            return {"game_spec": spec, "_agent": "IntentSpecAgent",
                     "_logs": [f"model failed ({exc}); fell back to heuristic spec", f"spec: {spec['title']}"]}
     spec = _heuristic_spec(prompt)
+    return {"game_spec": spec, "_agent": "IntentSpecAgent",
+            "_logs": _spec_log_lines(spec, "offline heuristic")}
     return {"game_spec": spec, "_agent": "IntentSpecAgent",
             "_logs": ["building GameSpec (offline heuristic)", f"spec: {spec['genre']} · {spec['title']}"]}
 
@@ -228,6 +356,8 @@ def asset_processing_node(state: dict) -> dict:
     spec = state.get("game_spec") or {}
     asset_manifest = {"cover": _theme_cover(spec.get("theme")), "assets": uploaded}
     return {"uploaded_assets": uploaded, "asset_manifest": asset_manifest, "_agent": "AssetAgent",
+            "_logs": _asset_log_lines(uploaded, asset_manifest, spec)}
+    return {"uploaded_assets": uploaded, "asset_manifest": asset_manifest, "_agent": "AssetAgent",
             "_logs": [f"loaded {len(uploaded)} uploaded asset(s)", "default cover prepared", "asset_manifest ready"]}
 
 
@@ -238,14 +368,20 @@ def game_design_node(state: dict) -> dict:
             raw, tk = llm.chat(prompts.GAME_DESIGN_SYSTEM_PROMPT,
                                prompts.build_game_design_prompt(spec, state.get("asset_manifest")))
             design = _coerce_design(_parse_json(raw))
+            return {"game_design": design, "_agent": "GameDesignAgent", "_tokens_delta": tk,
+                    "_logs": ["source: model GameDesign JSON"] + _design_log_lines(design)}
             ents = ", ".join(str(e.get("name", "?")) for e in design.get("entities", []))
             return {"game_design": design, "_agent": "GameDesignAgent", "_tokens_delta": tk,
                     "_logs": ["calling model -> GameDesign JSON", f"entities: {ents}"]}
         except Exception as exc:  # noqa: BLE001
             design = _heuristic_design(spec)
             return {"game_design": design, "_agent": "GameDesignAgent",
+                    "_logs": [f"model failed: {_clip(exc, 120)}", "source: heuristic fallback"] + _design_log_lines(design)}
+            return {"game_design": design, "_agent": "GameDesignAgent",
                     "_logs": [f"model failed ({exc}); heuristic design", "entities: player, hazard, star"]}
     design = _heuristic_design(spec)
+    return {"game_design": design, "_agent": "GameDesignAgent",
+            "_logs": ["source: offline heuristic"] + _design_log_lines(design)}
     return {"game_design": design, "_agent": "GameDesignAgent",
             "_logs": ["building GameDesign (offline heuristic)", "entities: player, hazard, star",
                       f"rules: survive {design['rules']['survive_seconds']}s + collect"]}
@@ -253,6 +389,19 @@ def game_design_node(state: dict) -> dict:
 
 def code_generation_node(state: dict) -> dict:
     files, tokens, mode = _generate_code(state)
+    spec = state.get("game_spec") or {}
+    design = state.get("game_design") or {}
+    cfg = templating.build_config(spec, design, state.get("asset_manifest") or {})
+    tname = templating.select_template(spec, design)
+    logs = [
+        f"selected template: {tname}",
+        f"runtime config: title={cfg.get('title')}, duration={cfg.get('duration')}s, hazard_speed={cfg.get('hazard_speed')}",
+        f"control hint: {_clip(cfg.get('hint'), 90)}",
+        f"game.js source: {mode}",
+    ] + _file_log_lines(files)
+    if _should_inject(state):
+        logs.append("[demo] injected forbidden API to trigger repair loop")
+    return {"generated_files": files, "_agent": "GameCodeAgent", "_tokens_delta": tokens, "_logs": logs}
     tname = templating.select_template(state.get("game_spec"), state.get("game_design"))
     logs = [f"template shell: {tname}", f"game.js source: {mode}", "rendered index.html / style.css / game.js"]
     if _should_inject(state):
@@ -264,6 +413,12 @@ def build_validation_node(state: dict) -> dict:
     result = validation.validate_files(state.get("generated_files") or [])
     if result["valid"]:
         return {"validation_result": result, "_agent": "BuildValidateAgent",
+                "_logs": _validation_log_lines(result) + ["validation passed"]}
+    return {"validation_result": result, "last_error": "; ".join(result["errors"]),
+            "_agent": "BuildValidateAgent",
+            "_logs": _validation_log_lines(result) + ["validation failed:"] + result["errors"][:6]}
+    if result["valid"]:
+        return {"validation_result": result, "_agent": "BuildValidateAgent",
                 "_logs": ["file whitelist ✓", "forbidden-API scan ✓", "manifest/refs ✓", "validation passed"]}
     return {"validation_result": result, "last_error": "; ".join(result["errors"]),
             "_agent": "BuildValidateAgent", "_logs": ["validation FAILED:"] + result["errors"][:4]}
@@ -272,6 +427,13 @@ def build_validation_node(state: dict) -> dict:
 def repair_code_node(state: dict) -> dict:
     attempts = state.get("repair_attempts", 0) + 1
     files, tokens, mode = _generate_code({**state, "repair_attempts": attempts}, repair_error=state.get("last_error"))
+    return {"generated_files": files, "repair_attempts": attempts, "_agent": "GameCodeAgentRepair",
+            "_tokens_delta": tokens,
+            "_logs": [
+                f"repair attempt: {attempts}/{MAX_REPAIR}",
+                f"previous validation error: {_clip(state.get('last_error'), 180)}",
+                f"regenerated game.js using {mode}",
+            ] + _file_log_lines(files) + ["queued validation retry"]}
     return {"generated_files": files, "repair_attempts": attempts, "_agent": "GameCodeAgentRepair",
             "_tokens_delta": tokens,
             "_logs": [f"repair attempt #{attempts}: regenerated game.js ({mode})", "back to validation"]}
@@ -294,6 +456,18 @@ def replan_game_design_node(state: dict) -> dict:
     return {
         "game_design": design, "generated_files": [], "validation_result": {},
         "repair_attempts": 0, "replan_attempts": attempts, "last_error": None,
+        "use_template_code": True,
+        "_agent": "GameDesignAgentReplan",
+        "_logs": [
+            f"replan attempt: {attempts}/{MAX_REPLAN}",
+            f"reason: {_clip(state.get('last_error'), 180)}",
+            "simplified playable scope and switched to stable template code",
+        ] + _design_log_lines(design) + ["reset repair counter; queued code generation"],
+        **extra,
+    }
+    return {
+        "game_design": design, "generated_files": [], "validation_result": {},
+        "repair_attempts": 0, "replan_attempts": attempts, "last_error": None,
         "use_template_code": True,  # 兜底：用稳定模板 game.js，保证重生成可通过校验
         "_agent": "GameDesignAgentReplan",
         "_logs": [f"replan #{attempts}: simplified design + fall back to template code",
@@ -310,6 +484,18 @@ def publish_artifact_node(state: dict) -> dict:
         "status": "succeeded", "game_id": game_id, "version_id": version_id,
         "manifest_url": manifest_url, "preview_url": f"/play/{game_id}",
         "_agent": "PublishArtifactAgent",
+        "_logs": [
+            f"uploaded files: {', '.join(f.get('path', '?') for f in state.get('generated_files') or [])}",
+            f"manifest url: {manifest_url}",
+            f"game id: {game_id}",
+            f"version id: {version_id}",
+            "database saved: game + game_version with preview status",
+        ],
+    }
+    return {
+        "status": "succeeded", "game_id": game_id, "version_id": version_id,
+        "manifest_url": manifest_url, "preview_url": f"/play/{game_id}",
+        "_agent": "PublishArtifactAgent",
         "_logs": ["PUT index.html / style.css / game.js -> object storage",
                   "PUT manifest.json (game-manifest/v1) · sha256 stamped",
                   "INSERT game + game_version -> status=preview ✓"],
@@ -318,10 +504,17 @@ def publish_artifact_node(state: dict) -> dict:
 
 def failed_node(state: dict) -> dict:
     msg = state.get("error_message") or state.get("last_error") or "generation failed"
+    return {"status": "failed", "error_message": msg, "_agent": "FailureHandler",
+            "_logs": [f"task failed: {_clip(msg, 220)}",
+                      f"repair attempts used: {state.get('repair_attempts', 0)}/{MAX_REPAIR}",
+                      f"replan attempts used: {state.get('replan_attempts', 0)}/{MAX_REPLAN}"]}
     return {"status": "failed", "error_message": msg, "_agent": "FailureHandler", "_logs": [f"task failed: {msg}"]}
 
 
 def done_node(state: dict) -> dict:
+    return {"status": "succeeded", "_agent": "DoneHandler",
+            "_logs": [f"generation succeeded for game_id={state.get('game_id', 'unknown')}",
+                      f"preview url: {state.get('preview_url', 'pending')}"]}
     return {"status": "succeeded", "_agent": "DoneHandler", "_logs": ["generation succeeded ✓"]}
 
 

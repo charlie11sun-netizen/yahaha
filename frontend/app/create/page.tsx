@@ -597,6 +597,7 @@ function ProgressCard({
 
 function PreviewCard({ now, task }: { now: number; task?: Task }) {
   const succeeded = task?.status === "succeeded" && task.game;
+  const previewSrc = task?.game?.bundle_url || task?.preview_url || (task?.game ? `/play/${task.game.id}` : "");
   const active = isActiveTask(task?.status);
   const failed = task?.status === "failed";
   const cancelled = task?.status === "cancelled";
@@ -619,7 +620,11 @@ function PreviewCard({ now, task }: { now: number; task?: Task }) {
 
       {succeeded ? (
         <div className="pf-preview-frame">
-          <iframe src={`/play/${task.game?.id}`} title={`${task.game?.title} preview`} />
+          <iframe
+            sandbox="allow-scripts allow-pointer-lock"
+            src={previewSrc}
+            title={`${task.game?.title} preview`}
+          />
         </div>
       ) : (
         <img alt="" className="pf-runtime-art" src="/playforge/create-runtime-preview.png" />
