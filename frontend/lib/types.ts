@@ -3,6 +3,7 @@ export interface User {
   name: string;
   email: string;
   init: string;
+  created_at?: string | null;
 }
 
 export interface Game {

@@ -53,6 +53,8 @@ export const api = {
   login: (email: string, password: string) =>
     req<{ token: string; user: User }>("/auth/login", { json: { email, password } }),
   me: () => req<User>("/auth/me"),
+  updateMe: (display_name: string) =>
+    req<User>("/auth/me", { method: "PATCH", json: { display_name } }),
   logout: () => req("/auth/logout", { method: "POST" }),
   oauthDemo: (provider: string) =>
     req<{ token: string; user: User }>(`/auth/oauth/${provider}/demo`, { method: "POST" }),

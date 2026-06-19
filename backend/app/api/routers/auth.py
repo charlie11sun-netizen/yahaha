@@ -5,7 +5,7 @@ from app.api.deps import get_current_user
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db.session import get_db
 from app.models import OAuthAccount, User
-from app.schemas import LoginIn, RegisterIn
+from app.schemas import LoginIn, ProfileUpdateIn, RegisterIn
 from app.services.serialize import user_out
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -41,6 +41,15 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
 
 @router.get("/me")
 def me(user: User = Depends(get_current_user)):
+    return user_out(user)
+
+
+@router.patch("/me")
+def update_me(body: ProfileUpdateIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    user.display_name = body.display_name.strip()
+    user.avatar_initial = _initial(user.display_name)
+    db.commit()
+    db.refresh(user)
     return user_out(user)
 
 

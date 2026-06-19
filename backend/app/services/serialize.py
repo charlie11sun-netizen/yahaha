@@ -76,7 +76,13 @@ def game_detail(g) -> dict:
 
 
 def user_out(u) -> dict:
-    return {"id": u.id, "name": u.display_name, "email": u.email, "init": u.avatar_initial}
+    return {
+        "id": u.id,
+        "name": u.display_name,
+        "email": u.email,
+        "init": u.avatar_initial,
+        "created_at": _iso(u.created_at),
+    }
 
 
 def _parse(raw):

@@ -6,6 +6,7 @@ import { Box, ClipboardList, Save } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 
 function navClass(path: string, target: string) {
+  if (target === "/me") return path === "/me" ? "is-active" : "";
   return path === target ? "is-active" : "";
 }
 
@@ -14,6 +15,9 @@ export default function Nav() {
   const path = usePathname();
   const router = useRouter();
   const isCreate = path === "/create";
+  const isStudio = path === "/me";
+
+  if (path.startsWith("/play/")) return null;
 
   const goCreate = () => router.push(user ? "/create" : "/login?intent=create");
   const emitCreateEvent = (name: string) => {
@@ -23,7 +27,7 @@ export default function Nav() {
   };
 
   return (
-    <nav className={`pf-topnav${isCreate ? " is-create" : ""}`} aria-label="Main navigation">
+    <nav className={`pf-topnav${isCreate || isStudio ? " is-create" : ""}`} aria-label="Main navigation">
       <div className="pf-topnav-inner">
         <button className="pf-brand" onClick={() => router.push("/")} type="button">
           <span className="pf-logo-mark">
@@ -39,7 +43,7 @@ export default function Nav() {
           <button className={navClass(path, "/create")} onClick={goCreate} type="button">
             Create
           </button>
-          <button className={navClass(path, "/me")} onClick={() => router.push(user ? "/me" : "/login")} type="button">
+          <button className={navClass(path, "/me")} onClick={() => router.push(user ? "/me?section=games" : "/login")} type="button">
             My Games
           </button>
           <button onClick={() => router.push("/#how")} type="button">
@@ -68,6 +72,20 @@ export default function Nav() {
                   Save Draft
                 </button>
                 <button className="pf-create-avatar" onClick={() => router.push("/me")} type="button" aria-label="My games">
+                  {user.init}
+                </button>
+              </>
+            ) : isStudio ? (
+              <>
+                <button
+                  className="pf-task-btn"
+                  onClick={() => router.push("/me?section=tasks")}
+                  type="button"
+                >
+                  <ClipboardList size={17} />
+                  My Tasks
+                </button>
+                <button className="pf-create-avatar" onClick={() => router.push("/me")} type="button" aria-label="My studio">
                   {user.init}
                 </button>
               </>

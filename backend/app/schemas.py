@@ -13,6 +13,10 @@ class LoginIn(BaseModel):
     password: str
 
 
+class ProfileUpdateIn(BaseModel):
+    display_name: str = Field(min_length=1, max_length=120)
+
+
 class TaskCreateIn(BaseModel):
     idea: str = Field(min_length=1)
     asset_ids: list[str] = []
