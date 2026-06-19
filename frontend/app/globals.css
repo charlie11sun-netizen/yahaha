@@ -623,6 +623,13 @@ img {
   font-weight: 700;
 }
 
+.pf-live-note {
+  color: #8a93aa;
+  font-size: 11px;
+  font-weight: 600;
+  margin-top: 5px;
+}
+
 .pf-search {
   align-items: center;
   background: #fbfcff;
@@ -682,7 +689,20 @@ img {
   border: 1px solid #e4e9f4;
   border-radius: 10px;
   box-shadow: 0 9px 22px rgba(43, 52, 100, 0.04);
+  cursor: pointer;
   overflow: hidden;
+}
+
+.pf-grid-state {
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid #e4e9f4;
+  border-radius: 10px;
+  color: #717b93;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  margin-bottom: 14px;
+  padding: 18px;
+  text-align: center;
 }
 
 .pf-game-card > img {

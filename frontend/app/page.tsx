@@ -2,6 +2,7 @@
 
 import type { CSSProperties } from "react";
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -24,16 +25,24 @@ import {
   WandSparkles,
 } from "lucide-react";
 
-type Game = {
+import { api } from "@/lib/api";
+import type { Game as ApiGame } from "@/lib/types";
+
+type HomeGame = {
+  id?: string;
   title: string;
   author: string;
+  authorInit: string;
   summary: string;
+  genre: string;
   image: string;
-  thumb?: string;
+  thumb: string;
   tags: string[];
   date: string;
   plays: string;
-  ai?: boolean;
+  playsLabel: string;
+  playsNumber: number;
+  ai: boolean;
 };
 
 type Step = {
@@ -43,101 +52,98 @@ type Step = {
   color: string;
 };
 
-const featured = {
-  title: "Neon Alley Cat",
-  author: "PixelPioneer",
-  summary:
-    "A fast-paced arcade game where a street-smart cat dodges drones, hacks terminals, and outruns the city enforcers in a neon-soaked future.",
-  image: "/playforge/neon-featured.jpg",
-  heroImage: "/playforge/neon-trending.jpg",
-  tags: ["Action", "Arcade", "Cyberpunk", "Cat", "AI Generated"],
-  date: "May 8, 2024",
-  plays: "12.4K Plays",
-};
+const imagePool = [
+  "/playforge/neon-featured.jpg",
+  "/playforge/pixel-drifter.jpg",
+  "/playforge/skybound-chronicles.jpg",
+  "/playforge/dungeon-dice.jpg",
+  "/playforge/circuit-breakers.jpg",
+  "/playforge/echoes-deep.jpg",
+  "/playforge/mystic-grove.jpg",
+];
 
-const games: Game[] = [
+const heroImagePool = [
+  "/playforge/neon-trending.jpg",
+  "/playforge/pixel-drifter.jpg",
+  "/playforge/skybound-chronicles.jpg",
+  "/playforge/dungeon-dice.jpg",
+  "/playforge/circuit-breakers.jpg",
+  "/playforge/echoes-deep.jpg",
+  "/playforge/mystic-grove.jpg",
+];
+
+const thumbPool = [
+  "/playforge/thumb-pixel.jpg",
+  "/playforge/thumb-skybound.jpg",
+  "/playforge/thumb-mystic.jpg",
+  "/playforge/thumb-circuit.jpg",
+  "/playforge/thumb-echoes.jpg",
+  "/playforge/thumb-lumen.jpg",
+];
+
+const fallbackGames: HomeGame[] = [
+  {
+    title: "Neon Alley Cat",
+    author: "PixelPioneer",
+    authorInit: "P",
+    summary:
+      "A fast-paced arcade game where a street-smart cat dodges drones, hacks terminals, and outruns the city enforcers in a neon-soaked future.",
+    genre: "Action Arcade",
+    image: "/playforge/neon-featured.jpg",
+    thumb: "/playforge/neon-trending.jpg",
+    tags: ["Action", "Arcade", "Cyberpunk", "Cat", "AI Generated"],
+    date: "May 8, 2024",
+    plays: "12.4K",
+    playsLabel: "12.4K Plays",
+    playsNumber: 12400,
+    ai: true,
+  },
   {
     title: "Pixel Drifter",
     author: "RetroKnight",
+    authorInit: "R",
     summary: "Drift through endless pixel roads, collect boosters, run your best.",
+    genre: "Arcade",
     image: "/playforge/pixel-drifter.jpg",
     thumb: "/playforge/thumb-pixel.jpg",
     tags: ["Arcade", "Racing", "Pixel"],
     date: "Apr 28, 2024",
     plays: "3.1K",
+    playsLabel: "3.1K Plays",
+    playsNumber: 3100,
     ai: true,
   },
   {
     title: "Skybound Chronicles",
     author: "StoryWeaver",
+    authorInit: "S",
     summary: "A story-rich adventure across floating islands and ancient ruins.",
+    genre: "RPG Adventure",
     image: "/playforge/skybound-chronicles.jpg",
     thumb: "/playforge/thumb-skybound.jpg",
     tags: ["RPG", "Adventure", "Fantasy"],
     date: "May 6, 2024",
     plays: "15.8K",
+    playsLabel: "15.8K Plays",
+    playsNumber: 15800,
     ai: true,
-  },
-  {
-    title: "Dungeon & Dice",
-    author: "LootLab",
-    summary: "Dice roll, fate calls. A roguelike dungeon crawler of chance.",
-    image: "/playforge/dungeon-dice.jpg",
-    tags: ["Roguelike", "Dice", "Co-op"],
-    date: "Apr 24, 2024",
-    plays: "6.1K",
   },
   {
     title: "Circuit Breakers",
     author: "CodeStorm",
+    authorInit: "C",
     summary: "Solve logic puzzles by restoring power and lighting the grid.",
+    genre: "Puzzle",
     image: "/playforge/circuit-breakers.jpg",
     thumb: "/playforge/thumb-circuit.jpg",
     tags: ["Puzzle", "Logic", "Grid"],
     date: "May 4, 2024",
     plays: "9.3K",
-  },
-  {
-    title: "Echoes of the Deep",
-    author: "BlueMarsh",
-    summary: "Explore the abyss, uncover secrets, and survive the unknown.",
-    image: "/playforge/echoes-deep.jpg",
-    thumb: "/playforge/thumb-echoes.jpg",
-    tags: ["Adventure", "Exploration", "Mystery"],
-    date: "Apr 30, 2024",
-    plays: "11.6K",
-  },
-  {
-    title: "Mystic Grove",
-    author: "GreenThumb",
-    summary: "A cozy exploration game about restoring a magical forest.",
-    image: "/playforge/mystic-grove.jpg",
-    thumb: "/playforge/thumb-mystic.jpg",
-    tags: ["Relaxing", "Adventure", "Nature"],
-    date: "May 2, 2024",
-    plays: "7.4K",
+    playsLabel: "9.3K Plays",
+    playsNumber: 9300,
+    ai: false,
   },
 ];
-
-const trending: Game[] = [
-  games[1],
-  games[0],
-  games[5],
-  games[3],
-  games[4],
-  {
-    title: "Lumen Path",
-    author: "EmberWorks",
-    summary: "Follow the lanterns through an ancient underground shrine.",
-    image: "/playforge/lumen-path.jpg",
-    thumb: "/playforge/thumb-lumen.jpg",
-    tags: ["Adventure"],
-    date: "May 1, 2024",
-    plays: "5.2K",
-  },
-];
-
-const filterTabs = ["All", "AI Generated", "Arcade", "Puzzle", "RPG", "Adventure"];
 
 const flowSteps: Step[] = [
   {
@@ -201,20 +207,49 @@ export default function HomePage() {
   const [query, setQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState("All");
 
-  const filteredGames = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return games.filter((game) => {
-      const matchesFilter =
-        activeFilter === "All" ||
-        (activeFilter === "AI Generated" && game.ai) ||
-        game.tags.includes(activeFilter);
-      const searchable = `${game.title} ${game.author} ${game.summary} ${game.tags.join(" ")}`.toLowerCase();
-      return matchesFilter && (!q || searchable.includes(q));
+  const backendTag = activeFilter === "AI Generated" ? "All" : activeFilter;
+  const gamesQ = useQuery({
+    queryKey: ["games", query, backendTag],
+    queryFn: () => api.games(query, backendTag),
+  });
+  const allGamesQ = useQuery({
+    queryKey: ["games", "", "All"],
+    queryFn: () => api.games("", "All"),
+  });
+  const tagsQ = useQuery({ queryKey: ["tags"], queryFn: api.tags });
+
+  const allGames = useMemo(() => {
+    const live = allGamesQ.data?.items;
+    return live ? live.map(toHomeGame) : fallbackGames;
+  }, [allGamesQ.data?.items]);
+
+  const visibleGames = useMemo(() => {
+    const live = gamesQ.data?.items;
+    const mapped = live ? live.map(toHomeGame) : fallbackGames;
+    return mapped.filter((game) => {
+      if (activeFilter === "AI Generated" && !game.ai) return false;
+      if (activeFilter !== "All" && activeFilter !== "AI Generated" && !game.tags.includes(activeFilter)) return false;
+      const q = query.trim().toLowerCase();
+      if (!q) return true;
+      return `${game.title} ${game.author} ${game.summary} ${game.tags.join(" ")}`.toLowerCase().includes(q);
     });
-  }, [activeFilter, query]);
+  }, [activeFilter, gamesQ.data?.items, query]);
+
+  const rankedGames = useMemo(
+    () => [...allGames].sort((a, b) => b.playsNumber - a.playsNumber),
+    [allGames],
+  );
+  const featured = rankedGames[0] ?? fallbackGames[0];
+  const trending = rankedGames.slice(0, 6);
+  const filterTabs = useMemo(() => {
+    const liveTags = tagsQ.data?.tags ?? [];
+    const merged = ["All", "AI Generated", ...liveTags, "Arcade", "Puzzle", "RPG", "Adventure"];
+    return Array.from(new Set(merged)).slice(0, 6);
+  }, [tagsQ.data?.tags]);
 
   const goCreate = () => router.push("/create");
-  const goPlay = () => scrollToId("explore");
+  const goDetail = (id?: string) => (id ? router.push(`/games/${id}`) : scrollToId("explore"));
+  const goPlay = (id?: string) => (id ? router.push(`/play/${id}`) : scrollToId("explore"));
 
   return (
     <div className="pf-page">
@@ -264,8 +299,8 @@ export default function HomePage() {
             </button>
           </div>
           <div className="pf-trending-grid">
-            <button className="pf-trending-feature" onClick={goPlay} type="button">
-              <img src={featured.heroImage} alt={`${featured.title} game art`} />
+            <button className="pf-trending-feature" onClick={() => goDetail(featured.id)} type="button">
+              <img src={heroImageForGame(featured, 0)} alt={`${featured.title} game art`} />
               <span>
                 <CirclePlay size={13} />
                 Featured
@@ -273,8 +308,8 @@ export default function HomePage() {
             </button>
             <div className="pf-trending-list">
               {trending.map((game) => (
-                <button className="pf-trending-row" key={game.title} onClick={goPlay} type="button">
-                  <img src={game.thumb ?? game.image} alt={`${game.title} thumbnail`} />
+                <button className="pf-trending-row" key={game.id ?? game.title} onClick={() => goDetail(game.id)} type="button">
+                  <img src={game.thumb} alt={`${game.title} thumbnail`} />
                   <strong>{game.title}</strong>
                 </button>
               ))}
@@ -294,7 +329,7 @@ export default function HomePage() {
             <div className="pf-featured-copy">
               <h2>{featured.title}</h2>
               <div className="pf-author">
-                <span className="pf-author-dot">P</span>
+                <span className="pf-author-dot">{featured.authorInit}</span>
                 By {featured.author}
                 <BadgeCheck size={15} />
               </div>
@@ -302,18 +337,19 @@ export default function HomePage() {
                 {featured.tags.map((tag) => (
                   <span key={tag}>{tag}</span>
                 ))}
+                {featured.ai && !featured.tags.includes("AI Generated") ? <span>AI Generated</span> : null}
               </div>
               <p>{featured.summary}</p>
               <div className="pf-featured-meta">
                 <span>
                   <CirclePlay size={14} />
-                  {featured.plays}
+                  {featured.playsLabel}
                 </span>
                 <span>
                   <Calendar size={14} />
                   {featured.date}
                 </span>
-                <button className="pf-primary-btn pf-play-now" onClick={goPlay} type="button">
+                <button className="pf-primary-btn pf-play-now" onClick={() => goPlay(featured.id)} type="button">
                   <Play size={16} fill="currentColor" />
                   Play Now
                 </button>
@@ -325,7 +361,10 @@ export default function HomePage() {
 
       <section className="pf-explore pf-shell" id="explore" aria-labelledby="explore-heading">
         <div className="pf-explore-toolbar">
-          <h2 id="explore-heading">Explore Published Games</h2>
+          <div>
+            <h2 id="explore-heading">Explore Published Games</h2>
+            {gamesQ.isError ? <p className="pf-live-note">Live games unavailable. Showing local preview content.</p> : null}
+          </div>
           <label className="pf-search">
             <Search size={17} />
             <input
@@ -349,11 +388,17 @@ export default function HomePage() {
           </div>
         </div>
 
-        <div className="pf-game-grid">
-          {filteredGames.map((game) => (
-            <GameCard game={game} key={game.title} onPlay={goPlay} />
-          ))}
-        </div>
+        {gamesQ.isLoading ? (
+          <div className="pf-grid-state">Loading live games...</div>
+        ) : visibleGames.length === 0 ? (
+          <div className="pf-grid-state">No published games match this search.</div>
+        ) : (
+          <div className="pf-game-grid">
+            {visibleGames.map((game) => (
+              <GameCard game={game} key={game.id ?? game.title} onOpen={() => goDetail(game.id)} onPlay={() => goPlay(game.id)} />
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="pf-process pf-shell" id="how" aria-labelledby="process-heading">
@@ -429,23 +474,31 @@ export default function HomePage() {
             <button type="button">Terms of Service</button>
             <button type="button">Docs</button>
           </div>
-          <p className="pf-copyright">© 2024 PlayForge AI. All rights reserved.</p>
+          <p className="pf-copyright">&copy; 2024 PlayForge AI. All rights reserved.</p>
         </div>
       </footer>
     </div>
   );
 }
 
-function GameCard({ game, onPlay }: { game: Game; onPlay: () => void }) {
+function GameCard({
+  game,
+  onOpen,
+  onPlay,
+}: {
+  game: HomeGame;
+  onOpen: () => void;
+  onPlay: () => void;
+}) {
   return (
-    <article className="pf-game-card">
+    <article className="pf-game-card" onClick={onOpen}>
       <img src={game.image} alt={`${game.title} game preview`} />
       <div className="pf-game-body">
         <h3>{game.title}</h3>
         <span className="pf-game-author">By {game.author}</span>
         <p>{game.summary}</p>
         <div className="pf-game-tags">
-          {game.tags.map((tag) => (
+          {game.tags.slice(0, 3).map((tag) => (
             <span key={tag}>{tag}</span>
           ))}
         </div>
@@ -458,7 +511,13 @@ function GameCard({ game, onPlay }: { game: Game; onPlay: () => void }) {
             <CirclePlay size={13} />
             {game.plays}
           </span>
-          <button onClick={onPlay} type="button">
+          <button
+            onClick={(event) => {
+              event.stopPropagation();
+              onPlay();
+            }}
+            type="button"
+          >
             <Play size={14} fill="currentColor" />
             Play
           </button>
@@ -479,6 +538,36 @@ function Decorations() {
       <span className="pf-decor-plus">+</span>
     </div>
   );
+}
+
+function toHomeGame(game: ApiGame, index: number): HomeGame {
+  const image = imageSource(game.cover) ?? imagePool[index % imagePool.length];
+  return {
+    id: game.id,
+    title: game.title,
+    author: game.author,
+    authorInit: game.author_init || "?",
+    summary: game.summary,
+    genre: game.genre,
+    image,
+    thumb: imageSource(game.cover) ?? thumbPool[index % thumbPool.length],
+    tags: game.tags,
+    date: game.date,
+    plays: game.plays_str,
+    playsLabel: `${game.plays_str} Plays`,
+    playsNumber: game.plays,
+    ai: game.from_create,
+  };
+}
+
+function imageSource(cover: string) {
+  if (!cover || cover.includes("gradient(")) return null;
+  if (cover.startsWith("http://") || cover.startsWith("https://") || cover.startsWith("/")) return cover;
+  return null;
+}
+
+function heroImageForGame(game: HomeGame, index: number) {
+  return game.title === "Neon Alley Cat" ? "/playforge/neon-trending.jpg" : heroImagePool[index % heroImagePool.length];
 }
 
 function scrollToId(id: string) {
