@@ -14,10 +14,14 @@ from app.models.common import StepStatus, now_utc
 _START_HINTS = {
     "Safety Intake": "checking prompt length, uploaded asset ids, and blocked patterns",
     "Intent Spec": "extracting title, genre, theme, controls, and win/loss conditions",
+    "Archetype Router": "selecting a proven playable template family for the prompt",
     "Asset Processing": "loading uploaded references and preparing the asset manifest",
     "Game Design": "planning screen layout, entities, rules, and HUD behavior",
+    "Balance Plan": "setting round length, score target, lives, spawn rate, and difficulty thresholds",
     "Code Generation": "rendering HTML, CSS, and game.js for the browser runtime",
     "Build Validation": "checking required files, forbidden APIs, references, and bundle size",
+    "Gameplay QA": "checking restart, scoring, timer, input response, and difficulty readability",
+    "Gameplay Repair": "retuning balance and regenerating when playtest thresholds fail",
     "Publish Artifact": "uploading files, writing manifest metadata, and saving preview records",
 }
 
@@ -89,7 +93,7 @@ def logged(node_name: str):
             finish_step(
                 task_id, sid, result.get("_logs"), result.get("_tokens_delta", 0),
                 repair=result.get("repair_attempts"), replan=result.get("replan_attempts"),
-                failed=result.get("status") == "failed",
+                failed=result.get("status") == "failed" or bool(result.get("_step_failed")),
                 spec=result.get("game_spec"), design=result.get("game_design"),
             )
             return result

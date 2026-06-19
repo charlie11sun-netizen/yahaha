@@ -3,17 +3,22 @@ from typing import Any, Optional, TypedDict
 
 MAX_REPAIR = 2
 MAX_REPLAN = 1
+MAX_GAMEPLAY_REPAIR = 2
 
 # step -> (agent_name, 展示名)
 STEP_META: dict[str, tuple[str, str]] = {
     "safety_intake": ("SafetyIntakeAgent", "Safety Intake"),
     "intent_spec": ("IntentSpecAgent", "Intent Spec"),
+    "archetype_router": ("ArchetypeRouterAgent", "Archetype Router"),
     "asset_processing": ("AssetAgent", "Asset Processing"),
     "game_design": ("GameDesignAgent", "Game Design"),
+    "balance_plan": ("BalanceAgent", "Balance Plan"),
     "code_generation": ("GameCodeAgent", "Code Generation"),
     "build_validation": ("BuildValidateAgent", "Build Validation"),
     "repair_code": ("GameCodeAgentRepair", "Repair Code"),
     "replan_game_design": ("GameDesignAgentReplan", "Replan Game Design"),
+    "gameplay_qa": ("GameplayQAAgent", "Gameplay QA"),
+    "gameplay_repair": ("GameplayRepairAgent", "Gameplay Repair"),
     "publish_artifact": ("PublishArtifactAgent", "Publish Artifact"),
 }
 
@@ -32,15 +37,19 @@ class GenerationState(TypedDict, total=False):
 
     safety_result: dict
     game_spec: dict
+    archetype_result: dict
     asset_manifest: dict
     game_design: dict
+    balance_config: dict
 
     generated_files: list  # [{"path": str, "content": str}]
     validation_result: dict
+    gameplay_qa_result: dict
     use_template_code: bool  # replan 兜底：回退到模板 game.js，保证产物可校验
 
     repair_attempts: int
     replan_attempts: int
+    gameplay_repair_attempts: int
 
     last_error: Optional[str]
     error_code: Optional[str]

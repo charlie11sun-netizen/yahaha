@@ -5,18 +5,23 @@ from datetime import datetime, timezone
 from app.core.config import settings
 from app.storage import s3
 
-# 7 个主阶段（agent → step key → 中文标题），对应 docs/create-page-design.md §6.3
+# 主阶段（agent → step key → 中文标题），对应 Create 生成控制台
 _STAGES = [
     ("SafetyIntakeAgent", "safety_intake", "检查创意和素材"),
     ("IntentSpecAgent", "intent_spec", "理解你的游戏创意"),
+    ("ArchetypeRouterAgent", "archetype_router", "选择玩法原型"),
     ("AssetAgent", "asset_processing", "整理素材"),
     ("GameDesignAgent", "game_design", "设计玩法规则"),
+    ("BalanceAgent", "balance_plan", "调试难度和平衡"),
     ("GameCodeAgent", "code_generation", "生成游戏代码"),
     ("BuildValidateAgent", "build_validation", "测试游戏是否可运行"),
+    ("GameplayQAAgent", "gameplay_qa", "玩法可玩性测试"),
+    ("GameplayRepairAgent", "gameplay_repair", "玩法调参修复"),
     ("PublishArtifactAgent", "publish_artifact", "准备预览版本"),
 ]
 _PROGRESS = {"safety_intake": 10, "intent_spec": 20, "asset_processing": 35, "game_design": 50,
-             "code_generation": 70, "build_validation": 85, "publish_artifact": 95}
+             "archetype_router": 28, "balance_plan": 58, "code_generation": 70, "build_validation": 82,
+             "gameplay_qa": 90, "gameplay_repair": 88, "publish_artifact": 96}
 _ST = {"done": "completed", "running": "running", "failed": "failed"}
 
 
@@ -138,6 +143,7 @@ def _latest_task_event_at(t):
 
 def _design_preview(spec: dict, design: dict):
     rules = design.get("rules") if isinstance(design.get("rules"), dict) else {}
+    balance = design.get("balance") if isinstance(design.get("balance"), dict) else {}
     fields = []
 
     def add(label, val):
@@ -148,12 +154,15 @@ def _design_preview(spec: dict, design: dict):
     add("类型", spec.get("genre"))
     add("主题", spec.get("theme"))
     add("视觉风格", spec.get("visual_style"))
+    add("玩法原型", design.get("archetype") or spec.get("archetype"))
     add("核心玩法", spec.get("core_loop"))
     add("胜利条件", spec.get("win_condition"))
     add("失败条件", spec.get("lose_condition"))
     add("难度曲线", spec.get("difficulty_curve"))
     if rules.get("survive_seconds"):
         add("回合时长(秒)", rules.get("survive_seconds"))
+    if balance:
+        add("平衡参数", f"目标 {balance.get('target_score')} / 生命 {balance.get('lives')} / 障碍 {balance.get('hazard_spawn_ms')}ms")
     return {"title": spec.get("title") or "", "fields": fields} if fields else None
 
 

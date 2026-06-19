@@ -749,9 +749,15 @@ function ActionPanel({
   );
 }
 
+function designField(task: Task | undefined, label: string) {
+  return task?.design?.fields.find((field) => field.label === label)?.value;
+}
+
 function ActivityDrawer({ onClose, task }: { onClose: () => void; task?: Task }) {
   const logs = task?.logs ?? [];
   const gameplayStatus = getGameplayQaStatus(task);
+  const archetype = designField(task, "玩法原型");
+  const balance = designField(task, "平衡参数");
 
   return (
     <div className="pf-drawer-backdrop" onClick={onClose}>
@@ -773,6 +779,8 @@ function ActivityDrawer({ onClose, task }: { onClose: () => void; task?: Task })
             <TechItem label="Manifest" value={task?.manifest_url || "Pending"} />
             <TechItem label="Preview" value={task?.preview_url || "Pending"} />
             {gameplayStatus && <TechItem label="Gameplay QA" value={gameplayTechLabel(gameplayStatus)} />}
+            {archetype && <TechItem label="Archetype" value={archetype} />}
+            {balance && <TechItem label="Balance" value={balance} />}
             <TechItem label="Repair attempts" value={`${task?.repair_attempts ?? 0}/${task?.max_repair_attempts ?? 2}`} />
             <TechItem label="Replan attempts" value={`${task?.replan_attempts ?? 0}/${task?.max_replan_attempts ?? 1}`} />
             <TechItem label="Tokens" value={(task?.tokens ?? 0).toLocaleString()} />

@@ -48,6 +48,7 @@ def run_generation(task_id: str) -> None:
         final = graph.invoke({
             "task_id": task_id, "user_id": user_id, "use_real": use_real, "status": "running",
             "prompt": idea, "asset_ids": asset_ids, "repair_attempts": 0, "replan_attempts": 0,
+            "gameplay_repair_attempts": 0,
         })
     except Exception as exc:  # noqa: BLE001
         err = str(exc)[:500]
