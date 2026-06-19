@@ -5,7 +5,7 @@ var TUTORIAL={{ tutorial_json }},HAZARD_NAMES={{ hazard_names_json }},REWARD_NAM
 var c=document.getElementById("stage"),x=c.getContext("2d"),W=0,H=0,keys={},mouse=null,run=true;
 var player,score,lives,timeLeft,hazards,stars,last=0,hazAt=0,starAt=0,combo=0,slowUntil=0,msg="";
 function size(){W=c.width=innerWidth;H=c.height=innerHeight}size();onresize=size;
-function dist(a,b,cx,cy){var dx=a-cx,dy=b-cy;return Math.sqrt(dx*dx+dy*dy)}
+function dist(a,b,cx,cy){return PF.dist(a,b,cx,cy)}
 function reset(){
   player={x:W*.5,y:H*.72,r:18,inv:0};score=0;lives=LIVES;timeLeft=ROUND;hazards=[];stars=[];combo=0;
   slowUntil=0;msg=TUTORIAL;last=performance.now();hazAt=last+2400;starAt=last+300;run=true;
@@ -41,7 +41,7 @@ function update(dt,now){
   timeLeft-=dt;if(timeLeft<=0||score>=TARGET){end(score>=TARGET);return}
   var ax=(keys.ArrowRight||keys.d?1:0)-(keys.ArrowLeft||keys.a?1:0),ay=(keys.ArrowDown||keys.s?1:0)-(keys.ArrowUp||keys.w?1:0);
   if(mouse){var dx=mouse.x-player.x,dy=mouse.y-player.y,dl=Math.sqrt(dx*dx+dy*dy);if(dl>6){ax+=dx/dl;ay+=dy/dl}}
-  var al=Math.max(1,Math.sqrt(ax*ax+ay*ay));player.x=Math.max(26,Math.min(W-26,player.x+ax/al*PLAYER_SPEED*dt));player.y=Math.max(42,Math.min(H-34,player.y+ay/al*PLAYER_SPEED*dt));
+  var al=Math.max(1,Math.sqrt(ax*ax+ay*ay));player.x=PF.clamp(player.x+ax/al*PLAYER_SPEED*dt,26,W-26);player.y=PF.clamp(player.y+ay/al*PLAYER_SPEED*dt,42,H-34);
   if(player.inv>0)player.inv-=dt;if(now>hazAt)spawnHazard(now);if(now>starAt)spawnStar(now);
   for(var i=hazards.length-1;i>=0;i--){var o=hazards[i],mul=(performance.now()<slowUntil)?0.48:1;o.x+=o.vx*dt*mul;o.y+=o.vy*dt*mul;o.t+=dt*4;
     if(o.x<-70||o.x>W+70||o.y<-70||o.y>H+70){hazards.splice(i,1);continue}
@@ -52,9 +52,9 @@ function update(dt,now){
   }
 }
 function applyPower(name){msg=name;if(/shield|bloom|phase/i.test(name)){player.inv=3}else if(/slow|field/i.test(name)){slowUntil=performance.now()+3600}else{score+=18;player.inv=Math.max(player.inv,.8)}}
-function star(cx,cy,r,color){x.fillStyle=color;x.beginPath();for(var i=0;i<10;i++){var rr=i%2?r*.42:r,a=i*.628-1.57;x.lineTo(cx+Math.cos(a)*rr,cy+Math.sin(a)*rr)}x.closePath();x.fill()}
+function star(cx,cy,r,color){PF.star(x,cx,cy,r,color)}
 function draw(){
-  var g=x.createLinearGradient(0,0,W,H);g.addColorStop(0,"#082238");g.addColorStop(1,"#17122c");x.fillStyle=g;x.fillRect(0,0,W,H);
+  x.fillStyle=PF.gradient(x,W,H,"#082238","#17122c");x.fillRect(0,0,W,H);
   x.strokeStyle="rgba(255,255,255,.08)";x.lineWidth=2;for(var i=0;i<14;i++){x.beginPath();x.arc((i*137)%W,(i*89)%H,44+(i%5)*28,0,6.29);x.stroke()}
   stars.forEach(function(s){star(s.x,s.y,s.r,s.power?"#8bfffb":ACCENT)});
   hazards.forEach(function(o){x.save();x.translate(o.x,o.y);x.rotate(o.t);x.fillStyle="#111827";x.strokeStyle="#f97316";x.lineWidth=3;x.beginPath();x.rect(-o.r,-o.r,o.r*2,o.r*2);x.fill();x.stroke();x.restore()});

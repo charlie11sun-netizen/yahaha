@@ -1,0 +1,16 @@
+var PF=(function(){
+  function clamp(v,lo,hi){return Math.max(lo,Math.min(hi,v))}
+  function dist(ax,ay,bx,by){var dx=ax-bx,dy=ay-by;return Math.sqrt(dx*dx+dy*dy)}
+  function choose(list,fallback){return list&&list.length?list[Math.floor(Math.random()*list.length)]:fallback}
+  function star(ctx,cx,cy,r,color){
+    ctx.fillStyle=color;ctx.beginPath();
+    for(var i=0;i<10;i++){var rr=i%2?r*.43:r,a=i*Math.PI/5-Math.PI/2;ctx.lineTo(cx+Math.cos(a)*rr,cy+Math.sin(a)*rr)}
+    ctx.closePath();ctx.fill()
+  }
+  function roundRect(ctx,x,y,w,h,r){
+    if(ctx.roundRect){ctx.roundRect(x,y,w,h,r);return}
+    r=Math.min(r,w/2,h/2);ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r)
+  }
+  function gradient(ctx,w,h,a,b){var g=ctx.createLinearGradient(0,0,w,h);g.addColorStop(0,a);g.addColorStop(1,b);return g}
+  return{clamp:clamp,dist:dist,choose:choose,star:star,roundRect:roundRect,gradient:gradient}
+})();

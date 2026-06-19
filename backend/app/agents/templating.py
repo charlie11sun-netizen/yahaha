@@ -113,7 +113,11 @@ def _template_ref(template_name: str, path: str) -> str:
 
 def render_files(template_name: str, config: dict) -> list[dict]:
     files = []
+    runtime = _env.get_template("shared/runtime.js.j2").render(**config)
     for path in _FILES:
         tmpl = _env.get_template(_template_ref(template_name, path))
-        files.append({"path": path, "content": tmpl.render(**config)})
+        content = tmpl.render(**config)
+        if path == "game.js":
+            content = runtime + "\n" + content
+        files.append({"path": path, "content": content})
     return files
