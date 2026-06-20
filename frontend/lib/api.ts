@@ -17,11 +17,20 @@ function authHeader(): Record<string, string> {
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
+// Forward the site-gate token to the (cross-origin) backend. After unlocking,
+// the gate stores it in the readable `pf_gate_token` cookie; when the gate is
+// disabled the cookie is absent and no header is sent.
+function gateHeader(): Record<string, string> {
+  if (typeof document === "undefined") return {};
+  const m = document.cookie.match(/(?:^|;\s*)pf_gate_token=([^;]+)/);
+  return m ? { "X-Gate-Token": decodeURIComponent(m[1]) } : {};
+}
+
 async function req<T>(
   path: string,
   opts: { method?: string; json?: unknown; form?: FormData } = {},
 ): Promise<T> {
-  const headers: Record<string, string> = { ...authHeader() };
+  const headers: Record<string, string> = { ...authHeader(), ...gateHeader() };
   let body: BodyInit | undefined;
   if (opts.json !== undefined) {
     headers["Content-Type"] = "application/json";

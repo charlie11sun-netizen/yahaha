@@ -17,7 +17,7 @@ export default function Nav() {
   const isCreate = path === "/create";
   const isStudio = path === "/me";
 
-  if (path.startsWith("/play/")) return null;
+  if (path.startsWith("/play/") || path === "/gate") return null;
 
   const goCreate = () => router.push(user ? "/create" : "/login?intent=create");
   const emitCreateEvent = (name: string) => {

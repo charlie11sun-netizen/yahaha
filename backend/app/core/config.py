@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     OAUTH_REDIRECT_BASE: str = "http://localhost:8000"
     FRONTEND_BASE_URL: str = "http://localhost:3000"
 
+    # Site access gate (front-door password). Empty = disabled (open). When set,
+    # every API request must carry a matching X-Gate-Token; shared with the web
+    # front-end via the same SITE_PASSWORD env var.
+    SITE_PASSWORD: str = ""
+
     # CORS
     CORS_ORIGINS: str = "http://localhost:3000"
 

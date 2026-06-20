@@ -97,6 +97,9 @@ services:
     build: ./frontend
     environment:
       NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+      # 整站访问密码门禁。留空 = 不启用（本地开发默认开放）；
+      # 部署时在 .env 里设好 SITE_PASSWORD，打开网站即需先输入此密码。
+      SITE_PASSWORD: ${SITE_PASSWORD:-}
       # Bind mounts on Windows/Docker don't deliver inotify events; poll so HMR
       # detects host edits and never leaves .next half-compiled.
       WATCHPACK_POLLING: "true"

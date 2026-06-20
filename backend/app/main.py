@@ -11,6 +11,7 @@ from sqlalchemy import text
 import app.models  # noqa: F401  注册所有表到 Base.metadata
 from app.api.routers import auth, games, oauth, tasks, uploads, users
 from app.core.config import settings
+from app.core.gate import gate_enabled, verify_gate_token
 from app.db.base import Base
 from app.db.session import engine
 from app.storage.s3 import ensure_bucket
@@ -28,13 +29,23 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="PlayForge API", version="0.1.0", lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins_list,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
-)
+# Front-door site gate: when SITE_PASSWORD is set, every request must carry a
+# valid X-Gate-Token (the web front-end attaches it after unlock). Exempts CORS
+# preflight, health checks, and the OAuth redirect flow (browser top-level
+# navigation / provider callback can't carry a custom header). Kept innermost so
+# CORS (added last, below) still wraps its 401 responses.
+_GATE_EXEMPT_EXACT = {"/health", "/health/ready"}
+_GATE_EXEMPT_PREFIXES = ("/auth/oauth",)
+
+
+@app.middleware("http")
+async def site_gate(request, call_next):
+    if gate_enabled() and request.method != "OPTIONS":
+        path = request.url.path
+        exempt = path in _GATE_EXEMPT_EXACT or path.startswith(_GATE_EXEMPT_PREFIXES)
+        if not exempt and not verify_gate_token(request.headers.get("X-Gate-Token")):
+            return JSONResponse(status_code=401, content={"detail": "Site locked. Unlock the site to continue."})
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -60,6 +71,16 @@ async def access_log(request, call_next):
     )
     return response
 
+
+# CORS outermost: answers preflight and adds headers to every response (gate
+# 401s included). X-Gate-Token must be allow-listed so the browser may send it.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins_list,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Gate-Token"],
+)
 
 app.include_router(auth.router)
 app.include_router(oauth.router)
