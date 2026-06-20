@@ -269,3 +269,130 @@ def title_from(idea: str) -> str:
         return "Orbit Bloom"
     w = " ".join(idea.strip().split()[:2])
     return (w[:1].upper() + w[1:]) if w else "Untitled Game"
+
+
+# ---------------------------------------------------------------------------
+# 3D (Three.js / WebGL) 参考实现 —— dimension=="3d" 的 few-shot 质量基线。
+# 这些是给模型看的"结构 + 手感"参考(本身不入校验);真实产物由模型生成。
+# index.html 通过同源相对路径 <script src="three.min.js"> 引入引擎,全局 THREE。
+# ---------------------------------------------------------------------------
+def shell_3d(title: str, accent: str, body: str, script: str) -> str:
+    css = (
+        "*{margin:0;padding:0;box-sizing:border-box}"
+        "html,body{height:100%;overflow:hidden;font-family:ui-monospace,monospace;"
+        "background:#05070f;color:#eaf2ff;-webkit-user-select:none;user-select:none;touch-action:none}"
+        "canvas{display:block;position:absolute;inset:0}"
+        ".hud{position:absolute;top:14px;left:16px;right:16px;display:flex;justify-content:space-between;"
+        "font-size:14px;letter-spacing:.04em;pointer-events:none;z-index:3;text-shadow:0 1px 3px rgba(0,0,0,.7)}"
+        ".hud b{color:" + accent + "}"
+        "#cross{position:absolute;left:50%;top:50%;width:18px;height:18px;transform:translate(-50%,-50%);z-index:3;pointer-events:none}"
+        "#cross:before,#cross:after{content:'';position:absolute;background:" + accent + ";opacity:.85}"
+        "#cross:before{left:8px;top:0;width:2px;height:18px}#cross:after{top:8px;left:0;height:2px;width:18px}"
+        ".hint{position:absolute;bottom:16px;left:0;right:0;text-align:center;font-size:12px;opacity:.6;z-index:3}"
+        ".over{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;"
+        "gap:16px;background:rgba(5,7,15,.86);z-index:5;text-align:center;padding:24px}"
+        ".over.show{display:flex}.over h2{font-size:30px;font-weight:800}.over p{opacity:.8}"
+        ".over .sc{font-size:46px;font-weight:800;color:" + accent + "}"
+        ".btn{pointer-events:auto;cursor:pointer;border:none;background:" + accent + ";color:#05070f;"
+        "font-family:inherit;font-weight:700;font-size:15px;padding:12px 26px;border-radius:10px}"
+    )
+    return (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        "<title>" + title + "</title>"
+        "<style>" + css + "</style></head><body>"
+        + body
+        + '<script src="three.min.js"></script>'
+        + "<script>" + script + "</script>"
+        "</body></html>"
+    )
+
+
+# ---------- Ion Arena (first-person wave shooter) ----------
+_FPS_BODY = (
+    '<div class="hud"><div>SCORE <b id="sc">0</b></div><div>WAVE <b id="wv">1</b> &middot; HP <b id="hp">100</b></div></div>'
+    '<div id="cross"></div>'
+    '<div class="hint">click to lock mouse &middot; WASD move &middot; mouse aim &middot; click to shoot</div>'
+    '<div class="over" id="over"><h2>Overrun</h2><div class="sc" id="of">0</div>'
+    '<p>targets destroyed</p><button class="btn" id="rs">Redeploy</button></div>'
+)
+_FPS_JS = r'''var renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(2,window.devicePixelRatio||1));renderer.setSize(innerWidth,innerHeight);document.body.appendChild(renderer.domElement);
+var scene=new THREE.Scene();scene.background=new THREE.Color(0x070a14);scene.fog=new THREE.Fog(0x070a14,16,95);
+var camera=new THREE.PerspectiveCamera(74,innerWidth/innerHeight,0.1,300);camera.rotation.order="YXZ";camera.position.set(0,1.7,0);
+addEventListener("resize",function(){camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight)});
+scene.add(new THREE.HemisphereLight(0x9fc4ff,0x202840,0.9));var dir=new THREE.DirectionalLight(0xffffff,0.9);dir.position.set(8,20,6);scene.add(dir);
+var R=42;var floor=new THREE.Mesh(new THREE.CircleGeometry(R,64),new THREE.MeshStandardMaterial({color:0x121a2e,metalness:0.2,roughness:0.85}));floor.rotation.x=-Math.PI/2;scene.add(floor);
+var grid=new THREE.GridHelper(R*2,40,0x22d3ee,0x16304a);grid.position.y=0.02;scene.add(grid);
+var AC=window.AudioContext||window.webkitAudioContext,ac=AC?new AC():null;
+function beep(f,d,t){if(!ac)return;if(ac.state==="suspended")ac.resume();var o=ac.createOscillator(),g=ac.createGain();o.type=t||"square";o.frequency.value=f;o.connect(g);g.connect(ac.destination);g.gain.setValueAtTime(0.12,ac.currentTime);g.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+d);o.start();o.stop(ac.currentTime+d)}
+var keys={},yaw=0,pitch=0,locked=false,center=new THREE.Vector2(0,0);
+var enemies=[],bursts=[],score=0,wave=1,hp=100,run=true,shake=0;
+var raycaster=new THREE.Raycaster(),clock=new THREE.Clock();
+addEventListener("keydown",function(e){keys[e.code]=true});addEventListener("keyup",function(e){keys[e.code]=false});
+renderer.domElement.addEventListener("click",function(){if(ac&&ac.state==="suspended")ac.resume();if(!locked){renderer.domElement.requestPointerLock();}else{shoot();}});
+document.addEventListener("pointerlockchange",function(){locked=document.pointerLockElement===renderer.domElement});
+addEventListener("mousemove",function(e){if(!locked)return;yaw-=e.movementX*0.0022;pitch-=e.movementY*0.0022;pitch=Math.max(-1.2,Math.min(1.2,pitch))});
+function enemy(){var g=new THREE.Group();var body=new THREE.Mesh(new THREE.IcosahedronGeometry(0.9,0),new THREE.MeshStandardMaterial({color:0xff3e6a,emissive:0x551020,roughness:0.4}));g.add(body);var eye=new THREE.Mesh(new THREE.SphereGeometry(0.22,12,12),new THREE.MeshBasicMaterial({color:0xffd166}));eye.position.set(0,0,0.78);g.add(eye);var a=Math.random()*Math.PI*2,d=R*0.85;g.position.set(Math.cos(a)*d,1.0,Math.sin(a)*d);g.userData.body=body;scene.add(g);enemies.push(g)}
+function spawnWave(){for(var i=0;i<3+wave*2;i++)enemy()}
+function clearWaveIfEmpty(){if(!enemies.length){wave++;document.getElementById("wv").textContent=wave;spawnWave()}}
+function burst(pos,color){for(var i=0;i<14;i++){var m=new THREE.Mesh(new THREE.BoxGeometry(0.16,0.16,0.16),new THREE.MeshBasicMaterial({color:color}));m.position.copy(pos);m.userData.v=new THREE.Vector3((Math.random()-0.5)*8,Math.random()*7,(Math.random()-0.5)*8);m.userData.l=1;scene.add(m);bursts.push(m)}}
+function shoot(){beep(720,0.08,"square");shake=0.5;raycaster.setFromCamera(center,camera);var meshes=enemies.map(function(e){return e.userData.body});var hit=raycaster.intersectObjects(meshes,false);if(hit.length){var grp=hit[0].object.parent;burst(grp.position,0xff7a90);scene.remove(grp);enemies.splice(enemies.indexOf(grp),1);score+=10;document.getElementById("sc").textContent=score;beep(180,0.16,"sawtooth");clearWaveIfEmpty()}}
+function damage(n){hp-=n;document.getElementById("hp").textContent=Math.max(0,Math.round(hp));if(hp<=0)end()}
+function end(){run=false;if(document.pointerLockElement)document.exitPointerLock();document.getElementById("of").textContent=score;document.getElementById("over").classList.add("show");try{window.parent.postMessage({type:"playforge:score",points:score},"*")}catch(e){}}
+var fwd=new THREE.Vector3(),right=new THREE.Vector3(),mv=new THREE.Vector3();
+function frame(){if(!run)return;requestAnimationFrame(frame);var dt=Math.min(0.05,clock.getDelta());
+camera.rotation.y=yaw;camera.rotation.x=pitch;fwd.set(-Math.sin(yaw),0,-Math.cos(yaw));right.set(Math.cos(yaw),0,-Math.sin(yaw));mv.set(0,0,0);
+if(keys.KeyW||keys.ArrowUp)mv.add(fwd);if(keys.KeyS||keys.ArrowDown)mv.sub(fwd);if(keys.KeyD||keys.ArrowRight)mv.add(right);if(keys.KeyA||keys.ArrowLeft)mv.sub(right);
+if(mv.lengthSq()>0){mv.normalize().multiplyScalar(9*dt);camera.position.add(mv)}
+var dd=Math.hypot(camera.position.x,camera.position.z);if(dd>R-1.5){var s=(R-1.5)/dd;camera.position.x*=s;camera.position.z*=s}
+for(var i=enemies.length-1;i>=0;i--){var e=enemies[i],dx=camera.position.x-e.position.x,dz=camera.position.z-e.position.z,dl=Math.hypot(dx,dz)||1,sp=(2.2+wave*0.25)*dt;e.position.x+=dx/dl*sp;e.position.z+=dz/dl*sp;e.lookAt(camera.position.x,1.0,camera.position.z);e.userData.body.rotation.y+=dt*2;if(dl<1.6){damage(18);burst(e.position,0xff3e6a);scene.remove(e);enemies.splice(i,1);clearWaveIfEmpty()}}
+for(var i=bursts.length-1;i>=0;i--){var b=bursts[i];b.userData.l-=dt*1.6;if(b.userData.l<=0){scene.remove(b);bursts.splice(i,1);continue}b.userData.v.y-=12*dt;b.position.addScaledVector(b.userData.v,dt);b.scale.setScalar(Math.max(0.02,b.userData.l))}
+if(shake>0){shake=Math.max(0,shake-dt*3);camera.position.x+=(Math.random()-0.5)*shake*0.18;camera.position.z+=(Math.random()-0.5)*shake*0.18}
+renderer.render(scene,camera)}
+spawnWave();frame();
+document.getElementById("rs").onclick=function(){for(var i=0;i<enemies.length;i++)scene.remove(enemies[i]);for(var i=0;i<bursts.length;i++)scene.remove(bursts[i]);enemies=[];bursts=[];score=0;wave=1;hp=100;document.getElementById("sc").textContent=0;document.getElementById("wv").textContent=1;document.getElementById("hp").textContent=100;document.getElementById("over").classList.remove("show");camera.position.set(0,1.7,0);yaw=0;pitch=0;run=true;clock.getDelta();spawnWave();frame()};'''
+
+# ---------- Vector Rush (third-person 3D runner) ----------
+_RUNNER_BODY = (
+    '<div class="hud"><div>SCORE <b id="sc">0</b></div><div>DIST <b id="ds">0</b>m</div></div>'
+    '<div class="hint">A / D or arrows switch lanes &middot; Space / up to jump &middot; tap left / right</div>'
+    '<div class="over" id="over"><h2>Wiped out</h2><div class="sc" id="of">0</div>'
+    '<p>orbs collected</p><button class="btn" id="rs">Run again</button></div>'
+)
+_RUNNER_JS = r'''var renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(2,window.devicePixelRatio||1));renderer.setSize(innerWidth,innerHeight);document.body.appendChild(renderer.domElement);
+var scene=new THREE.Scene();scene.background=new THREE.Color(0x0a1026);scene.fog=new THREE.Fog(0x0a1026,22,72);
+var camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.1,200);camera.position.set(0,4.4,8);camera.lookAt(0,1,-6);
+addEventListener("resize",function(){camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight)});
+scene.add(new THREE.HemisphereLight(0xbcd3ff,0x10162e,1.0));var dir=new THREE.DirectionalLight(0xffffff,0.8);dir.position.set(-6,12,4);scene.add(dir);
+var LANES=[-2.4,0,2.4];
+var track=new THREE.Mesh(new THREE.PlaneGeometry(9,400),new THREE.MeshStandardMaterial({color:0x141d3a,roughness:0.95}));track.rotation.x=-Math.PI/2;track.position.z=-180;scene.add(track);
+var dashes=[];for(var i=0;i<40;i++){var d=new THREE.Mesh(new THREE.BoxGeometry(0.12,0.02,2),new THREE.MeshBasicMaterial({color:0x2b3c6b}));d.position.set(0,0.03,-i*5);scene.add(d);dashes.push(d)}
+var player=new THREE.Group();var ship=new THREE.Mesh(new THREE.ConeGeometry(0.6,1.6,6),new THREE.MeshStandardMaterial({color:0x34f5c5,emissive:0x07323b,roughness:0.4}));ship.rotation.x=Math.PI/2;player.add(ship);player.position.set(0,0.9,4);scene.add(player);
+var AC=window.AudioContext||window.webkitAudioContext,ac=AC?new AC():null;
+function beep(f,d,t){if(!ac)return;if(ac.state==="suspended")ac.resume();var o=ac.createOscillator(),g=ac.createGain();o.type=t||"triangle";o.frequency.value=f;o.connect(g);g.connect(ac.destination);g.gain.setValueAtTime(0.1,ac.currentTime);g.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+d);o.start();o.stop(ac.currentTime+d)}
+var lane=1,targetX=0,vy=0,jumping=false,items=[],speed=22,dist=0,score=0,run=true,clock=new THREE.Clock();
+function setLane(n){lane=Math.max(0,Math.min(2,n));targetX=LANES[lane];beep(520,0.05)}
+addEventListener("keydown",function(e){if(e.code==="ArrowLeft"||e.code==="KeyA")setLane(lane-1);else if(e.code==="ArrowRight"||e.code==="KeyD")setLane(lane+1);else if((e.code==="Space"||e.code==="ArrowUp"||e.code==="KeyW")&&!jumping){jumping=true;vy=9;beep(680,0.12)}});
+addEventListener("pointerdown",function(e){if(e.clientX<innerWidth*0.5)setLane(lane-1);else setLane(lane+1)});
+function obstacle(z){var bad=Math.random()<0.62,m;if(bad){m=new THREE.Mesh(new THREE.BoxGeometry(1.4,1.4,1.4),new THREE.MeshStandardMaterial({color:0xff3e6a,emissive:0x4a0d1d,roughness:0.5}));m.position.y=0.7}else{m=new THREE.Mesh(new THREE.TorusGeometry(0.45,0.16,10,18),new THREE.MeshStandardMaterial({color:0xffd166,emissive:0x4a3a00}));m.position.y=1;m.rotation.x=Math.PI/2}m.position.x=LANES[Math.floor(Math.random()*3)];m.position.z=z;m.userData.bad=bad;scene.add(m);items.push(m)}
+for(var i=0;i<6;i++)obstacle(-20-i*14);
+function end(){run=false;document.getElementById("of").textContent=score;document.getElementById("over").classList.add("show");try{window.parent.postMessage({type:"playforge:score",points:score},"*")}catch(e){}}
+function frame(){if(!run)return;requestAnimationFrame(frame);var dt=Math.min(0.05,clock.getDelta());speed+=dt*0.6;dist+=speed*dt;
+player.position.x+=(targetX-player.position.x)*Math.min(1,dt*12);
+if(jumping){vy-=26*dt;player.position.y+=vy*dt;if(player.position.y<=0.9){player.position.y=0.9;jumping=false;vy=0}}
+player.rotation.z=(targetX-player.position.x)*0.4;ship.rotation.z+=dt*3;
+for(var i=0;i<dashes.length;i++){dashes[i].position.z+=speed*dt;if(dashes[i].position.z>10)dashes[i].position.z-=200}
+for(var i=items.length-1;i>=0;i--){var o=items[i];o.position.z+=speed*dt;if(!o.userData.bad)o.rotation.z+=dt*4;
+if(o.position.z>6){scene.remove(o);items.splice(i,1);obstacle(-150-Math.random()*20);continue}
+var near=Math.abs(o.position.z-player.position.z)<1.0&&Math.abs(o.position.x-player.position.x)<1.0;
+if(near){if(o.userData.bad){if(player.position.y<1.6){end();return}}else{score+=5;document.getElementById("sc").textContent=score;beep(880,0.08);scene.remove(o);items.splice(i,1);obstacle(-150-Math.random()*20);continue}}}
+document.getElementById("ds").textContent=Math.floor(dist);renderer.render(scene,camera)}
+frame();
+document.getElementById("rs").onclick=function(){for(var i=0;i<items.length;i++)scene.remove(items[i]);items=[];lane=1;targetX=0;player.position.set(0,0.9,4);vy=0;jumping=false;speed=22;dist=0;score=0;document.getElementById("sc").textContent=0;document.getElementById("over").classList.remove("show");run=true;clock.getDelta();for(var i=0;i<6;i++)obstacle(-20-i*14);frame()};'''
+
+BUNDLES.update({
+    "three_fps": shell_3d("Ion Arena", "#22d3ee", _FPS_BODY, _FPS_JS),
+    "three_runner": shell_3d("Vector Rush", "#34f5c5", _RUNNER_BODY, _RUNNER_JS),
+})

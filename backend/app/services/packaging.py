@@ -6,6 +6,7 @@
 """
 import hashlib
 import json
+import os
 
 from app.models.common import now_utc
 from app.storage import s3
@@ -14,7 +15,24 @@ _CONTENT_TYPE = {
     "index.html": "text/html; charset=utf-8",
     "style.css": "text/css; charset=utf-8",
     "game.js": "application/javascript; charset=utf-8",
+    "three.min.js": "application/javascript; charset=utf-8",
 }
+
+# 自托管的 3D 引擎（vendored Three.js UMD）。发布 3D 游戏时随 bundle 同源注入，
+# 用相对路径 <script src="three.min.js"> 引入，绕过外链校验、保持 network=false。
+_THREE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "agents", "vendor", "three.min.js")
+_THREE_CACHE: bytes | None = None
+
+
+def _three_engine_bytes() -> bytes | None:
+    global _THREE_CACHE
+    if _THREE_CACHE is None:
+        try:
+            with open(_THREE_PATH, "rb") as fh:
+                _THREE_CACHE = fh.read()
+        except OSError:
+            _THREE_CACHE = b""
+    return _THREE_CACHE or None
 
 
 def write_bundle(game_id: str, version: str, html: str, title: str, author_name: str) -> dict:
@@ -50,6 +68,8 @@ def publish_generated(state: dict) -> tuple[str, str, str]:
     summary = str(spec.get("summary") or prompt)[:200]
     cover = asset_manifest.get("cover") or "linear-gradient(135deg,#ff8a3d,#ff3ea5)"
     tags = [str(t)[:30] for t in (spec.get("tags") or [])][:4] + ["AI"]
+    if str(state.get("dimension")) == "3d":
+        tags.append("3D")
 
     db = SessionLocal()
     try:
@@ -77,6 +97,17 @@ def publish_generated(state: dict) -> tuple[str, str, str]:
                 "path": f["path"], "url": s3.public_url(key),
                 "sha256": hashlib.sha256(f["content"].encode("utf-8")).hexdigest(),
             })
+
+        # 3D：把自托管引擎放进同一前缀，bundle 内用相对路径加载（不进 validate_files）。
+        if str(state.get("dimension")) == "3d":
+            engine = _three_engine_bytes()
+            if engine:
+                ekey = f"{prefix}/three.min.js"
+                s3.put_object(ekey, engine, _CONTENT_TYPE["three.min.js"])
+                uploaded.append({
+                    "path": "three.min.js", "url": s3.public_url(ekey),
+                    "sha256": hashlib.sha256(engine).hexdigest(),
+                })
 
         index_sha = next((u["sha256"] for u in uploaded if u["path"] == "index.html"), "")
         version = GameVersion(

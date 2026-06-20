@@ -39,6 +39,7 @@ class GenerationTask(PkMixin, TimestampMixin, Base):
 
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     idea: Mapped[str] = mapped_column(Text)
+    dimension: Mapped[str] = mapped_column(String(8), default="2d", server_default="2d")  # 2d | 3d
     status: Mapped[str] = mapped_column(String(20), default=TaskStatus.PENDING, index=True)
     current_step: Mapped[int] = mapped_column(Integer, default=0)
     current_agent: Mapped[str | None] = mapped_column(String(40), nullable=True)

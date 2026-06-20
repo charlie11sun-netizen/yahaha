@@ -23,7 +23,7 @@ def _owned_task(task_id: str, user, db: Session) -> GenerationTask:
 
 @router.post("", dependencies=[Depends(rate_limit(20, 3600, "task_create"))])
 def create_task(body: TaskCreateIn, user=Depends(get_current_user), db: Session = Depends(get_db)):
-    task = GenerationTask(user_id=user.id, idea=body.idea, status=TaskStatus.PENDING)
+    task = GenerationTask(user_id=user.id, idea=body.idea, status=TaskStatus.PENDING, dimension=body.dimension)
     if body.asset_ids:
         task.assets = (
             db.query(Asset)

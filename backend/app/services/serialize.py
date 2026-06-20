@@ -158,6 +158,7 @@ def _design_preview(spec: dict, design: dict):
 
     add("标题", spec.get("title"))
     add("类型", spec.get("genre"))
+    add("维度", "3D · WebGL" if str(spec.get("dimension")) == "3d" else "2D · Canvas")
     add("主题", spec.get("theme"))
     add("视觉风格", spec.get("visual_style"))
     add("玩法原型", design.get("archetype") or spec.get("archetype"))
@@ -221,6 +222,7 @@ def task_out(t) -> dict:
         "repair_attempts": t.repair_attempts, "replan_attempts": t.replan_attempts,
         "max_repair_attempts": t.max_repair_attempts, "max_replan_attempts": t.max_replan_attempts,
         "tokens": t.tokens_used, "error": t.error, "error_code": t.error_code, "idea": t.idea,
+        "dimension": getattr(t, "dimension", "2d") or "2d",
         "created_at": _iso(t.created_at), "started_at": _iso(t.started_at),
         "finished_at": _iso(t.finished_at), "updated_at": _iso(latest_event_at),
         "progress": progress, "game_title": game_title,

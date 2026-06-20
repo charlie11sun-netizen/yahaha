@@ -89,6 +89,7 @@ export interface Task {
   error: string | null;
   error_code?: string | null;
   idea: string;
+  dimension?: "2d" | "3d";
   progress?: number;
   game_title?: string;
   manifest_url?: string | null;

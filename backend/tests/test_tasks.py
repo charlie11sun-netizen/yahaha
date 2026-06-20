@@ -15,6 +15,42 @@ def test_create_and_list_task(client):
     assert any(t["id"] == tid for t in items)
 
 
+def test_create_task_dimension_3d(client):
+    h = _auth(client)
+    r = client.post("/tasks", json={"idea": "a 3d fps", "asset_ids": [], "dimension": "3d"}, headers=h)
+    assert r.status_code == 200
+    tid = r.json()["task_id"]
+    t = client.get(f"/tasks/{tid}", headers=h).json()
+    assert t["dimension"] == "3d"
+
+
+def test_create_task_dimension_defaults_2d(client):
+    h = _auth(client)
+    tid = client.post("/tasks", json={"idea": "a platformer", "asset_ids": []}, headers=h).json()["task_id"]
+    t = client.get(f"/tasks/{tid}", headers=h).json()
+    assert t["dimension"] == "2d"
+
+
+def test_create_task_dimension_invalid_rejected(client):
+    h = _auth(client)
+    r = client.post("/tasks", json={"idea": "x", "asset_ids": [], "dimension": "4d"}, headers=h)
+    assert r.status_code == 422
+
+
+def test_three_engine_vendored_and_injected():
+    """3D 引擎已 vendored，且 3D bundle 会注入 three.min.js（2D 不注入）。"""
+    from app.agents import nodes
+    from app.services import packaging
+
+    assert (packaging._three_engine_bytes() or b"").startswith(b"/**")  # Three.js license banner
+    files_3d = nodes._assemble_bundle({"game.js": "x" * 500}, "T", dimension="3d")
+    idx_3d = next(f["content"] for f in files_3d if f["path"] == "index.html")
+    assert "three.min.js" in idx_3d
+    files_2d = nodes._assemble_bundle({"game.js": "x" * 500}, "T", dimension="2d")
+    idx_2d = next(f["content"] for f in files_2d if f["path"] == "index.html")
+    assert "three.min.js" not in idx_2d
+
+
 def test_delete_active_task_rejected(client):
     h = _auth(client)
     tid = client.post("/tasks", json={"idea": "x", "asset_ids": []}, headers=h).json()["task_id"]

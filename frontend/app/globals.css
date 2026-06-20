@@ -1927,6 +1927,60 @@ img {
   padding: 0 14px;
 }
 
+.pf-dimension-row {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr 1fr;
+  margin-top: 10px;
+}
+
+.pf-dimension-option {
+  align-items: flex-start;
+  background: #fff;
+  border: 1px solid #dfe5f1;
+  border-radius: 12px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 13px 15px;
+  text-align: left;
+}
+
+.pf-dimension-option:hover {
+  border-color: #c3cbe0;
+}
+
+.pf-dimension-option.is-active {
+  border-color: #7c5cff;
+  box-shadow: 0 0 0 4px rgba(124, 92, 255, 0.12);
+}
+
+.pf-dimension-title {
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.pf-dimension-sub {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.pf-dimension-note {
+  align-items: center;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 10px;
+  color: #9a3412;
+  display: flex;
+  font-size: 12.5px;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 9px 12px;
+}
+
 .pf-upload-zone {
   align-items: center;
   background: #fbfcff;

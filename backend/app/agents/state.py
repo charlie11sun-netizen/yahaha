@@ -30,6 +30,7 @@ class GenerationState(TypedDict, total=False):
     task_id: str
     user_id: str
     use_real: bool
+    dimension: str  # "2d" | "3d"
 
     status: str
     prompt: str

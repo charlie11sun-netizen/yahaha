@@ -114,8 +114,8 @@ export const api = {
     Array.from(files).forEach((f) => fd.append("files", f));
     return req<{ assets: UploadedAsset[] }>("/uploads", { form: fd });
   },
-  createTask: (idea: string, asset_ids: string[]) =>
-    req<{ task_id: string }>("/tasks", { json: { idea, asset_ids } }),
+  createTask: (idea: string, asset_ids: string[], dimension: "2d" | "3d" = "2d") =>
+    req<{ task_id: string }>("/tasks", { json: { idea, asset_ids, dimension } }),
   tasks: () => req<{ items: Task[] }>("/tasks"),
   task: (id: string) => req<Task>(`/tasks/${id}`),
   retryTask: (id: string) => req<{ task_id: string }>(`/tasks/${id}/retry`, { method: "POST" }),

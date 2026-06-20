@@ -1,4 +1,6 @@
 """请求体 Schema（响应统一用 services/serialize.py 输出 dict）。"""
+from typing import Literal
+
 from pydantic import BaseModel, EmailStr, Field
 
 
@@ -42,3 +44,4 @@ class ScoreIn(BaseModel):
 class TaskCreateIn(BaseModel):
     idea: str = Field(min_length=1)
     asset_ids: list[str] = []
+    dimension: Literal["2d", "3d"] = "2d"  # 2D Canvas 还是 3D WebGL(Three.js)

