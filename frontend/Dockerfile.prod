@@ -1,0 +1,22 @@
+# Production frontend image: `next build` + `next start`.
+# NEXT_PUBLIC_* is inlined into the client bundle at BUILD time, so the public
+# API URL must be passed as a build arg (not just a runtime env). SITE_PASSWORD
+# is read at RUNTIME by middleware.ts and is intentionally NOT baked in.
+FROM node:20-alpine
+
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+RUN npm install
+
+COPY . .
+
+# Public URL of the backend API, baked into the client bundle.
+ARG NEXT_PUBLIC_API_BASE_URL
+ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
+
+RUN npm run build
+
+ENV NODE_ENV=production
+EXPOSE 3000
+CMD ["npm", "start"]

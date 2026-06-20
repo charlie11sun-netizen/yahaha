@@ -1,0 +1,134 @@
+# Production / deployable PlayForge stack.
+#
+# Differences vs the dev docker-compose.yml:
+#   - production builds (frontend `next start`, api uvicorn without --reload, no source bind-mounts)
+#   - public URLs are parameterised (PUBLIC_API_URL / PUBLIC_S3_URL / PUBLIC_WEB_URL) instead of localhost
+#   - the whole site sits behind a password: SITE_PASSWORD is REQUIRED (compose errors if unset)
+#   - only web (3000), api (8000) and the MinIO S3 port (9000) are published; Postgres/Redis/console stay internal
+#
+# Same `name:` as the dev stack => it reuses the SAME named volumes (pgdata/miniodata).
+# On the SAME machine your existing games are already in those volumes (no migration needed).
+# To move to a NEW host, run deploy/migrate-export.sh here and deploy/migrate-import.sh there first.
+#
+# Run:  docker compose -f docker-compose.prod.yml up -d --build
+name: playforge
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-playforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a strong POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-playforge}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-playforge}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set a strong MINIO_ROOT_PASSWORD in .env}
+    ports:
+      - "9000:9000"   # S3 API — browsers load game bundles from here (PUBLIC_S3_URL)
+    volumes:
+      - miniodata:/data
+
+  # Create the bucket and make the games prefix anonymously readable so the
+  # sandboxed <iframe> can load bundles cross-origin (the site gate covers the
+  # app + API; raw bundle URLs in object storage are UUID-obscured but public).
+  createbuckets:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin}; do echo 'waiting for minio...'; sleep 2; done;
+      mc mb --ignore-existing local/${S3_BUCKET:-playforge};
+      mc anonymous set download local/${S3_BUCKET:-playforge};
+      echo 'bucket ready';
+      exit 0;
+      "
+
+  api:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-playforge}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-playforge}
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT: http://minio:9000
+      # Public address browsers use to fetch game bundles. MUST be reachable from
+      # the visitor's browser (server IP or domain), e.g. http://YOUR_HOST:9000
+      S3_PUBLIC_ENDPOINT: ${PUBLIC_S3_URL:?set PUBLIC_S3_URL in .env}
+      CORS_ORIGINS: ${PUBLIC_WEB_URL:?set PUBLIC_WEB_URL in .env}
+      FRONTEND_BASE_URL: ${PUBLIC_WEB_URL}
+      OAUTH_REDIRECT_BASE: ${PUBLIC_API_URL:?set PUBLIC_API_URL in .env}
+      # SITE_PASSWORD comes from .env (env_file). Backend requires X-Gate-Token when set.
+      SITE_PASSWORD: ${SITE_PASSWORD:?set SITE_PASSWORD in .env — site must not be public}
+    command: sh -c "python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      createbuckets:
+        condition: service_completed_successfully
+
+  worker:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-playforge}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-playforge}
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: ${PUBLIC_S3_URL}
+    command: celery -A app.tasks.celery_app.celery worker --loglevel=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      createbuckets:
+        condition: service_completed_successfully
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+      args:
+        # Baked into the client bundle at build time. Change it => rebuild `web`.
+        NEXT_PUBLIC_API_BASE_URL: ${PUBLIC_API_URL:?set PUBLIC_API_URL in .env}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      # The front-door password. Read at runtime by middleware.ts; never exposed
+      # to the client. Empty => site is OPEN, so it is required here.
+      SITE_PASSWORD: ${SITE_PASSWORD:?set SITE_PASSWORD in .env — site must not be public}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  miniodata:
