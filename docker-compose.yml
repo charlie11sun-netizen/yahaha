@@ -97,12 +97,18 @@ services:
     build: ./frontend
     environment:
       NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+      # Bind mounts on Windows/Docker don't deliver inotify events; poll so HMR
+      # detects host edits and never leaves .next half-compiled.
+      WATCHPACK_POLLING: "true"
     command: npm run dev
     ports:
       - "3000:3000"
     volumes:
       - ./frontend:/app
+      # Keep build output on the container's own filesystem. Sharing .next with
+      # the Windows host corrupts it and makes every /_next/static asset 404.
       - /app/node_modules
+      - /app/.next
     depends_on:
       - api
 
