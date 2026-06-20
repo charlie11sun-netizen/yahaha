@@ -423,7 +423,7 @@ BUNDLES.update({
 import os as _os
 
 _CURATED_DIR = _os.path.join(_os.path.dirname(__file__), "curated")
-NEEDS_ENGINE = {"warpspire"}
+NEEDS_ENGINE = {"warpspire", "huoxiantuwei"}
 
 
 def _load_curated(name: str, filename: str) -> None:
@@ -434,3 +434,4 @@ def _load_curated(name: str, filename: str) -> None:
 
 _load_curated("prismbreak", "prism-break.html")
 _load_curated("warpspire", "warp-spire.html")
+_load_curated("huoxiantuwei", "huoxian-tuwei.html")

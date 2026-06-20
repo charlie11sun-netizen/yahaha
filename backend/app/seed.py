@@ -55,6 +55,20 @@ SEED_GAMES = [
         "prompt": "",
         "age_days": 2,
     },
+    {
+        "bundle": "huoxiantuwei",
+        "title": "火线突围",
+        "genre": "3D ARENA SHOOTER",
+        "summary": "一款霓虹街区 3D 枪战游戏。在废弃仓库街区利用掩体压制敌人、拾取补给升级武器，"
+                   "扛过一波波进攻并击败首领 Iron Gate Captain。自托管 Three.js，和其它游戏一样从对象存储加载。",
+        "tags": ["3D", "Shooter", "Action"],
+        "cover": "linear-gradient(135deg,#ff8a3d,#ff3ea5)",
+        "plays": 920,
+        "likes": 74,
+        "source": GameSource.SEED,
+        "prompt": "枪战游戏，有障碍物，有道具，枪械可以升级",
+        "age_days": 1,
+    },
 ]
 
 # Previously-seeded sample games that are no longer part of the curated set.
