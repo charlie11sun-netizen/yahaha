@@ -11,7 +11,7 @@ FORBIDDEN_PATTERNS = [
     (r"eval\s*\(", "eval()"),
     (r"new\s+Function", "new Function"),
     (r"document\.cookie", "document.cookie"),
-    (r"window\.(parent|top)", "parent/top access"),
+    (r"window\.(parent|top)(?!\s*\.\s*postMessage)", "parent/top access"),
     (r"\blocalStorage\b", "localStorage"),
     (r"\bsessionStorage\b", "sessionStorage"),
     (r"fetch\s*\(", "fetch()"),

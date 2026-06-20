@@ -20,6 +20,7 @@ GENRE_TEMPLATE = {
     "quiz": "canvas_arcade",
 }
 ARCHETYPE_TEMPLATE = {
+    "vertical_shooter": "canvas_arcade",  # crash-fallback only; the model is the primary shooter author
     "lane_runner": "lane_runner",
     "topdown_collect": "topdown_collect",
     "logic_grid": "logic_grid",

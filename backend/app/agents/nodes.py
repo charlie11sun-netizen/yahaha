@@ -33,6 +33,11 @@ _THEME_COVER = {
 }
 
 _ARCHETYPES = {
+    "vertical_shooter": {
+        "genre": "shooter",
+        "label": "vertical shoot-'em-up",
+        "loop": "fly, shoot waves of enemies, dodge enemy bullets, grab power-ups, beat the boss",
+    },
     "lane_runner": {
         "genre": "runner",
         "label": "lane runner",
@@ -87,6 +92,8 @@ def _detect_theme(prompt: str) -> str:
 
 def _detect_genre(prompt: str) -> str:
     p = prompt.lower()
+    if _has_any(p, ["shoot", "shmup", "raiden", "bullet hell", "fighter jet", "战机", "雷霆", "飞机大战", "打飞机", "射击", "弹幕", "空战"]):
+        return "shooter"
     if _has_any(p, ["puzzle", "logic", "pipe", "circuit", "rune", "match", "解谜", "逻辑", "连接", "方块"]):
         return "puzzle"
     if _has_any(p, ["runner", "race", "dodge", "lane", "run", "dash", "躲", "跑", "赛道", "漂移"]):
@@ -106,7 +113,9 @@ def _heuristic_spec(prompt: str) -> dict:
         "pointer": ["move"],
         "hint": "move with mouse / arrows, collect rewards, avoid hazards",
     }
-    if genre == "puzzle":
+    if genre == "shooter":
+        controls = {"keyboard": ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space fire"], "pointer": ["move", "hold to fire"], "hint": "fly with arrows / mouse, hold to fire, dodge bullets, defeat the boss"}
+    elif genre == "puzzle":
         controls = {"keyboard": ["Space restart"], "pointer": ["click tiles"], "hint": "click tiles to rotate the path"}
     elif genre == "runner":
         controls = {"keyboard": ["ArrowLeft", "ArrowRight"], "pointer": ["tap left/right"], "hint": "switch lanes, collect bonuses, avoid blockers"}
@@ -116,7 +125,7 @@ def _heuristic_spec(prompt: str) -> dict:
         "genre": genre,
         "theme": theme,
         "target_runtime": "canvas",
-        "core_loop": _ARCHETYPES["logic_grid" if genre == "puzzle" else "lane_runner" if genre == "runner" else "topdown_collect"]["loop"],
+        "core_loop": _ARCHETYPES["vertical_shooter" if genre == "shooter" else "logic_grid" if genre == "puzzle" else "lane_runner" if genre == "runner" else "topdown_collect"]["loop"],
         "controls": controls,
         "win_condition": "reach_target_score",
         "lose_condition": "timer_or_lives_depleted",
@@ -189,11 +198,15 @@ def _coerce_design(data: dict, spec: dict | None = None) -> dict:
         if isinstance(data.get("screen"), dict):
             base["screen"].update(data["screen"])
         if isinstance(data.get("entities"), list) and data["entities"]:
-            base["entities"] = data["entities"][:8]
+            base["entities"] = data["entities"][:10]
         if isinstance(data.get("rules"), dict):
             base["rules"].update(data["rules"])
         if isinstance(data.get("ui"), dict):
             base["ui"].update(data["ui"])
+        # 模型优先：保留 GameDesignAgent 产出的丰富结构，原样喂给 Coder
+        for key in ("background", "player", "waves", "powerups", "boss", "juice"):
+            if data.get(key):
+                base[key] = data[key]
     return base
 
 
@@ -221,6 +234,93 @@ def _extract_js(raw: str) -> str:
     match = re.search(r"```(?:javascript|js)?\s*(.*?)```", raw, re.S | re.I)
     text = (match.group(1) if match else raw).strip()
     return re.sub(r"</?script[^>]*>", "", text, flags=re.I).strip()
+
+
+def _extract_bundle(raw: str) -> dict:
+    """Parse a model reply into {path: content}. Expects three fenced blocks
+    (html / css / js); degrades gracefully when labels are missing or merged."""
+    if not raw:
+        return {}
+    out: dict[str, str] = {}
+    for lang, path in (("html", "index.html"), ("css", "style.css"), ("javascript", "game.js"), ("js", "game.js")):
+        if path in out:
+            continue
+        m = re.search(r"```[ \t]*" + lang + r"[^\n]*\n(.*?)```", raw, re.S | re.I)
+        if m:
+            out[path] = m.group(1).strip()
+    if "game.js" in out:
+        return out
+    # Fallback: classify unlabeled fenced blocks by their content.
+    for block in re.findall(r"```[^\n]*\n(.*?)```", raw, re.S):
+        block = block.strip()
+        low = block[:400].lower()
+        if "index.html" not in out and ("<!doctype" in low or "<html" in low):
+            out["index.html"] = block
+        elif "game.js" not in out and "<html" not in low and any(
+            tok in low for tok in ("getcontext", "requestanimationframe", "addeventlistener", "function ", "=>")
+        ):
+            out["game.js"] = block
+        elif "style.css" not in out and "<" not in low and "{" in block and "}" in block:
+            out["style.css"] = block
+    if "game.js" not in out:
+        js = _extract_js(raw)
+        if js:
+            out["game.js"] = js
+    return out
+
+
+_DEFAULT_CSS = (
+    "*{margin:0;padding:0;box-sizing:border-box}"
+    "html,body{height:100%;overflow:hidden;background:#05070f;"
+    "font-family:ui-monospace,monospace;-webkit-user-select:none;user-select:none;touch-action:none}"
+    "canvas{display:block;position:absolute;inset:0}"
+)
+
+
+def _assemble_bundle(bundle: dict, title: str) -> list[dict]:
+    """Turn parsed model files into the canonical 3-file bundle; synthesize a
+    minimal index.html / style.css when the model only returned game.js."""
+    js = bundle.get("game.js", "")
+    css = bundle.get("style.css") or _DEFAULT_CSS
+    index = bundle.get("index.html")
+    if not index or "game.js" not in index:
+        index = (
+            '<!doctype html><html><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            f"<title>{title}</title>"
+            '<link rel="stylesheet" href="style.css"></head><body>'
+            '<canvas id="stage"></canvas>'
+            '<script src="game.js"></script></body></html>'
+        )
+    return [
+        {"path": "index.html", "content": index},
+        {"path": "style.css", "content": css},
+        {"path": "game.js", "content": js},
+    ]
+
+
+# 给 Coder 一个同类的优质参考实现（few-shot），把质量下限抬上去。
+_REFERENCE_BY_ARCHETYPE = {
+    "vertical_shooter": "neondodge",
+    "lane_runner": "neondodge",
+    "topdown_collect": "moonlitkoi",
+    "logic_grid": "runecircuit",
+}
+_REFERENCE_BY_GENRE = {
+    "shooter": "neondodge",
+    "runner": "neondodge",
+    "arcade": "moonlitkoi",
+    "collector": "starcatch",
+    "puzzle": "runecircuit",
+    "quiz": "colormatch",
+}
+
+
+def _reference_for(spec: dict) -> str | None:
+    archetype = str(spec.get("archetype") or "")
+    genre = str(spec.get("genre") or "").lower()
+    key = _REFERENCE_BY_ARCHETYPE.get(archetype) or _REFERENCE_BY_GENRE.get(genre) or "moonlitkoi"
+    return bundles.BUNDLES.get(key)
 
 
 def _prompt_cues(prompt: str) -> list[str]:
@@ -419,7 +519,13 @@ def _brief_log_lines(brief: dict, source: str) -> list[str]:
 def _heuristic_mechanic_plan(spec: dict, brief: dict, prompt: str) -> dict:
     genre = str(spec.get("genre") or "").lower()
     text = " ".join([prompt, " ".join(brief.get("mechanic_requirements") or []), " ".join(brief.get("keywords") or [])]).lower()
-    if genre == "puzzle" or _has_any(text, ["connect", "circuit", "puzzle", "logic"]):
+    if genre == "shooter" or _has_any(text, ["shoot", "bullet", "shmup", "raiden", "战机", "雷霆", "射击", "弹幕", "飞机大战", "打飞机"]):
+        archetype_hint = "vertical_shooter"
+        secondary = "spread / laser power-ups and a screen-clearing bomb"
+        enemies = [{"name": "swarm fighter", "behavior": "weaves downward firing aimed shots"}, {"name": "gunship", "behavior": "strafes the top and lays bullet spreads"}, {"name": "boss carrier", "behavior": "multi-phase, telegraphed barrages"}]
+        rewards = [{"name": "power chip", "effect": "upgrades the main gun"}, {"name": "medal", "effect": "score chain"}]
+        powerups = [{"name": "spread shot", "effect": "wider fire arc"}, {"name": "shield", "effect": "absorbs one hit"}, {"name": "wingman", "effect": "adds a side gun"}]
+    elif genre == "puzzle" or _has_any(text, ["connect", "circuit", "puzzle", "logic"]):
         archetype_hint = "logic_grid"
         secondary = "route preview pulses"
         enemies = [{"name": "locked node", "behavior": "blocks inefficient routes"}, {"name": "timer drain", "behavior": "forces decisive rotations"}]
@@ -552,7 +658,10 @@ def _route_archetype(spec: dict, prompt: str, brief: dict | None = None, mechani
         ]
         if value
     ).lower()
-    if _has_any(text, ["puzzle", "logic", "pipe", "circuit", "rune", "connect", "解谜", "逻辑", "连接", "方块"]):
+    if _has_any(text, ["shoot", "shmup", "raiden", "bullet", "fighter", "战机", "雷霆", "飞机大战", "打飞机", "射击", "弹幕", "空战", "spaceship", "plane"]):
+        archetype = "vertical_shooter"
+        reason = "shooter/plane keywords"
+    elif _has_any(text, ["puzzle", "logic", "pipe", "circuit", "rune", "connect", "解谜", "逻辑", "连接", "方块"]):
         archetype = "logic_grid"
         reason = "logic/connect keywords"
     elif _has_any(text, ["runner", "race", "lane", "dash", "dodge", "run", "躲", "跑", "赛道", "漂移"]):
@@ -563,7 +672,7 @@ def _route_archetype(spec: dict, prompt: str, brief: dict | None = None, mechani
         reason = "collection/exploration keywords"
     else:
         genre = str(spec.get("genre") or "").lower()
-        archetype = "logic_grid" if genre == "puzzle" else "lane_runner" if genre == "runner" else "topdown_collect"
+        archetype = "vertical_shooter" if genre == "shooter" else "logic_grid" if genre == "puzzle" else "lane_runner" if genre == "runner" else "topdown_collect"
         reason = f"genre fallback: {genre or 'arcade'}"
     meta = _ARCHETYPES[archetype]
     return {"archetype": archetype, "genre": meta["genre"], "label": meta["label"], "core_loop": meta["loop"], "reason": reason}
@@ -645,64 +754,46 @@ def _balance_log_lines(archetype: str, balance: dict) -> list[str]:
 
 
 def _gameplay_qa(state: dict) -> dict:
+    """Model-first smoke QA: prove the artifact is a real, runnable game without
+    second-guessing how the model wrote it. Hard-fail only on "this isn't a game";
+    quality gaps become warnings that never degrade the bundle to a template."""
     spec = state.get("game_spec") or {}
     design = state.get("game_design") or {}
-    balance = state.get("balance_config") or design.get("balance") or {}
-    mechanics = state.get("mechanic_plan") or design.get("mechanic_plan") or {}
-    content = state.get("content_plan") or design.get("content_plan") or {}
     archetype = spec.get("archetype") or design.get("archetype") or "canvas_arcade"
     validation_result = state.get("validation_result") or {}
     files = state.get("generated_files") or []
-    js = next((file.get("content", "") for file in files if file.get("path") == "game.js"), "")
+    js = next((f.get("content", "") for f in files if f.get("path") == "game.js"), "")
+    html = next((f.get("content", "") for f in files if f.get("path") == "index.html"), "")
+    low = (js + "\n" + html).lower()
 
     issues: list[str] = []
     warnings: list[str] = []
+
     if not validation_result.get("valid"):
         issues.append("static validation must pass before gameplay QA")
-    duration = int(balance.get("round_seconds") or 0)
-    target = int(balance.get("target_score") or 0)
-    lives = int(balance.get("lives") or 0)
-    hazard_speed = float(balance.get("hazard_speed") or 0)
-    player_speed = float(balance.get("player_speed") or 0)
-    hazard_spawn = int(balance.get("hazard_spawn_ms") or 0)
-    max_hazards = int(balance.get("max_hazards") or 0)
-    density = round(max_hazards * 60 / max(1, duration), 2)
-    ratio = round(player_speed / max(1, hazard_speed), 2)
+    if len(js) < 400:
+        issues.append("game.js is too small to be a real game")
+    if "requestanimationframe" not in low and "setinterval" not in low:
+        issues.append("no game loop (requestAnimationFrame/setInterval) found")
+    has_input = any(tok in low for tok in [
+        "addeventlistener", "onkeydown", "onkeyup", "onmousemove", "onpointer", "ontouch", "onclick",
+    ])
+    if not has_input:
+        issues.append("no input handling found")
+    has_restart = any(tok in low for tok in [
+        "restart", "reset(", "replay", "again", "location.reload", '"rs"', "'rs'",
+    ])
+    if not has_restart:
+        warnings.append("no obvious restart affordance detected")
 
-    if duration < 35:
-        issues.append("round is too short for a readable first attempt")
-    if lives < 2 and archetype != "logic_grid":
-        issues.append("fewer than 2 lives makes early mistakes too punishing")
-    if target > max(80, duration * 7):
-        warnings.append("target score may feel grindy for the round length")
-    if "reset(" not in js or "document.getElementById(\"rs\").onclick" not in js:
-        issues.append("restart path is not visible in generated code")
-    if len(mechanics.get("powerups") or []) < 2 and archetype != "logic_grid":
-        warnings.append("fewer than 2 powerups reduces replay variety")
-    if len(content.get("waves") or []) < 3:
-        issues.append("content plan needs at least 3 pacing waves")
-    if len(content.get("reward_names") or []) < 2 and archetype != "logic_grid":
-        warnings.append("reward table is thin")
-
-    if archetype == "topdown_collect":
-        if hazard_spawn < 1300:
-            issues.append("hazard spawn interval is below the safe opening threshold")
-        if ratio < 2.4:
-            issues.append("player movement is not sufficiently faster than hazards")
-        if density > 6.8:
-            issues.append("hazard density is too high for a compact browser canvas")
-    elif archetype == "lane_runner":
-        if hazard_spawn < 1050:
-            issues.append("lane obstacles spawn too quickly for readable choices")
-        if hazard_speed > 190:
-            issues.append("lane obstacle speed exceeds first-session comfort band")
-        if max_hazards > 8:
-            issues.append("too many simultaneous lane blockers")
-    elif archetype == "logic_grid":
-        if duration < 45:
-            issues.append("logic puzzle timer is too short")
-        if "connected()" not in js:
-            issues.append("logic template does not expose a win-condition check")
+    uses_depth = any(tok in low for tok in ["shadowblur", "createlineargradient", "createradialgradient"])
+    if not uses_depth:
+        warnings.append("art may look flat: no gradient/glow detected")
+    if archetype == "vertical_shooter":
+        if not _has_any(low, ["bullet", "shoot", "fire", "projectile", "laser"]):
+            warnings.append("shooter has no obvious projectile logic")
+        if "boss" not in low:
+            warnings.append("shooter has no boss climax")
 
     return {
         "passed": not issues,
@@ -710,32 +801,25 @@ def _gameplay_qa(state: dict) -> dict:
         "issues": issues,
         "warnings": warnings,
         "metrics": {
-            "duration": duration,
-            "target_score": target,
-            "lives": lives,
-            "hazard_spawn_ms": hazard_spawn,
-            "hazard_speed": hazard_speed,
-            "player_speed": player_speed,
-            "player_to_hazard_ratio": ratio,
-            "hazard_density_per_minute": density,
-            "content_waves": len(content.get("waves") or []),
-            "powerups": len(mechanics.get("powerups") or []),
+            "js_bytes": len(js.encode("utf-8")),
+            "has_input": has_input,
+            "has_restart": has_restart,
+            "uses_gradient_or_glow": uses_depth,
         },
     }
 
 
 def _gameplay_qa_log_lines(result: dict) -> list[str]:
-    metrics = result.get("metrics") or {}
+    m = result.get("metrics") or {}
     lines = [
         f"playtest archetype: {result.get('archetype')}",
-        f"metrics: duration={metrics.get('duration')}s, target={metrics.get('target_score')}, lives={metrics.get('lives')}",
-        f"difficulty: spawn={metrics.get('hazard_spawn_ms')}ms, speed ratio={metrics.get('player_to_hazard_ratio')}, density/min={metrics.get('hazard_density_per_minute')}",
+        f"code smoke: game.js={m.get('js_bytes')} bytes, input={m.get('has_input')}, restart={m.get('has_restart')}, gradient/glow={m.get('uses_gradient_or_glow')}",
     ]
     if result.get("warnings"):
-        lines.append("warnings: " + "; ".join(result["warnings"][:3]))
+        lines.append("quality warnings: " + "; ".join(result["warnings"][:4]))
     if result.get("issues"):
         return lines + ["gameplay QA failed:"] + result["issues"][:6]
-    return lines + ["gameplay QA passed: readable opening, restart path, scoring, timer, and balance thresholds"]
+    return lines + ["gameplay QA passed: runnable game loop with input and restart"]
 
 
 def _repair_balance(balance: dict, archetype: str, attempt: int) -> dict:
@@ -765,14 +849,15 @@ def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[d
 
     if state.get("use_real") and not state.get("use_template_code"):
         try:
-            index_html = next((file["content"] for file in files if file["path"] == "index.html"), "")
-            raw, tokens = llm.chat(prompts.CODE_SYSTEM_PROMPT, prompts.build_code_prompt(spec, design, index_html, repair_error))
-            js = _extract_js(raw)
-            if js and len(js) > 120:
-                for file in files:
-                    if file["path"] == "game.js":
-                        file["content"] = js
-                mode = "model"
+            raw, tokens = llm.chat(
+                prompts.CODE_SYSTEM_PROMPT,
+                prompts.build_code_prompt(spec, design, _reference_for(spec), repair_error),
+            )
+            bundle = _extract_bundle(raw)
+            js = bundle.get("game.js", "")
+            if js and len(js) > 400:
+                files = _assemble_bundle(bundle, cfg.get("title") or "PlayForge Game")
+                mode = "model (full bundle)" if bundle.get("index.html") else "model (game.js)"
             else:
                 mode = "template (model output too short)"
         except Exception as exc:  # noqa: BLE001
