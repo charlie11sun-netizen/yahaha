@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900" font-family="Segoe UI, system-ui, sans-serif">
+  <defs>
+    <radialGradient id="bg" cx="0.54" cy="0.46" r="0.75">
+      <stop offset="0" stop-color="#10183a"/>
+      <stop offset="0.6" stop-color="#070a1e"/>
+      <stop offset="1" stop-color="#03040c"/>
+    </radialGradient>
+    <linearGradient id="title" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7af0ff"/>
+      <stop offset="0.55" stop-color="#8f7bff"/>
+      <stop offset="1" stop-color="#ff7ad5"/>
+    </linearGradient>
+    <radialGradient id="orb" cx="0.4" cy="0.35" r="0.7">
+      <stop offset="0" stop-color="#fff6d0"/>
+      <stop offset="1" stop-color="#ffbe3a"/>
+    </radialGradient>
+    <radialGradient id="core" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.5" stop-color="#9ff0ff"/>
+      <stop offset="1" stop-color="#9ff0ff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="7" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="soft" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="36"/>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="900" fill="url(#bg)"/>
+
+  <!-- receding tunnel rings (near = large/bright, far = small) -->
+  <g fill="none" filter="url(#glow)">
+    <ellipse cx="800" cy="446" rx="780" ry="446" stroke="hsl(196,100%,62%)" stroke-width="15" opacity="0.95"/>
+    <ellipse cx="810" cy="442" rx="660" ry="378" stroke="hsl(210,100%,64%)" stroke-width="13" opacity="0.92"/>
+    <ellipse cx="820" cy="438" rx="556" ry="318" stroke="hsl(226,100%,66%)" stroke-width="11" opacity="0.88"/>
+    <ellipse cx="830" cy="434" rx="464" ry="266" stroke="hsl(244,95%,68%)" stroke-width="10" opacity="0.84"/>
+    <ellipse cx="840" cy="430" rx="382" ry="219" stroke="hsl(264,92%,70%)" stroke-width="9" opacity="0.80"/>
+    <ellipse cx="849" cy="427" rx="308" ry="176" stroke="hsl(286,92%,70%)" stroke-width="8" opacity="0.74"/>
+    <ellipse cx="856" cy="424" rx="242" ry="138" stroke="hsl(306,95%,68%)" stroke-width="7" opacity="0.66"/>
+    <ellipse cx="862" cy="421" rx="183" ry="105" stroke="hsl(324,98%,66%)" stroke-width="6" opacity="0.56"/>
+    <ellipse cx="867" cy="419" rx="131" ry="75"  stroke="hsl(342,100%,66%)" stroke-width="5" opacity="0.46"/>
+    <ellipse cx="871" cy="417" rx="84"  ry="48"  stroke="hsl(356,100%,68%)" stroke-width="4" opacity="0.36"/>
+  </g>
+  <!-- vanishing-point core glow -->
+  <circle cx="874" cy="416" r="120" fill="url(#core)" opacity="0.5"/>
+
+  <!-- floating orbs along the spire -->
+  <g filter="url(#glow)">
+    <circle cx="250" cy="470" r="17" fill="url(#orb)"/>
+    <circle cx="1300" cy="430" r="14" fill="url(#orb)"/>
+    <circle cx="1010" cy="250" r="11" fill="url(#orb)"/>
+    <circle cx="640" cy="232" r="9"  fill="url(#orb)"/>
+  </g>
+
+  <!-- ship threading the tunnel -->
+  <g filter="url(#glow)">
+    <path d="M812 612 L780 700 L812 678 L844 700 Z" fill="#eafbff"/>
+    <path d="M812 628 L794 690 L812 678 L830 690 Z" fill="#39c6ff"/>
+    <circle cx="812" cy="700" r="9" fill="#9ff4ff"/>
+  </g>
+
+  <!-- title scrim + text -->
+  <rect x="0" y="690" width="1600" height="210" fill="#03040c" opacity="0.58"/>
+  <text x="74" y="838" font-size="92" font-weight="800" letter-spacing="-1" fill="url(#title)">Warp Spire</text>
+  <text x="80" y="876" font-size="25" font-weight="700" letter-spacing="7" fill="#9fb3e6" opacity="0.85">3D TUNNEL FLYER · THREE.JS · ENDLESS</text>
+</svg>

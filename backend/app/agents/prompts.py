@@ -86,6 +86,13 @@ QUALITY BAR — must look and feel like a real 3D game, NOT a debug scene:
 - Honest difficulty curve: safe first ~8 seconds, then escalating. Always fair — never an unavoidable death.
 - Clear states: a playing loop and a DOM game-over overlay showing the final score with a WORKING restart, all handled in your own code.
 
+HUD & UI — the on-screen interface must look intentionally designed, not a raw debug readout:
+- Layout: a DOM/CSS overlay above the canvas (pointer-events:none so it never blocks play). Put stats in clean labeled blocks — a small UPPERCASE letter-spaced label over a big bold value, with font-variant-numeric:tabular-nums so numbers don't jitter. A modern system sans-serif ("Segoe UI", system-ui) reads better than monospace.
+- Show vitals as VISUAL elements, not bare digits: render HP / shields / lives as a row of glowing segment pips or a bar that drains. For first-person, draw a real styled reticle (a small CSS shape in the accent color with a soft glow), never a plain "+".
+- Depth & feedback: a soft radial vignette over the scene for depth, and a brief red damage flash/vignette when the player is hit; announce each new wave with a short fading banner.
+- Start & end screens: a polished start overlay (a small kicker tag, a big title with a neon gradient text-fill + glow, a one-line pitch, and a pill-shaped call-to-action button) and a matching game-over overlay (big glowing final score + a working restart). Dim the scene behind them with a radial gradient or backdrop-filter blur.
+- Theme it: choose ONE neon accent and reuse it across the title, reticle, HP pips, buttons and key emissive materials so the whole UI feels coherent; keep strong contrast and legible sizes. CSS only — no web fonts, no images.
+
 GENRE FIDELITY — implement the GameDesign's archetype faithfully in 3D:
 - fps_arena: FIRST-PERSON — pointer lock on click (renderer.domElement.requestPointerLock()), mouse-look (yaw/pitch), WASD ground movement, a THREE.Raycaster from screen center to shoot waves of enemies that advance on the player; HUD shows score/wave/HP plus a crosshair; escalating waves and a boss climax.
 - runner_3d: THIRD-PERSON chase camera; the player auto-runs forward while you switch lanes and jump to dodge obstacles and grab pickups; speed ramps up.
@@ -176,16 +183,22 @@ def build_code_prompt(
         f"Concrete GameDesign to implement:\n{json.dumps(game_design, ensure_ascii=False)}",
     ]
     if reference:
-        bar = (
-            "(real Three.js scene with lighting, depth, particles, restart; loads three.min.js via a relative script)"
-            if dimension == "3d"
-            else "(procedural art, parallax, particles, restart)"
-        )
-        parts.append(
-            "Reference implementation — a complete working game at the POLISH BAR and code structure you must match "
-            f"{bar}. Build the game described above; do NOT copy its theme or mechanics:\n"
-            + reference
-        )
+        if dimension == "3d":
+            framing = (
+                "Visual & UI reference — a hand-crafted flagship 3D game. Match its PRODUCTION POLISH and UI DESIGN "
+                "LANGUAGE: the lighting / fog / depth, emissive materials, particle juice, the soft vignette, and "
+                "especially its HUD and start/over screens (labeled stat blocks, segmented HP/shield pips, a "
+                "gradient-fill title, a pill button). NOTE: it is a DIFFERENT game (a tunnel flyer) — take its look "
+                "and interface quality, but build the game from the GameDesign above; do NOT copy its mechanics, "
+                "theme, or structure:\n"
+            )
+        else:
+            framing = (
+                "Reference implementation — a complete working game at the POLISH BAR and code structure you must "
+                "match (procedural art, parallax, particles, restart). Build the game described above; do NOT copy "
+                "its theme or mechanics:\n"
+            )
+        parts.append(framing + reference)
     parts.append(
         "Build the complete game now. Emit index.html, style.css, and game.js as three fenced code blocks, nothing else."
     )

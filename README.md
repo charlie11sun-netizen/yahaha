@@ -33,7 +33,7 @@ docker compose up --build
 | 后端 API（OpenAPI 文档） | http://localhost:8000/docs |
 | MinIO 控制台 | http://localhost:9001 （账号见 `.env`） |
 
-首次启动 `api` 会自动建表并写入 **3 个示例游戏**（其中 1 个标记为 Create 流程产出），并把它们的 bundle 上传到 MinIO。
+首次启动 `api` 会自动建表并写入 **2 个手工打造的旗舰示例游戏**——2D《Prism Break》（霓虹打砖块）与 3D《Warp Spire》（自托管 Three.js 隧道飞行），bundle 上传 MinIO（3D 游戏的 `three.min.js` 随包同前缀上传）。通过 Create 流程发布的游戏（如《Neon Arena: Dronefall》）会另外出现在首页，合计满足「≥3 个、≥1 来自 Create」的验收。
 
 > **整站访问密码（部署门禁）**：在 `.env` 设 `SITE_PASSWORD=你的密码` 后，打开网站需先在门禁页输入该密码才能进入；留空则不启用（本地开发默认开放）。密码仅服务端读取（Next middleware），cookie 存哈希令牌而非明文，与下文的用户注册/登录相互独立。
 

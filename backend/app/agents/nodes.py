@@ -373,18 +373,20 @@ _REFERENCE_BY_GENRE = {
 }
 
 
-# 3D few-shot 参考（self-hosted Three.js 的完整可跑样例）。
+# 3D few-shot 参考：统一用手工旗舰 Warp Spire 当“视觉 / UI 打磨基线”。它本身是隧道飞行，
+# 和 fps_arena 机制不同——产物玩法由 GameDesign + 提示词的 GENRE FIDELITY 决定，参考只负责把
+# UI/HUD/光影/质感/结算页的下限抬到旗舰水准（实测模型会照搬观感、按提示词重建机制）。
 _REFERENCE_BY_ARCHETYPE_3D = {
-    "fps_arena": "three_fps",
-    "collector_3d": "three_fps",
-    "runner_3d": "three_runner",
-    "racer_3d": "three_runner",
+    "fps_arena": "warpspire",
+    "collector_3d": "warpspire",
+    "runner_3d": "warpspire",
+    "racer_3d": "warpspire",
 }
 
 
 def _reference_for(spec: dict) -> str | None:
     if str(spec.get("dimension") or "") == "3d":
-        key = _REFERENCE_BY_ARCHETYPE_3D.get(str(spec.get("archetype") or "")) or "three_fps"
+        key = _REFERENCE_BY_ARCHETYPE_3D.get(str(spec.get("archetype") or "")) or "warpspire"
         return bundles.BUNDLES.get(key)
     archetype = str(spec.get("archetype") or "")
     genre = str(spec.get("genre") or "").lower()
@@ -748,35 +750,27 @@ def _route_archetype(spec: dict, prompt: str, brief: dict | None = None, mechani
 
 
 def _route_archetype_3d(spec: dict, prompt: str, brief: dict | None = None, mechanics: dict | None = None) -> dict:
-    """3D 路由：按关键词/类型选 3D 原型（忽略 2D mechanic 提示）。"""
-    text = " ".join(
-        str(value)
-        for value in [
-            prompt,
-            (brief or {}).get("player_fantasy"),
-            (brief or {}).get("objective"),
-            spec.get("title"),
-            spec.get("genre"),
-            spec.get("theme"),
-            spec.get("core_loop"),
-            " ".join(spec.get("tags") or []),
-        ]
-        if value
-    ).lower()
-    if _has_any(text, ["race", "racing", "racer", "drift", "kart", "car", "track", "赛车", "漂移", "赛道", "卡丁"]):
-        archetype, reason = "racer_3d", "racing keywords"
-    elif _has_any(text, ["shoot", "fps", "gun", "shooter", "first person", "first-person", "战机", "射击", "枪", "第一人称", "弹幕", "空战", "arena"]):
-        archetype, reason = "fps_arena", "shooter/fps keywords"
-    elif _has_any(text, ["run", "runner", "dash", "dodge", "lane", "parkour", "jump", "跑酷", "躲", "跑", "冲刺", "跳"]):
-        archetype, reason = "runner_3d", "runner keywords"
-    elif _has_any(text, ["collect", "gather", "explore", "coin", "gem", "loot", "收集", "探索", "金币", "宝石"]):
-        archetype, reason = "collector_3d", "collection keywords"
-    else:
-        genre = str(spec.get("genre") or "").lower()
-        archetype = "fps_arena" if genre == "shooter" else "runner_3d" if genre == "runner" else "collector_3d"
-        reason = f"genre fallback: {genre or 'arcade'}"
+    """3D 路由：信模型给的 genre，不再用易误判的关键词级联（旧版会把 spec 里出现 "track"/
+    "car" 的射击 prompt 误判成 racer_3d，还会盖掉模型自己的判断）。fps_arena 的最终确认放到
+    game_design 之后，由设计里的 scene.camera 回校——见 _reconcile_archetype_3d。
+    prompt / brief / mechanics 不再参与 3D 路由（签名保留以兼容调用点）。"""
+    genre = str(spec.get("genre") or "").lower()
+    archetype = "fps_arena" if genre == "shooter" else "runner_3d" if genre == "runner" else "collector_3d"
+    reason = f"model genre: {genre or 'arcade'}"
     meta = _ARCHETYPES_3D[archetype]
     return {"archetype": archetype, "genre": meta["genre"], "label": meta["label"], "core_loop": meta["loop"], "reason": reason}
+
+
+def _reconcile_archetype_3d(spec: dict, design: dict) -> str:
+    """game_design 之后，用模型真正画出的相机校正 3D archetype（QA 门 / GENRE FIDELITY /
+    replan 兜底都依赖它）：first_person ⇒ fps_arena；明确非第一人称却被标成 fps ⇒ 退回 runner_3d。"""
+    cam = str(((design or {}).get("scene") or {}).get("camera") or "").lower()
+    cur = str(spec.get("archetype") or "")
+    if cam == "first_person":
+        return "fps_arena"
+    if cam in ("third_person", "chase", "orbit") and cur == "fps_arena":
+        return "runner_3d"
+    return cur if cur in _ARCHETYPES_3D else "fps_arena"
 
 
 def _difficulty_factor(prompt: str) -> float:
@@ -1185,7 +1179,15 @@ def game_design_node(state: dict) -> dict:
             sys_prompt = prompts.GAME_DESIGN_SYSTEM_PROMPT_3D if is_3d else prompts.GAME_DESIGN_SYSTEM_PROMPT
             raw, tokens = llm.chat(sys_prompt, prompts.build_game_design_prompt(spec, state.get("asset_manifest")))
             design = _coerce_design(_parse_json(raw), spec)
-            return {"game_design": design, "_agent": "GameDesignAgent", "_tokens_delta": tokens, "_logs": [f"source: model GameDesign JSON ({'3D' if is_3d else '2D'})"] + _design_log_lines(design)}
+            out = {"game_design": design, "_agent": "GameDesignAgent", "_tokens_delta": tokens,
+                   "_logs": [f"source: model GameDesign JSON ({'3D' if is_3d else '2D'})"] + _design_log_lines(design)}
+            if is_3d:
+                new_arch = _reconcile_archetype_3d(spec, design)
+                if new_arch != spec.get("archetype"):
+                    meta = _ARCHETYPES_3D[new_arch]
+                    out["game_spec"] = {**spec, "archetype": new_arch, "genre": meta["genre"], "core_loop": meta["loop"]}
+                    out["_logs"].append(f"3D archetype reconciled from design camera -> {new_arch}")
+            return out
         except Exception as exc:  # noqa: BLE001
             design = _heuristic_design(spec)
             return {"game_design": design, "_agent": "GameDesignAgent", "_logs": [f"model failed: {_clip(exc, 120)}", "source: heuristic fallback"] + _design_log_lines(design)}

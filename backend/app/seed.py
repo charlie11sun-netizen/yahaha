@@ -1,8 +1,14 @@
 """Idempotent database seed for curated PlayForge sample games.
 
-The API container runs this module at startup. It creates tables, ensures demo
+The API container runs this module at startup. It creates tables, prunes any
+retired sample games (DB rows + their object-storage artifacts), ensures demo
 users exist, uploads playable HTML bundles to object storage, and creates or
 refreshes the published sample game rows.
+
+Curated set: two hand-authored flagship games — a 2D brick-breaker (Prism Break)
+and a 3D tunnel flyer (Warp Spire). The third published game on Home is expected
+to be "Neon Arena: Dronefall", produced through the live Create pipeline and left
+untouched here (it is not in this seed set and not in RETIRED_TITLES).
 """
 from datetime import timedelta
 
@@ -13,102 +19,55 @@ from app.db.base import Base
 from app.db.session import SessionLocal, engine
 from app.models import Game, GameVersion, Tag, User
 from app.models.common import GameSource, GameStatus, now_utc
-from app.services.packaging import write_bundle
+from app.services.packaging import three_engine_bytes, write_bundle
+from app.storage import s3
 from app.storage.s3 import ensure_bucket
 
 
 SEED_GAMES = [
     {
-        "bundle": "moonlitkoi",
-        "title": "Moonlit Koi",
-        "genre": "ZEN ARCADE",
-        "summary": "Guide a luminous koi through a moonlit pond, gather lantern petals, and slip past drifting ink ripples.",
-        "tags": ["Arcade", "Zen", "Collect"],
-        "cover": "/playforge/covers/moonlit-koi.jpg",
-        "plays": 156300,
-        "likes": 11840,
+        "bundle": "prismbreak",
+        "title": "Prism Break",
+        "genre": "BRICK BREAKER",
+        "summary": "A juicy neon brick-breaker. Bounce the prism, shatter glowing brick fields, "
+                   "chain combos for big multipliers, and snag multiball, wide-paddle and slow-mo "
+                   "power-ups across escalating waves.",
+        "tags": ["Arcade", "Action", "Neon"],
+        "cover": "/playforge/covers/prism-break.svg",
+        "plays": 48230,
+        "likes": 3960,
         "source": GameSource.SEED,
         "prompt": "",
         "age_days": 1,
     },
     {
-        "bundle": "runecircuit",
-        "title": "Rune Circuit",
-        "genre": "LOGIC PUZZLE",
-        "summary": "Rotate glowing glyph tiles to carry a living circuit from the left beacon to the right beacon.",
-        "tags": ["Puzzle", "Logic", "Runes"],
-        "cover": "/playforge/covers/rune-circuit.jpg",
-        "plays": 137900,
-        "likes": 9730,
+        "bundle": "warpspire",
+        "title": "Warp Spire",
+        "genre": "3D TUNNEL FLYER",
+        "summary": "A high-speed 3D tunnel flyer. Roll around a glowing spire, thread the gaps in the "
+                   "wall-bars and scoop orbs as the run accelerates. Rendered with self-hosted Three.js "
+                   "and loaded from object storage like every other game.",
+        "tags": ["3D", "Arcade", "Endless"],
+        "cover": "/playforge/covers/warp-spire.svg",
+        "plays": 41760,
+        "likes": 3515,
         "source": GameSource.SEED,
         "prompt": "",
         "age_days": 2,
     },
-    {
-        "bundle": "neondodge",
-        "title": "Neon Drift Dodge",
-        "genre": "ENDLESS RUNNER",
-        "summary": "Weave between neon traffic at impossible speeds. One tap to switch lanes and survive the glow rush.",
-        "tags": ["Arcade", "Endless", "Neon"],
-        "cover": "/playforge/covers/neon-drift-dodge.jpg",
-        "plays": 124800,
-        "likes": 8420,
-        "source": GameSource.SEED,
-        "prompt": "",
-        "age_days": 14,
-    },
-    {
-        "bundle": "cloudcourier",
-        "title": "Cloud Courier",
-        "genre": "SKY ARCADE",
-        "summary": "Pilot a tiny courier glider through soft cloud lanes, collect mail, and dodge violet storm puffs.",
-        "tags": ["Arcade", "Flight", "Cozy"],
-        "cover": "/playforge/covers/cloud-courier.jpg",
-        "plays": 111200,
-        "likes": 8020,
-        "source": GameSource.SEED,
-        "prompt": "",
-        "age_days": 3,
-    },
-    {
-        "bundle": "orbitbloom",
-        "title": "Orbit Bloom",
-        "genre": "ONE-TAP ARCADE",
-        "summary": "Swap between two glowing orbits, chain golden blossoms, and avoid crimson thorns in a quiet garden.",
-        "tags": ["Arcade", "Timing", "One Tap"],
-        "cover": "/playforge/covers/orbit-bloom.jpg",
-        "plays": 96400,
-        "likes": 7210,
-        "source": GameSource.SEED,
-        "prompt": "",
-        "age_days": 5,
-    },
-    {
-        "bundle": "colormatch",
-        "title": "Color Echo",
-        "genre": "MEMORY PUZZLE",
-        "summary": "A hypnotic Simon-style memory game. Watch the sequence, echo it back, and chase an endless streak.",
-        "tags": ["Puzzle", "Memory", "Casual"],
-        "cover": "/playforge/covers/color-echo.jpg",
-        "plays": 82100,
-        "likes": 5140,
-        "source": GameSource.SEED,
-        "prompt": "",
-        "age_days": 30,
-    },
-    {
-        "bundle": "starcatch",
-        "title": "Star Catcher",
-        "genre": "CASUAL COZY",
-        "summary": "A cozy 40-second dash to catch falling stars and dodge the red ones. Generated by the Create pipeline.",
-        "tags": ["Casual", "Cozy", "AI"],
-        "cover": "/playforge/covers/star-catcher.jpg",
-        "plays": 30450,
-        "likes": 2110,
-        "source": GameSource.CREATE,
-        "prompt": "a cozy little game where you move a basket to catch falling stars, soft warm vibes, 30 second rounds",
-        "age_days": 4,
-    },
+]
+
+# Previously-seeded sample games that are no longer part of the curated set.
+# Pruned (DB row + OSS prefix) on every seed run so the home feed stays exactly
+# the curated set + live Create games. Idempotent: a no-op once they are gone.
+RETIRED_TITLES = [
+    "Moonlit Koi",
+    "Rune Circuit",
+    "Neon Drift Dodge",
+    "Cloud Courier",
+    "Orbit Bloom",
+    "Color Echo",
+    "Star Catcher",
 ]
 
 
@@ -143,7 +102,16 @@ def _sync_tags(db, game: Game, names: list[str]) -> None:
 
 def _sync_version(db, game: Game, seed: dict, author_name: str) -> None:
     html = bundles.BUNDLES[seed["bundle"]]
-    info = write_bundle(game.id, "v1", html, seed["title"], author_name)
+    # 3D bundles reference three.min.js via a same-prefix relative <script src>.
+    # Ship the vendored engine alongside index.html so the sandboxed iframe can
+    # resolve it against its own remote URL (no external network, no CDN).
+    extra_assets = None
+    if seed["bundle"] in bundles.NEEDS_ENGINE:
+        engine_bytes = three_engine_bytes()
+        if engine_bytes:
+            extra_assets = {"three.min.js": engine_bytes}
+
+    info = write_bundle(game.id, "v1", html, seed["title"], author_name, extra_assets=extra_assets)
     version = db.query(GameVersion).filter_by(game_id=game.id, version="v1").first()
     if not version:
         version = GameVersion(game_id=game.id, version="v1")
@@ -156,18 +124,32 @@ def _sync_version(db, game: Game, seed: dict, author_name: str) -> None:
     version.size_bytes = info["size"]
 
 
+def _prune_retired(db) -> int:
+    """Remove retired sample games and their remote artifacts. Idempotent."""
+    removed = 0
+    for title in RETIRED_TITLES:
+        for game in db.query(Game).filter(Game.title == title).all():
+            s3.delete_prefix(f"games/{game.id}/")  # bundle + manifest + any assets
+            db.delete(game)                          # cascades versions / likes / scores / ...
+            removed += 1
+    if removed:
+        db.commit()
+    return removed
+
+
 def run() -> None:
     Base.metadata.create_all(bind=engine)
     ensure_bucket()
     db = SessionLocal()
     try:
+        pruned = _prune_retired(db)
+
         demo = _get_or_create_user(db, "demo@playforge.dev", "PlayForge Demo", "P", with_password=True)
-        ai = _get_or_create_user(db, "ai@playforge.dev", "PlayForge AI", "AI")
         created = 0
         refreshed = 0
 
         for seed in SEED_GAMES:
-            author = ai if seed["source"] == GameSource.CREATE else demo
+            author = demo
             game = db.query(Game).filter_by(title=seed["title"]).first()
             if game:
                 refreshed += 1
@@ -198,7 +180,10 @@ def run() -> None:
             _sync_version(db, game, seed, author.display_name)
 
         db.commit()
-        print(f"seed: created {created}, refreshed {refreshed} sample games (bundles uploaded to OSS)")
+        print(
+            f"seed: pruned {pruned} retired, created {created}, refreshed {refreshed} "
+            f"curated game(s) (bundles uploaded to OSS)"
+        )
     finally:
         db.close()
 

@@ -44,6 +44,30 @@ def get_object(key: str) -> bytes | None:
         return None
 
 
+def delete_prefix(prefix: str) -> int:
+    """删除某前缀下的全部对象（清理退役游戏的远端产物）。返回删除数量。"""
+    c = client()
+    deleted = 0
+    try:
+        token = None
+        while True:
+            kwargs = {"Bucket": settings.S3_BUCKET, "Prefix": prefix}
+            if token:
+                kwargs["ContinuationToken"] = token
+            resp = c.list_objects_v2(**kwargs)
+            objs = [{"Key": o["Key"]} for o in resp.get("Contents", [])]
+            if objs:
+                c.delete_objects(Bucket=settings.S3_BUCKET, Delete={"Objects": objs})
+                deleted += len(objs)
+            if resp.get("IsTruncated"):
+                token = resp.get("NextContinuationToken")
+            else:
+                break
+    except Exception:  # noqa: BLE001
+        pass
+    return deleted
+
+
 def public_url(key: str) -> str:
     """浏览器可直接访问的远端地址（桶 games 前缀已设匿名只读）。"""
     return f"{settings.S3_PUBLIC_ENDPOINT}/{settings.S3_BUCKET}/{key}"

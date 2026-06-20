@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900" font-family="Segoe UI, system-ui, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0d0b26"/>
+      <stop offset="0.55" stop-color="#0a0a1e"/>
+      <stop offset="1" stop-color="#06051a"/>
+    </linearGradient>
+    <radialGradient id="ball" cx="0.35" cy="0.32" r="0.7">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#3fbdff"/>
+    </radialGradient>
+    <linearGradient id="pad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#bdfcff"/>
+      <stop offset="0.5" stop-color="#56d4ff"/>
+      <stop offset="1" stop-color="#3f95ff"/>
+    </linearGradient>
+    <linearGradient id="title" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7af0ff"/>
+      <stop offset="0.55" stop-color="#9d7bff"/>
+      <stop offset="1" stop-color="#ff7ad5"/>
+    </linearGradient>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="11" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="soft" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="42"/>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="900" fill="url(#bg)"/>
+  <!-- nebula glows -->
+  <ellipse cx="420" cy="270" rx="300" ry="300" fill="#785aff" opacity="0.18" filter="url(#soft)"/>
+  <ellipse cx="1180" cy="300" rx="280" ry="280" fill="#00c8ff" opacity="0.14" filter="url(#soft)"/>
+  <ellipse cx="800" cy="650" rx="340" ry="240" fill="#ff50c8" opacity="0.10" filter="url(#soft)"/>
+
+  <!-- brick field (spectrum rows) -->
+  <g filter="url(#glow)">
+    <g fill="hsl(188,92%,60%)">
+      <rect x="69"  y="150" width="150" height="44" rx="8"/><rect x="233" y="150" width="150" height="44" rx="8"/><rect x="397" y="150" width="150" height="44" rx="8"/><rect x="561" y="150" width="150" height="44" rx="8"/><rect x="725" y="150" width="150" height="44" rx="8"/><rect x="889" y="150" width="150" height="44" rx="8"/><rect x="1053" y="150" width="150" height="44" rx="8"/><rect x="1217" y="150" width="150" height="44" rx="8"/><rect x="1381" y="150" width="150" height="44" rx="8"/>
+    </g>
+    <g fill="hsl(168,92%,58%)">
+      <rect x="69"  y="208" width="150" height="44" rx="8"/><rect x="397" y="208" width="150" height="44" rx="8"/><rect x="561" y="208" width="150" height="44" rx="8"/><rect x="725" y="208" width="150" height="44" rx="8"/><rect x="889" y="208" width="150" height="44" rx="8"/><rect x="1217" y="208" width="150" height="44" rx="8"/><rect x="1381" y="208" width="150" height="44" rx="8"/>
+    </g>
+    <g fill="hsl(285,92%,66%)">
+      <rect x="233" y="266" width="150" height="44" rx="8"/><rect x="397" y="266" width="150" height="44" rx="8"/><rect x="725" y="266" width="150" height="44" rx="8"/><rect x="889" y="266" width="150" height="44" rx="8"/><rect x="1053" y="266" width="150" height="44" rx="8"/><rect x="1217" y="266" width="150" height="44" rx="8"/>
+    </g>
+    <g fill="hsl(318,92%,64%)">
+      <rect x="69"  y="324" width="150" height="44" rx="8"/><rect x="233" y="324" width="150" height="44" rx="8"/><rect x="561" y="324" width="150" height="44" rx="8"/><rect x="889" y="324" width="150" height="44" rx="8"/><rect x="1217" y="324" width="150" height="44" rx="8"/><rect x="1381" y="324" width="150" height="44" rx="8"/>
+    </g>
+    <g fill="hsl(44,96%,60%)">
+      <rect x="397" y="382" width="150" height="44" rx="8"/><rect x="561" y="382" width="150" height="44" rx="8"/><rect x="725" y="382" width="150" height="44" rx="8"/><rect x="889" y="382" width="150" height="44" rx="8"/><rect x="1053" y="382" width="150" height="44" rx="8"/>
+    </g>
+  </g>
+
+  <!-- ball + trail -->
+  <g>
+    <circle cx="1010" cy="690" r="7" fill="#7af0ff" opacity="0.25"/>
+    <circle cx="965" cy="640" r="11" fill="#7af0ff" opacity="0.4"/>
+    <circle cx="912" cy="588" r="16" fill="#7af0ff" opacity="0.6"/>
+    <circle cx="852" cy="532" r="23" fill="url(#ball)" filter="url(#glow)"/>
+  </g>
+
+  <!-- paddle -->
+  <rect x="560" y="744" width="250" height="26" rx="13" fill="url(#pad)" filter="url(#glow)"/>
+
+  <!-- title scrim + text -->
+  <rect x="0" y="690" width="1600" height="210" fill="#06051a" opacity="0.55"/>
+  <text x="74" y="838" font-size="92" font-weight="800" letter-spacing="-1" fill="url(#title)">Prism Break</text>
+  <text x="80" y="876" font-size="25" font-weight="700" letter-spacing="7" fill="#9fb3e6" opacity="0.85">NEON BRICK BREAKER · COMBOS · POWER-UPS</text>
+</svg>

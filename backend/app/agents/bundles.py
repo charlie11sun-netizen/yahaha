@@ -279,28 +279,41 @@ def title_from(idea: str) -> str:
 def shell_3d(title: str, accent: str, body: str, script: str) -> str:
     css = (
         "*{margin:0;padding:0;box-sizing:border-box}"
-        "html,body{height:100%;overflow:hidden;font-family:ui-monospace,monospace;"
+        "html,body{height:100%;overflow:hidden;font-family:'Segoe UI',system-ui,ui-sans-serif,sans-serif;"
         "background:#05070f;color:#eaf2ff;-webkit-user-select:none;user-select:none;touch-action:none}"
         "canvas{display:block;position:absolute;inset:0}"
-        ".hud{position:absolute;top:14px;left:16px;right:16px;display:flex;justify-content:space-between;"
-        "font-size:14px;letter-spacing:.04em;pointer-events:none;z-index:3;text-shadow:0 1px 3px rgba(0,0,0,.7)}"
-        ".hud b{color:" + accent + "}"
-        "#cross{position:absolute;left:50%;top:50%;width:18px;height:18px;transform:translate(-50%,-50%);z-index:3;pointer-events:none}"
-        "#cross:before,#cross:after{content:'';position:absolute;background:" + accent + ";opacity:.85}"
-        "#cross:before{left:8px;top:0;width:2px;height:18px}#cross:after{top:8px;left:0;height:2px;width:18px}"
-        ".hint{position:absolute;bottom:16px;left:0;right:0;text-align:center;font-size:12px;opacity:.6;z-index:3}"
+        ".vig{position:absolute;inset:0;z-index:2;pointer-events:none;"
+        "background:radial-gradient(120% 100% at 50% 46%,rgba(0,0,0,0) 54%,rgba(2,3,12,.66) 100%)}"
+        ".hud{position:absolute;top:16px;left:0;right:0;display:flex;justify-content:space-between;align-items:flex-start;"
+        "padding:0 22px;font-variant-numeric:tabular-nums;letter-spacing:.02em;pointer-events:none;z-index:3;"
+        "text-shadow:0 2px 10px rgba(0,0,0,.6)}"
+        ".hud>div{display:flex;flex-direction:column;gap:2px}.hud>div:last-child{align-items:flex-end}"
+        ".hud b{font-size:26px;font-weight:800;color:" + accent + ";line-height:1}"
+        "#cross{position:absolute;left:50%;top:50%;width:22px;height:22px;transform:translate(-50%,-50%);z-index:3;pointer-events:none}"
+        "#cross:before,#cross:after{content:'';position:absolute;background:" + accent + ";box-shadow:0 0 6px " + accent + ";opacity:.9}"
+        "#cross:before{left:10px;top:0;width:2px;height:22px}#cross:after{top:10px;left:0;height:2px;width:22px}"
+        ".hint{position:absolute;bottom:16px;left:0;right:0;text-align:center;font-size:12px;opacity:.55;letter-spacing:.03em;z-index:3}"
         ".over{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;"
-        "gap:16px;background:rgba(5,7,15,.86);z-index:5;text-align:center;padding:24px}"
-        ".over.show{display:flex}.over h2{font-size:30px;font-weight:800}.over p{opacity:.8}"
-        ".over .sc{font-size:46px;font-weight:800;color:" + accent + "}"
-        ".btn{pointer-events:auto;cursor:pointer;border:none;background:" + accent + ";color:#05070f;"
-        "font-family:inherit;font-weight:700;font-size:15px;padding:12px 26px;border-radius:10px}"
+        "gap:16px;z-index:6;text-align:center;padding:28px;"
+        "background:radial-gradient(120% 100% at 50% 40%,rgba(8,10,30,.55),rgba(3,4,12,.93))}"
+        ".over.show{display:flex}"
+        ".over h2{font-size:40px;font-weight:900;letter-spacing:-.01em;"
+        "background:linear-gradient(95deg," + accent + ",#8f7bff 60%,#ff7ad5);"
+        "-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;"
+        "text-shadow:0 0 44px rgba(120,140,255,.4)}"
+        ".over p{opacity:.74;font-size:15px;max-width:34ch;line-height:1.55}"
+        ".over .sc{font-size:58px;font-weight:900;color:" + accent + ";text-shadow:0 0 34px " + accent + ";line-height:1}"
+        ".btn{pointer-events:auto;cursor:pointer;border:none;color:#05070f;font-family:inherit;font-weight:800;"
+        "font-size:15px;letter-spacing:.04em;padding:13px 30px;border-radius:999px;"
+        "background:linear-gradient(95deg," + accent + ",#8f7bff);box-shadow:0 12px 32px rgba(120,140,255,.4)}"
+        ".btn:active{transform:translateY(1px)}"
     )
     return (
         '<!doctype html><html><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         "<title>" + title + "</title>"
         "<style>" + css + "</style></head><body>"
+        '<div class="vig"></div>'
         + body
         + '<script src="three.min.js"></script>'
         + "<script>" + script + "</script>"
@@ -396,3 +409,28 @@ BUNDLES.update({
     "three_fps": shell_3d("Ion Arena", "#22d3ee", _FPS_BODY, _FPS_JS),
     "three_runner": shell_3d("Vector Rush", "#34f5c5", _RUNNER_BODY, _RUNNER_JS),
 })
+
+
+# ---------------------------------------------------------------------------
+# Curated flagship games (hand-authored, not model output). Kept as standalone
+# HTML files under agents/curated/ so the large game source stays readable and
+# free of Python string-escaping. Registered into BUNDLES like any other bundle.
+#   prismbreak — 2D juicy neon brick-breaker (single self-contained file)
+#   warpspire  — 3D neon tunnel flyer; loads three.min.js via same-prefix
+#                relative <script src> (seed uploads the engine alongside it,
+#                NEEDS_ENGINE marks bundles that require this).
+# ---------------------------------------------------------------------------
+import os as _os
+
+_CURATED_DIR = _os.path.join(_os.path.dirname(__file__), "curated")
+NEEDS_ENGINE = {"warpspire"}
+
+
+def _load_curated(name: str, filename: str) -> None:
+    path = _os.path.join(_CURATED_DIR, filename)
+    with open(path, "r", encoding="utf-8") as fh:
+        BUNDLES[name] = fh.read()
+
+
+_load_curated("prismbreak", "prism-break.html")
+_load_curated("warpspire", "warp-spire.html")
