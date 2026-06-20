@@ -16,7 +16,6 @@ import {
 } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import type { CSSProperties } from "react";
 
 import { api } from "@/lib/api";
 import type { Game } from "@/lib/types";
@@ -242,28 +241,28 @@ export default function PlayPage() {
           </div>
           <RuntimeList runtime={runtime} />
           {(lbQ.data?.items?.length ?? 0) > 0 && (
-            <div style={panelStyle}>
-              <h3 style={panelTitle}>
+            <div className="pf-play-side-panel">
+              <h3>
                 <Trophy size={14} /> Leaderboard
               </h3>
-              <ol style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+              <ol className="pf-play-leaderboard">
                 {lbQ.data!.items.map((s) => (
-                  <li key={`${s.rank}-${s.name}`} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5, color: "#cdc7bb" }}>
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.rank}. {s.name}</span>
-                    <strong style={{ color: "#faf8f3" }}>{s.points}</strong>
+                  <li key={`${s.rank}-${s.name}`}>
+                    <span>{s.rank}. {s.name}</span>
+                    <strong>{s.points}</strong>
                   </li>
                 ))}
               </ol>
             </div>
           )}
           {(relatedQ.data?.items?.length ?? 0) > 0 && (
-            <div style={panelStyle}>
-              <h3 style={panelTitle}>More games</h3>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div className="pf-play-side-panel">
+              <h3>More games</h3>
+              <div className="pf-play-related-list">
                 {relatedQ.data!.items.slice(0, 4).map((r) => (
-                  <button key={r.id} onClick={() => router.push(`/play/${r.id}`)} type="button" style={{ display: "flex", gap: 10, alignItems: "center", textAlign: "left", border: "1px solid #2c2823", background: "#161412", cursor: "pointer", borderRadius: 9, padding: 7 }}>
-                    <span style={{ width: 42, height: 30, borderRadius: 6, flex: "none", background: coverBg(r.cover) }} />
-                    <b style={{ fontSize: 12.5, color: "#faf8f3", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title}</b>
+                  <button key={r.id} onClick={() => router.push(`/play/${r.id}`)} type="button">
+                    <span style={{ background: coverBg(r.cover) }} />
+                    <b>{r.title}</b>
                   </button>
                 ))}
               </div>
@@ -374,25 +373,6 @@ function runtimeLabel(status: RuntimeStatus) {
   if (status === "failed") return "Failed";
   return "Pending";
 }
-
-const panelStyle: CSSProperties = {
-  marginTop: 14,
-  background: "#1b1916",
-  border: "1px solid #2c2823",
-  borderRadius: 12,
-  padding: "13px 14px",
-};
-
-const panelTitle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 6,
-  color: "#faf8f3",
-  fontSize: 13,
-  fontWeight: 700,
-  fontFamily: "'Space Grotesk'",
-  marginBottom: 10,
-};
 
 function coverBg(cover: string) {
   if (cover && (cover.startsWith("/") || cover.startsWith("http"))) return `url("${cover}") center / cover`;

@@ -26,9 +26,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" suppressHydrationWarning>
       <body suppressHydrationWarning>
         <Providers>
-          <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", background: "#fbfcff" }}>
+          <div className="pf-root-layout">
             <Nav />
-            <main style={{ flex: 1, display: "flex", flexDirection: "column" }}>{children}</main>
+            <main className="pf-root-main">{children}</main>
           </div>
         </Providers>
       </body>

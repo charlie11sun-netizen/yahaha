@@ -492,13 +492,13 @@ export default function HomePage() {
               </button>
             ))}
           </div>
-          <div style={{ display: "flex", gap: 6 }} aria-label="Sort games">
+          <div className="pf-sort-tabs" aria-label="Sort games">
             {(["newest", "popular"] as const).map((s) => (
               <button
+                className={sort === s ? "is-active" : ""}
                 key={s}
                 onClick={() => setSort(s)}
                 type="button"
-                style={{ border: "1px solid #e8e3d8", background: sort === s ? "#181613" : "#fff", color: sort === s ? "#fff" : "#5c574e", cursor: "pointer", fontWeight: 600, fontSize: 12.5, padding: "7px 13px", borderRadius: 9, textTransform: "capitalize" }}
               >
                 {s}
               </button>
@@ -518,7 +518,7 @@ export default function HomePage() {
               ))}
             </div>
             {gamesQ.data?.has_more ? (
-              <div style={{ display: "flex", justifyContent: "center", marginTop: 28 }}>
+              <div className="pf-load-more">
                 <button className="pf-secondary-btn" onClick={() => setLimit((value) => value + 12)} type="button">
                   Load more games
                 </button>

@@ -1,4 +1,6 @@
 "use client";
+
+import { Box, Code2, Sparkles } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 
@@ -6,16 +8,12 @@ import { ApiError, api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/lib/toast";
 
-const ORANGE = "#ff6b35";
-const inputStyle: React.CSSProperties = { width: "100%", border: "1px solid #e8e3d8", borderRadius: 11, padding: "12px 14px", fontSize: 14.5, outline: "none", background: "#fff" };
-const oauthBtn: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "center", gap: 10, border: "1px solid #e8e3d8", background: "#fff", cursor: "pointer", fontWeight: 600, fontSize: 14.5, padding: 12, borderRadius: 11, color: "#181613" };
-
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div style={{ marginBottom: 13 }}>
-      <label style={{ display: "block", fontSize: 12.5, fontWeight: 600, color: "#5c574e", marginBottom: 6 }}>{label}</label>
+    <label className="pf-auth-field">
+      <span>{label}</span>
       {children}
-    </div>
+    </label>
   );
 }
 
@@ -31,8 +29,8 @@ function LoginInner() {
   const [pass, setPass] = useState("");
   const [name, setName] = useState("");
   const [err, setErr] = useState("");
-  const isSignup = mode === "signup";
   const [providers, setProviders] = useState<Record<string, boolean>>({});
+  const isSignup = mode === "signup";
 
   useEffect(() => {
     api.oauthProviders().then(setProviders).catch(() => setProviders({}));
@@ -44,7 +42,6 @@ function LoginInner() {
     router.push(intent === "create" ? "/create" : "/");
   };
 
-  // OAuth 回调：后端把 token 重定向回 /login?token=...，这里落地 session
   useEffect(() => {
     const token = params.get("token");
     if (!token) return;
@@ -69,10 +66,10 @@ function LoginInner() {
     if (pass.length < 6) return setErr("Password must be at least 6 characters.");
     if (isSignup && !name.trim()) return setErr("Pick a display name.");
     try {
-      const r = isSignup ? await api.register(email, pass, name.trim()) : await api.login(email, pass);
-      done(r.token, r.user);
-    } catch (e) {
-      setErr(e instanceof ApiError ? e.message : "Something went wrong");
+      const result = isSignup ? await api.register(email, pass, name.trim()) : await api.login(email, pass);
+      done(result.token, result.user);
+    } catch (error) {
+      setErr(error instanceof ApiError ? error.message : "Something went wrong");
     }
   };
 
@@ -82,8 +79,8 @@ function LoginInner() {
       return;
     }
     try {
-      const r = await api.oauthDemo(provider);
-      setSession(r.token, r.user);
+      const result = await api.oauthDemo(provider);
+      setSession(result.token, result.user);
       flash(`Connected via ${provider} OAuth (demo)`);
       router.push(intent === "create" ? "/create" : "/");
     } catch {
@@ -92,47 +89,82 @@ function LoginInner() {
   };
 
   return (
-    <div style={{ flex: 1, display: "flex", alignItems: "stretch", minHeight: "calc(100vh - 64px)" }}>
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "52px 56px", background: "#181613", color: "#faf8f3", position: "relative", overflow: "hidden" }}>
-        <div style={{ position: "absolute", width: 380, height: 380, borderRadius: "50%", background: "radial-gradient(circle,rgba(255,107,53,.5),transparent 68%)", top: -120, right: -100 }} />
-        <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 11 }}>
-          <div style={{ width: 34, height: 34, borderRadius: 9, background: ORANGE, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <div style={{ width: 0, height: 0, borderLeft: "10px solid #181613", borderTop: "7px solid transparent", borderBottom: "7px solid transparent", marginLeft: 3 }} />
-          </div>
-          <span style={{ fontFamily: "'Space Grotesk'", fontWeight: 700, fontSize: 20 }}>PlayForge</span>
+    <div className="pf-auth-page">
+      <section className="pf-auth-panel">
+        <div className="pf-auth-brand">
+          <span>
+            <Box size={22} />
+          </span>
+          <strong>PlayForge AI</strong>
         </div>
-        <div style={{ position: "relative" }}>
-          <h2 style={{ fontFamily: "'Space Grotesk'", fontSize: 38, fontWeight: 700, lineHeight: 1.1, letterSpacing: "-.02em", marginBottom: 16 }}>Where ideas<br />become arcades.</h2>
-          <p style={{ fontSize: 16, color: "#b8b2a6", lineHeight: 1.55, maxWidth: 380 }}>Join thousands of creators turning prompts into playable games. No engine. No code. Just vibes.</p>
+        <div className="pf-auth-copy">
+          <h1>{isSignup ? "Create your studio" : "Welcome back"}</h1>
+          <p>
+            Sign in to generate, publish, save, and tune browser games from one PlayForge workspace.
+          </p>
         </div>
-        <div style={{ position: "relative", fontFamily: "'IBM Plex Mono'", fontSize: 12, color: "#6f6a60", letterSpacing: ".04em" }}>SESSION-BACKED · OAUTH-READY</div>
-      </div>
-      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: "40px 24px" }}>
-        <div style={{ width: "100%", maxWidth: 380 }}>
-          <h1 style={{ fontFamily: "'Space Grotesk'", fontSize: 28, fontWeight: 700, letterSpacing: "-.02em", marginBottom: 6 }}>{isSignup ? "Create your account" : "Welcome back"}</h1>
-          <p style={{ fontSize: 14.5, color: "#7a756c", marginBottom: 26 }}>{isSignup ? "Start building games in minutes." : "Log in to create and publish."}</p>
-          <div style={{ display: "flex", flexDirection: "column", gap: 11, marginBottom: 18 }}>
-            <button onClick={() => oauth("google")} style={oauthBtn}><span style={{ fontFamily: "'Space Grotesk'", fontWeight: 700, color: "#4285F4" }}>G</span> Continue with Google</button>
-            <button onClick={() => oauth("github")} style={oauthBtn}><span style={{ fontWeight: 700 }}>◐</span> Continue with GitHub</button>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
-            <div style={{ flex: 1, height: 1, background: "#e8e3d8" }} />
-            <span style={{ fontSize: 12, color: "#a8a294", fontFamily: "'IBM Plex Mono'" }}>OR EMAIL</span>
-            <div style={{ flex: 1, height: 1, background: "#e8e3d8" }} />
-          </div>
-          {isSignup && (
-            <Field label="Display name"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ada Lovelace" style={inputStyle} /></Field>
-          )}
-          <Field label="Email"><input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@studio.com" style={inputStyle} /></Field>
-          <Field label="Password"><input value={pass} onChange={(e) => setPass(e.target.value)} type="password" placeholder="••••••••" style={inputStyle} /></Field>
-          {err && <div style={{ fontSize: 13, color: "#e2483d", marginBottom: 8, fontWeight: 500 }}>{err}</div>}
-          <button onClick={submit} style={{ width: "100%", border: "none", cursor: "pointer", background: ORANGE, color: "#fff", fontWeight: 700, fontSize: 15.5, padding: 14, borderRadius: 11, marginTop: 8, boxShadow: "0 8px 20px rgba(255,107,53,.3)" }}>{isSignup ? "Create account" : "Log in"}</button>
-          <div style={{ textAlign: "center", marginTop: 18, fontSize: 14, color: "#7a756c" }}>
-            {isSignup ? "Already have an account? " : "New to PlayForge? "}
-            <button onClick={() => { setMode(isSignup ? "login" : "signup"); setErr(""); }} style={{ border: "none", background: "none", cursor: "pointer", color: ORANGE, fontWeight: 600, fontSize: 14 }}>{isSignup ? "Log in" : "Create one"}</button>
-          </div>
+        <div className="pf-auth-proof">
+          <span>
+            <Sparkles size={17} />
+            Multi-agent generation
+          </span>
+          <span>Sandboxed previews</span>
+          <span>One-click publishing</span>
         </div>
-      </div>
+      </section>
+
+      <section className="pf-auth-card" aria-label={isSignup ? "Create account" : "Log in"}>
+        <h2>{isSignup ? "Create account" : "Log in"}</h2>
+        <p>{isSignup ? "Start building playable ideas in minutes." : "Continue to your PlayForge studio."}</p>
+
+        <div className="pf-auth-oauth">
+          <button onClick={() => oauth("google")} type="button">
+            <span>G</span>
+            Continue with Google
+          </button>
+          <button onClick={() => oauth("github")} type="button">
+            <Code2 size={17} />
+            Continue with GitHub
+          </button>
+        </div>
+
+        <div className="pf-auth-divider">
+          <span />
+          <em>OR EMAIL</em>
+          <span />
+        </div>
+
+        {isSignup ? (
+          <Field label="Display name">
+            <input onChange={(event) => setName(event.target.value)} placeholder="Ada Lovelace" value={name} />
+          </Field>
+        ) : null}
+        <Field label="Email">
+          <input onChange={(event) => setEmail(event.target.value)} placeholder="you@studio.com" value={email} />
+        </Field>
+        <Field label="Password">
+          <input onChange={(event) => setPass(event.target.value)} placeholder="At least 6 characters" type="password" value={pass} />
+        </Field>
+
+        {err ? <div className="pf-auth-error">{err}</div> : null}
+
+        <button className="pf-auth-submit" onClick={submit} type="button">
+          {isSignup ? "Create account" : "Log in"}
+        </button>
+
+        <div className="pf-auth-switch">
+          {isSignup ? "Already have an account?" : "New to PlayForge?"}
+          <button
+            onClick={() => {
+              setMode(isSignup ? "login" : "signup");
+              setErr("");
+            }}
+            type="button"
+          >
+            {isSignup ? "Log in" : "Create one"}
+          </button>
+        </div>
+      </section>
     </div>
   );
 }
