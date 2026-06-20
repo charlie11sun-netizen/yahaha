@@ -2,7 +2,7 @@
 
 面向玩家与创作者的 AI Native 互动游戏平台：创作者用自然语言 + 多模态素材，经 Multi-Agent 流水线生成可发布、可游玩的互动游戏；玩家从首页发现并即点即玩。
 
-> 完整设计文档见 [`docs/`](docs/)：[技术选型](docs/技术选型.md) · [系统架构](docs/系统架构.md) · [数据模型与接口](docs/数据模型与接口.md) · [安全与可观测性](docs/安全与可观测性.md) · [访问密码门禁](docs/访问密码门禁.md)
+> 完整设计文档见 [`docs/`](docs/)：[技术选型](docs/技术选型.md) · [系统架构](docs/系统架构.md) · [数据模型与接口](docs/数据模型与接口.md) · [Multi-Agent 设计](docs/multi-agent_design.md) · [安全与可观测性](docs/安全与可观测性.md) · [完成度说明](docs/完成度说明.md) · [访问密码门禁](docs/访问密码门禁.md)
 
 ## 技术栈
 
@@ -33,7 +33,12 @@ docker compose up --build
 | 后端 API（OpenAPI 文档） | http://localhost:8000/docs |
 | MinIO 控制台 | http://localhost:9001 （账号见 `.env`） |
 
-首次启动 `api` 会自动建表并写入 **2 个手工打造的旗舰示例游戏**——2D《Prism Break》（霓虹打砖块）与 3D《Warp Spire》（自托管 Three.js 隧道飞行），bundle 上传 MinIO（3D 游戏的 `three.min.js` 随包同前缀上传）。通过 Create 流程发布的游戏（如《Neon Arena: Dronefall》）会另外出现在首页，合计满足「≥3 个、≥1 来自 Create」的验收。
+首次启动 `api` 会自动建表并写入 **3 个旗舰示例游戏**，bundle 上传 MinIO（3D 游戏的 `three.min.js` 随包同前缀上传）：
+
+- 2D《Prism Break》（霓虹打砖块）、3D《Warp Spire》（自托管 Three.js 隧道飞行）—— 手工打造（`source=seed`）。
+- 3D《火线突围》（霓虹街区枪战）—— **由真实 Create 流水线（GPT-5.5）生成**，产物固化随 seed 发布并标 `source=create`，首页显示「✨ AI」角标、详情页显示生成 prompt。
+
+因此**开箱即满足「≥3 个示例游戏、≥1 个来自 Create」的验收**，无需手动操作。此外，用户通过 Create 流程实时生成并发布的游戏（如《Neon Arena: Dronefall》）也会出现在首页。
 
 > **整站访问密码（部署门禁）**：在 `.env` 设 `SITE_PASSWORD=你的密码` 后，打开网站需先在门禁页输入该密码才能进入；留空则不启用（本地开发默认开放）。密码仅服务端读取（Next middleware），cookie 存哈希令牌而非明文，与下文的用户注册/登录相互独立。
 
@@ -74,4 +79,4 @@ docker compose up --build
 - **沙箱**：Sandbox QA 的 gVisor 执行在 MVP 为 mock（返回冒烟结果），接口边界已预留。
 - **前端样式**：为保真，直接移植设计稿的内联样式，未引入 Tailwind；后续可抽象为 Tailwind / CSS Modules。
 
-完成度详见各阶段提交与 `docs/安全与可观测性.md` 的「已知问题」。
+完整的「已完成 / Mock / 未完成 + 再给 1 周怎么迭代」清单见 **[完成度说明](docs/完成度说明.md)**；安全相关已知问题另见 `docs/安全与可观测性.md`。

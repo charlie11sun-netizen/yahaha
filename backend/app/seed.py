@@ -5,10 +5,16 @@ retired sample games (DB rows + their object-storage artifacts), ensures demo
 users exist, uploads playable HTML bundles to object storage, and creates or
 refreshes the published sample game rows.
 
-Curated set: two hand-authored flagship games — a 2D brick-breaker (Prism Break)
-and a 3D tunnel flyer (Warp Spire). The third published game on Home is expected
-to be "Neon Arena: Dronefall", produced through the live Create pipeline and left
-untouched here (it is not in this seed set and not in RETIRED_TITLES).
+Curated set (3 published games, satisfying "≥3 示例游戏, ≥1 由 Create 流程生成并发布"):
+  - Prism Break  — 2D brick-breaker, hand-authored seed (source=seed)
+  - Warp Spire   — 3D tunnel flyer, hand-authored seed (source=seed)
+  - 火线突围      — 3D arena shooter, **produced by the real Create pipeline (GPT-5.5)**
+                   from the prompt below; the generated bundle is curated here and
+                   seeded with source=create, so Home shows a Create-origin game out
+                   of the box (AI badge + detail "Generated from prompt" light up).
+
+Live Create-flow games published by users (e.g. "Neon Arena: Dronefall") appear on
+Home in addition to this curated set; they are not in this seed and not retired here.
 """
 from datetime import timedelta
 
@@ -65,7 +71,10 @@ SEED_GAMES = [
         "cover": "linear-gradient(135deg,#ff8a3d,#ff3ea5)",
         "plays": 920,
         "likes": 74,
-        "source": GameSource.SEED,
+        # 真·Create 来源：由真实 Create 流水线（GPT-5.5）按下方 prompt 生成，
+        # 产物固化为旗舰 bundle 随 seed 发布。标 create 让首页「AI 生成」角标、
+        # 详情页 "Generated from prompt" 与接口 from_create=true 如实反映来源。
+        "source": GameSource.CREATE,
         "prompt": "枪战游戏，有障碍物，有道具，枪械可以升级",
         "age_days": 1,
     },
