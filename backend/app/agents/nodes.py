@@ -8,7 +8,7 @@ balance before publishing.
 import json
 import re
 
-from app.agents import bundles, llm, prompts, templating, validation
+from app.agents import bundles, llm, prompts, smoke, templating, validation
 from app.agents.state import MAX_GAMEPLAY_REPAIR, MAX_REPAIR, MAX_REPLAN
 from app.storage import s3
 
@@ -887,6 +887,11 @@ def _gameplay_qa(state: dict) -> dict:
     if not has_restart:
         warnings.append("no obvious restart affordance detected")
 
+    # 运行时冒烟：在沙箱里把 game.js 顶层跑一遍，"一加载就崩"判硬失败 → 触发 repair/replan。
+    smoke_ok, smoke_detail = smoke.run_smoke(js)
+    if not smoke_ok:
+        issues.append(f"runtime smoke test: game crashed on load — {smoke_detail}")
+
     is_3d = state.get("dimension") == "3d"
     if is_3d:
         depth_metric = any(tok in low for tok in ["three.", "webglrenderer", "perspectivecamera", "scene()", "new scene"])
@@ -915,6 +920,7 @@ def _gameplay_qa(state: dict) -> dict:
             "js_bytes": len(js.encode("utf-8")),
             "has_input": has_input,
             "has_restart": has_restart,
+            "runtime_smoke_ok": smoke_ok,
             ("uses_three_webgl" if is_3d else "uses_gradient_or_glow"): depth_metric,
         },
     }
@@ -928,6 +934,8 @@ def _gameplay_qa_log_lines(result: dict) -> list[str]:
         f"playtest archetype: {result.get('archetype')}",
         f"code smoke: game.js={m.get('js_bytes')} bytes, input={m.get('has_input')}, restart={m.get('has_restart')}, {depth_label}={depth_val}",
     ]
+    if m.get("runtime_smoke_ok") is not None:
+        lines.append("runtime smoke: " + ("passed (top-level executes clean)" if m.get("runtime_smoke_ok") else "CRASHED on load"))
     if result.get("warnings"):
         lines.append("quality warnings: " + "; ".join(result["warnings"][:4]))
     if result.get("issues"):
