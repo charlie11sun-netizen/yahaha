@@ -65,6 +65,7 @@ function StudioPage() {
   const [newPassword, setNewPassword] = useState("");
   const [changingPassword, setChangingPassword] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!loading && !user) router.replace("/login");
@@ -212,6 +213,23 @@ function StudioPage() {
     }
   };
 
+  const removeTask = async (task: Task) => {
+    if (!window.confirm("Delete this generation task? This permanently removes the task record.")) return;
+    try {
+      setDeletingTaskId(task.id);
+      if (task.status === "pending" || task.status === "running") {
+        await api.cancelTask(task.id);
+      }
+      await api.deleteTask(task.id);
+      await queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      flash("Task deleted");
+    } catch (err) {
+      flash(err instanceof Error ? err.message : "Could not delete task");
+    } finally {
+      setDeletingTaskId(null);
+    }
+  };
+
   const openTask = (task: Task) => {
     if (task.status === "succeeded" && task.game) {
       router.push(`/play/${task.game.id}`);
@@ -291,7 +309,9 @@ function StudioPage() {
 
                 <Panel title="Recent Generation Tasks" actionLabel="View all tasks" onAction={() => switchSection("tasks")}>
                   <TaskTable
+                    deletingId={deletingTaskId}
                     emptyLabel={tasksQ.isLoading ? "Loading tasks..." : "No generation tasks yet"}
+                    onDelete={removeTask}
                     onOpen={openTask}
                     tasks={tasks.slice(0, 4)}
                   />
@@ -342,7 +362,9 @@ function StudioPage() {
             {section === "tasks" && (
               <Panel title="Generation Tasks" actionLabel="Create game" onAction={() => router.push("/create")}>
                 <TaskTable
+                  deletingId={deletingTaskId}
                   emptyLabel={tasksQ.isLoading ? "Loading tasks..." : "No generation tasks yet"}
+                  onDelete={removeTask}
                   onOpen={openTask}
                   tasks={tasks}
                 />
@@ -598,7 +620,19 @@ function StudioGameCard({
   );
 }
 
-function TaskTable({ emptyLabel, onOpen, tasks }: { emptyLabel: string; onOpen: (task: Task) => void; tasks: Task[] }) {
+function TaskTable({
+  deletingId,
+  emptyLabel,
+  onDelete,
+  onOpen,
+  tasks,
+}: {
+  deletingId: string | null;
+  emptyLabel: string;
+  onDelete: (task: Task) => void;
+  onOpen: (task: Task) => void;
+  tasks: Task[];
+}) {
   if (tasks.length === 0) return <div className="pf-studio-empty">{emptyLabel}</div>;
 
   return (
@@ -624,10 +658,21 @@ function TaskTable({ emptyLabel, onOpen, tasks }: { emptyLabel: string; onOpen: 
           <span>{shortId(task.id)}</span>
           <span className={`pf-studio-task-status is-${task.status}`}>{taskStatusLabel(task.status)}</span>
           <span>{taskStep(task)}</span>
-          <button onClick={() => onOpen(task)} type="button">
-            {taskActionLabel(task)}
-            <ChevronRight size={17} />
-          </button>
+          <div className="pf-studio-task-actions">
+            <button onClick={() => onOpen(task)} type="button">
+              {taskActionLabel(task)}
+              <ChevronRight size={17} />
+            </button>
+            <button
+              aria-label="Delete task"
+              className="pf-studio-task-delete"
+              disabled={deletingId === task.id}
+              onClick={() => onDelete(task)}
+              type="button"
+            >
+              <Trash2 size={15} />
+            </button>
+          </div>
         </div>
       ))}
     </div>

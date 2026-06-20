@@ -2909,8 +2909,13 @@ img {
   font-weight: 700;
 }
 
+.pf-studio-task-title > div {
+  min-width: 0;
+}
+
 .pf-studio-task-title strong,
 .pf-studio-task-title p {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2955,6 +2960,31 @@ img {
   font-size: 14px;
   justify-content: flex-start;
   white-space: nowrap;
+}
+
+.pf-studio-task-actions {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pf-studio-task-actions .pf-studio-task-delete {
+  border-radius: 8px;
+  color: #94a3b8;
+  flex: 0 0 auto;
+  justify-content: center;
+  padding: 6px;
+}
+
+.pf-studio-task-actions .pf-studio-task-delete:hover:not(:disabled) {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.pf-studio-task-actions .pf-studio-task-delete:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .pf-studio-empty {
@@ -3645,8 +3675,8 @@ img {
 
 .pf-studio-task-head,
 .pf-studio-task-row {
-  grid-template-columns: minmax(300px, 1.45fr) 130px 130px minmax(150px, 0.7fr) 150px;
-  min-width: 980px;
+  grid-template-columns: minmax(300px, 1.45fr) 130px 130px minmax(150px, 0.7fr) 184px;
+  min-width: 1014px;
 }
 
 .pf-studio-task-head {
