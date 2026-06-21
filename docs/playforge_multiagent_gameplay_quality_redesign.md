@@ -1,5 +1,11 @@
 # PlayForge Multi-Agent Gameplay Quality Redesign
 
+> **状态：历史 RFC（已落地并被超越）。** 本文记录从“生成可运行游戏”升级到“生成可玩 + 可验证 + 可修复”的设计思路，其核心（ArchetypeRouter / Balance / GameplayQA / GameplayRepair / ConstrainedReplan + 两个 bounded ReAct 循环）均已实现。但实现之后又进一步演进，与本文有两点出入：
+> 1. **新增 3 个规划节点**：`brief_expansion` / `mechanic_planner` / `content_plan`（本文未列）。
+> 2. **3D 与模型优先**：实现支持 3D WebGL（Three.js）且代码生成改为**模型优先**——这与本文 §5.7「template-first」与 §12「3D rendering 为 non-goal」直接相反。
+>
+> 当前真实实现以 [multi-agent_design.md](multi-agent_design.md) 为准（与 `backend/app/agents/` 同步）。本文保留作设计演进记录，不再更新。
+
 ## 1. Goal
 
 当前 Create 链路已经能完成端到端闭环：用户输入创意，后端 Multi-Agent 生成 `index.html / style.css / game.js`，上传到对象存储，写入数据库，再由 Play 页面通过 `manifest.json` 动态加载运行。
