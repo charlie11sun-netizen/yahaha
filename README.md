@@ -2,13 +2,14 @@
 
 面向玩家与创作者的 AI Native 互动游戏平台：创作者用自然语言 + 多模态素材，经 Multi-Agent 流水线生成可发布、可游玩的互动游戏；玩家从首页发现并即点即玩。
 
-> 完整设计文档见 [`docs/`](docs/)：[技术选型](docs/技术选型.md) · [系统架构](docs/系统架构.md) · [数据模型与接口](docs/数据模型与接口.md) · [Multi-Agent 设计](docs/multi-agent_design.md) · [安全与可观测性](docs/安全与可观测性.md) · [完成度说明](docs/完成度说明.md) · [访问密码门禁](docs/访问密码门禁.md)
+> 设计文档见 [`docs/`](docs/)：[技术选型](docs/技术选型.md) · [系统架构](docs/系统架构.md) · [数据模型与接口](docs/数据模型与接口.md) · [Multi-Agent 设计](docs/multi-agent_design.md) · [安全与可观测性](docs/安全与可观测性.md) · [完成度说明](docs/完成度说明.md) · [访问密码门禁](docs/访问密码门禁.md) · [AI 协作记录](docs/AI协作记录.md)
+> 部署见 [部署指南](deploy/DEPLOY.md)（本地 docker compose / Zeabur 托管 + 跨机数据迁移）。
 
 ## 技术栈
 
 | 层 | 选型 |
 | --- | --- |
-| 前端 | Next.js 15 + React 19 + TypeScript（内联样式移植自设计稿） |
+| 前端 | Next.js 15 + React 19 + TypeScript · Tailwind v4 + shadcn/ui |
 | 后端 | Python · FastAPI |
 | 异步任务 | Celery + Redis |
 | Agent | LangGraph（`USE_REAL_MODEL=true` 时接 GPT-5.5；默认 mock 流水线离线可跑） |
@@ -42,6 +43,8 @@ docker compose up --build
 
 > **整站访问密码（部署门禁）**：在 `.env` 设 `SITE_PASSWORD=你的密码` 后，打开网站需先在门禁页输入该密码才能进入；留空则不启用（本地开发默认开放）。密码仅服务端读取（Next middleware），cookie 存哈希令牌而非明文，与下文的用户注册/登录相互独立。
 
+> **生产部署**：另有 `docker-compose.prod.yml` + `.env.prod.example`（强制站点密码、烧入公网地址、可跨机迁移 Create 生成的游戏数据），本地一条命令或 Zeabur 托管，详见 [部署指南](deploy/DEPLOY.md)。
+
 ## 核心链路（端到端）
 
 ```
@@ -54,19 +57,24 @@ docker compose up --build
 
 ```
 .
-├── docs/                 # 系统设计文档
-├── backend/              # FastAPI + Celery + LangGraph
-│   └── app/
-│       ├── api/          # 路由：auth / games / tasks / uploads
-│       ├── models/       # SQLAlchemy 模型
-│       ├── schemas/      # Pydantic DTO
-│       ├── agents/       # LangGraph 生成流水线（mock + 真实可切换）
-│       ├── tasks/        # Celery app + 生成任务
-│       ├── storage/      # boto3 / S3 封装
-│       └── seed.py       # 示例数据
-├── frontend/             # Next.js（Home / Detail / Auth / Create / Play）
-├── docker-compose.yml    # web / api / worker / postgres / redis / minio
-└── .env.example
+├── docs/                    # 系统设计文档
+├── backend/                 # FastAPI + Celery + LangGraph
+│   ├── app/
+│   │   ├── api/             # 路由：auth / games / tasks / uploads
+│   │   ├── agents/          # LangGraph 生成流水线（mock + 真实可切换）
+│   │   ├── services/        # 业务编排（生成、发布、计数…）
+│   │   ├── tasks/           # Celery app + 生成任务
+│   │   ├── storage/         # boto3 / S3 封装
+│   │   ├── models/ · schemas.py     # SQLAlchemy 模型 / Pydantic DTO
+│   │   └── seed.py          # 旗舰示例游戏
+│   ├── migrations/          # Alembic 迁移
+│   └── tests/               # pytest 套件
+├── frontend/                # Next.js（Home / Detail / Auth / Create / Play）
+│   └── app · components/ui（shadcn） · lib
+├── deploy/                  # 部署指南 + 跨机数据迁移脚本
+├── docker-compose.yml       # 本地：web / api / worker / postgres / redis / minio
+├── docker-compose.prod.yml  # 生产：站点密码门禁 + 公网地址
+└── .env.example · .env.prod.example
 ```
 
 ## 与设计文档的已知差异（MVP 取舍）
@@ -77,6 +85,6 @@ docker compose up --build
 - **加固**：Redis IP 限流、安全响应头、上传大小/类型校验、播放计数防刷、`/health/ready` 就绪检查（DB/Redis/S3）。
 - **生成**：默认 `USE_REAL_MODEL=false` 走 mock 流水线（保留 5-Agent 步骤与日志，从模板产出真实可玩 bundle 并上传 OSS）；置 `true` 走 **LangGraph 真实链路**（planner→designer→coder→sandbox QA，QA 不过自动回 coder 重试），调用 GPT-5.5 生成全新游戏代码、校验后上传 OSS。两条路径共用同一套步骤/日志流式展示。
 - **沙箱**：Sandbox QA 的 gVisor 执行在 MVP 为 mock（返回冒烟结果），接口边界已预留。
-- **前端样式**：为保真，直接移植设计稿的内联样式，未引入 Tailwind；后续可抽象为 Tailwind / CSS Modules。
+- **前端样式**：已迁移到 **Tailwind v4 + shadcn/ui**（设计令牌按品牌调色，组件在 `frontend/components/ui`），核心页优先；早期从设计稿移植的 `pf-*` 内联/CSS 仍共存，逐页替换中。
 
 完整的「已完成 / Mock / 未完成 + 再给 1 周怎么迭代」清单见 **[完成度说明](docs/完成度说明.md)**；安全相关已知问题另见 `docs/安全与可观测性.md`。
