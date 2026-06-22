@@ -425,10 +425,6 @@ export default function HomePage() {
               on the web.
             </h1>
             <div className="ctas">
-              <div className="code-box" aria-label="Prompt to playable game">
-                <span className="prompt">&gt;</span>
-                <code>prompt -&gt; playable game</code>
-              </div>
               <Link href="/explore" className="cta-btn">
                 Get Started <span aria-hidden="true">-&gt;</span>
               </Link>
