@@ -13,6 +13,7 @@ import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "@fontsource/ibm-plex-mono/600.css";
 import "./globals.css";
+import "./homepage.css";
 import Nav from "@/components/Nav";
 import Providers from "./providers";
 

@@ -22,6 +22,7 @@ export function sitePassword(): string {
  * the site stays open — local dev is unaffected and you opt in per deployment.
  */
 export function gateEnabled(): boolean {
+  if (process.env.PLAYFORGE_DISABLE_GATE === "1") return false;
   return sitePassword().length > 0;
 }
 

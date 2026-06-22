@@ -17,7 +17,7 @@ export default function Nav() {
   const isCreate = path === "/create";
   const isStudio = path === "/me";
 
-  if (path.startsWith("/play/") || path === "/gate") return null;
+  if (path === "/" || path.startsWith("/play/") || path === "/gate") return null;
 
   const goCreate = () => router.push(user ? "/create" : "/login?intent=create");
   const emitCreateEvent = (name: string) => {
@@ -37,7 +37,7 @@ export default function Nav() {
         </button>
 
         <div className="pf-navlinks">
-          <button className={navClass(path, "/")} onClick={() => router.push("/")} type="button">
+          <button className={navClass(path, "/explore")} onClick={() => router.push("/explore")} type="button">
             Explore
           </button>
           <button className={navClass(path, "/create")} onClick={goCreate} type="button">
@@ -46,7 +46,7 @@ export default function Nav() {
           <button className={navClass(path, "/me")} onClick={() => router.push(user ? "/me?section=games" : "/login")} type="button">
             My Games
           </button>
-          <button onClick={() => router.push("/#how")} type="button">
+          <button onClick={() => router.push("/explore#how")} type="button">
             How It Works
           </button>
         </div>
