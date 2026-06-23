@@ -1177,10 +1177,18 @@ def game_design_node(state: dict) -> dict:
     if state.get("use_real"):
         try:
             sys_prompt = prompts.GAME_DESIGN_SYSTEM_PROMPT_3D if is_3d else prompts.GAME_DESIGN_SYSTEM_PROMPT
-            raw, tokens = llm.chat(sys_prompt, prompts.build_game_design_prompt(spec, state.get("asset_manifest")))
+            raw, tokens = llm.chat(sys_prompt, prompts.build_game_design_prompt(
+                spec,
+                state.get("asset_manifest"),
+                expanded_brief=state.get("expanded_brief"),
+                mechanic_plan=state.get("mechanic_plan"),
+                player_idea=state.get("normalized_prompt") or state.get("prompt"),
+            ))
             design = _coerce_design(_parse_json(raw), spec)
+            fed = [k for k, v in (("brief", state.get("expanded_brief")), ("mechanic_plan", state.get("mechanic_plan")), ("player_idea", state.get("normalized_prompt"))) if v]
             out = {"game_design": design, "_agent": "GameDesignAgent", "_tokens_delta": tokens,
-                   "_logs": [f"source: model GameDesign JSON ({'3D' if is_3d else '2D'})"] + _design_log_lines(design)}
+                   "_logs": [f"source: model GameDesign JSON ({'3D' if is_3d else '2D'})",
+                             "design context fed: " + (", ".join(fed) or "spec only")] + _design_log_lines(design)}
             if is_3d:
                 new_arch = _reconcile_archetype_3d(spec, design)
                 if new_arch != spec.get("archetype"):

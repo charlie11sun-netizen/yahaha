@@ -117,12 +117,42 @@ def build_intent_spec_prompt(normalized_prompt: str, asset_count: int = 0) -> st
     return f"User idea:\n{normalized_prompt}\n\nAttached assets: {asset_count}\n\nOutput the GameSpec JSON."
 
 
-def build_game_design_prompt(game_spec: dict, asset_manifest: dict | None) -> str:
-    return (
-        f"GameSpec:\n{json.dumps(game_spec, ensure_ascii=False)}\n\n"
-        f"AssetManifest:\n{json.dumps(asset_manifest or {}, ensure_ascii=False)}\n\n"
-        "Output the GameDesign JSON."
+def build_game_design_prompt(
+    game_spec: dict,
+    asset_manifest: dict | None,
+    expanded_brief: dict | None = None,
+    mechanic_plan: dict | None = None,
+    player_idea: str | None = None,
+) -> str:
+    """GameDesign 模型的上下文。
+
+    设计模型是整条链里最有创造性的一步，过去只拿到 GameSpec + AssetManifest，看不到前面
+    brief / mechanic 的规划，等于从 spec 重新构思。这里把规划层产物和用户原话一并带上，让
+    设计真正承接 brief 的玩家幻想/难度节拍与 mechanic 的敌人/道具，并保持类型忠实。
+    mechanic_plan 的 archetype_hint 被夹回 2D 集合、对当前运行时可能矛盾（3D 尤甚），不喂给
+    设计模型——原型以 game_spec.archetype 为准。
+    """
+    parts: list[str] = []
+    if player_idea:
+        parts.append(f"Player's original idea (honor its genre and concrete details):\n{player_idea}")
+    parts.append(f"GameSpec:\n{json.dumps(game_spec, ensure_ascii=False)}")
+    if expanded_brief:
+        parts.append(
+            "Playable brief — realize this player fantasy, core verbs, difficulty beats, "
+            f"feedback, and minimum content:\n{json.dumps(expanded_brief, ensure_ascii=False)}"
+        )
+    if mechanic_plan:
+        mech = {k: v for k, v in mechanic_plan.items() if k != "archetype_hint"}
+        parts.append(
+            "Mechanic plan — implement these concrete enemies, rewards, power-ups, and "
+            f"feedback:\n{json.dumps(mech, ensure_ascii=False)}"
+        )
+    parts.append(f"AssetManifest:\n{json.dumps(asset_manifest or {}, ensure_ascii=False)}")
+    parts.append(
+        "Output the GameDesign JSON that faithfully realizes the brief and mechanic plan above "
+        "for the player's idea."
     )
+    return "\n\n".join(parts)
 
 
 def build_replan_prompt(game_spec: dict, prev_design: dict | None, last_error: str | None) -> str:
