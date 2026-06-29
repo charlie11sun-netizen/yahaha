@@ -4,8 +4,8 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, rate_limit
 from app.db.session import get_db
 from app.models import Asset, GenerationTask
-from app.models.common import TaskStatus, now_utc
-from app.schemas import TaskCreateIn
+from app.models.common import GameStatus, TaskStatus, now_utc
+from app.schemas import TaskCreateIn, TaskRevisionIn
 from app.services.serialize import task_out
 from app.tasks.generate import generate_game
 
@@ -51,6 +51,56 @@ def list_tasks(user=Depends(get_current_user), db: Session = Depends(get_db)):
 @router.get("/{task_id}")
 def get_task(task_id: str, user=Depends(get_current_user), db: Session = Depends(get_db)):
     return task_out(_owned_task(task_id, user, db))
+
+
+@router.post("/{task_id}/revise", dependencies=[Depends(rate_limit(20, 3600, "task_revise"))])
+def revise_task(
+    task_id: str,
+    body: TaskRevisionIn,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    source = _owned_task(task_id, user, db)
+    if source.status != TaskStatus.SUCCEEDED or not source.result_game:
+        raise HTTPException(status_code=400, detail="Only a completed preview can be revised")
+    game = source.result_game
+    if game.status == GameStatus.PUBLISHED:
+        raise HTTPException(status_code=400, detail="Published games must be unpublished before revision")
+    current_version = next((v for v in game.versions if v.version == game.current_version), None)
+    if not current_version or source.version_id != current_version.id:
+        raise HTTPException(status_code=409, detail="This task is not the game's current preview version")
+    active = (
+        db.query(GenerationTask)
+        .filter(
+            GenerationTask.base_game_id == game.id,
+            GenerationTask.task_kind == "revision",
+            GenerationTask.status.in_([TaskStatus.PENDING, TaskStatus.RUNNING]),
+        )
+        .first()
+    )
+    if active:
+        raise HTTPException(status_code=409, detail="A revision is already running for this preview")
+
+    feedback = body.feedback.strip()
+    revision = GenerationTask(
+        user_id=user.id,
+        idea=source.idea,
+        task_kind="revision",
+        base_game_id=game.id,
+        base_version=game.current_version,
+        result_game_id=game.id,
+        feedback_text=feedback,
+        dimension=source.dimension or "2d",
+        status=TaskStatus.PENDING,
+        spec_json=source.spec_json,
+        design_json=source.design_json,
+    )
+    revision.assets = list(source.assets)
+    db.add(revision)
+    db.commit()
+    db.refresh(revision)
+    generate_game.delay(revision.id)
+    return {"task_id": revision.id}
 
 
 @router.post("/{task_id}/retry")

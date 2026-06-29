@@ -310,7 +310,7 @@ def _extract_bundle(raw: str) -> dict:
             out["game.js"] = block
         elif "style.css" not in out and "<" not in low and "{" in block and "}" in block:
             out["style.css"] = block
-    if "game.js" not in out:
+    if "game.js" not in out and not out:
         js = _extract_js(raw)
         if js:
             out["game.js"] = js
@@ -1016,6 +1016,51 @@ def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[d
     return files, tokens, mode
 
 
+def _revision_file_map(files: list[dict] | None) -> dict[str, str]:
+    return {
+        str(file.get("path")): str(file.get("content") or "")
+        for file in (files or [])
+        if file.get("path") in {"index.html", "style.css", "game.js"}
+    }
+
+
+def _generate_revision_code(
+    state: dict, repair_error: str | None = None
+) -> tuple[list[dict], int, list[str], str]:
+    source_files = (
+        state.get("generated_files")
+        if repair_error and state.get("generated_files")
+        else state.get("existing_files")
+    ) or []
+    source = _revision_file_map(source_files)
+    if not state.get("use_real"):
+        files = [{"path": path, "content": source[path]} for path in ("index.html", "style.css", "game.js") if path in source]
+        return files, 0, [], "real model required for semantic revision"
+
+    raw, tokens = llm.chat(
+        prompts.CODE_REVISION_SYSTEM_PROMPT,
+        prompts.build_code_revision_prompt(
+            state.get("source_feedback") or state.get("prompt") or "",
+            state.get("feedback_brief") or "",
+            state.get("game_spec") or {},
+            state.get("game_design") or {},
+            source_files,
+            repair_error,
+        ),
+    )
+    returned = _extract_bundle(raw)
+    merged = dict(source)
+    changed: list[str] = []
+    for path in ("index.html", "style.css", "game.js"):
+        content = returned.get(path)
+        if content is None or content == source.get(path):
+            continue
+        merged[path] = content
+        changed.append(path)
+    files = [{"path": path, "content": merged[path]} for path in ("index.html", "style.css", "game.js") if path in merged]
+    return files, tokens, changed, "model incremental revision"
+
+
 def safety_intake_node(state: dict) -> dict:
     prompt = state.get("prompt", "") or ""
     if not prompt.strip():
@@ -1239,6 +1284,52 @@ def balance_plan_node(state: dict) -> dict:
     }
 
 
+def feedback_understanding_node(state: dict) -> dict:
+    feedback = state.get("source_feedback") or state.get("prompt") or ""
+    tokens = 0
+    if state.get("use_real"):
+        try:
+            brief, tokens = llm.chat(
+                prompts.FEEDBACK_UNDERSTANDING_SYSTEM_PROMPT,
+                prompts.build_feedback_understanding_prompt(
+                    feedback,
+                    state.get("game_spec") or {},
+                    state.get("game_design") or {},
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            brief = f"Change goal\n{feedback}\n\nPreserve\nAll behavior not mentioned by the player.\n\nUncertainties\nModel interpretation failed: {_clip(exc, 120)}"
+    else:
+        brief = f"Change goal\n{feedback}\n\nPreserve\nAll behavior not mentioned by the player.\n\nUncertainties\nNone inferred in offline mode."
+    return {
+        "feedback_brief": brief,
+        "_agent": "FeedbackUnderstandingAgent",
+        "_tokens_delta": tokens,
+        "_logs": [
+            f"preserved raw feedback: {_clip(feedback, 180)}",
+            f"natural-language change brief: {_clip(brief, 240)}",
+        ],
+    }
+
+
+def code_revision_node(state: dict) -> dict:
+    try:
+        files, tokens, changed, mode = _generate_revision_code(state)
+    except Exception as exc:  # noqa: BLE001
+        files, tokens, changed, mode = state.get("existing_files") or [], 0, [], f"revision failed: {_clip(exc, 160)}"
+    return {
+        "generated_files": files,
+        "revision_result": {"changed_files": changed, "base_version": state.get("base_version")},
+        "_agent": "CodeRevisionAgent",
+        "_tokens_delta": tokens,
+        "_logs": [
+            f"base version: {state.get('base_version')}",
+            f"revision mode: {mode}",
+            "changed files: " + (", ".join(changed) if changed else "none"),
+        ] + _file_log_lines(files),
+    }
+
+
 def code_generation_node(state: dict) -> dict:
     files, tokens, mode = _generate_code(state)
     spec = state.get("game_spec") or {}
@@ -1270,6 +1361,10 @@ def code_generation_node(state: dict) -> dict:
 
 def build_validation_node(state: dict) -> dict:
     result = validation.validate_files(state.get("generated_files") or [])
+    if state.get("task_kind") == "revision" and not (state.get("revision_result") or {}).get("changed_files"):
+        result = dict(result)
+        result["valid"] = False
+        result["errors"] = list(result.get("errors") or []) + ["revision produced no file changes"]
     if result["valid"]:
         return {"validation_result": result, "_agent": "BuildValidateAgent", "_logs": _validation_log_lines(result) + ["validation passed"]}
     return {
@@ -1309,6 +1404,30 @@ def repair_code_node(state: dict) -> dict:
         ]
         + _file_log_lines(files)
         + ["queued validation retry"],
+    }
+
+
+def revision_repair_node(state: dict) -> dict:
+    attempts = state.get("repair_attempts", 0) + 1
+    try:
+        files, tokens, changed, mode = _generate_revision_code(state, repair_error=state.get("last_error"))
+    except Exception as exc:  # noqa: BLE001
+        files, tokens, changed, mode = state.get("generated_files") or state.get("existing_files") or [], 0, [], f"revision repair failed: {_clip(exc, 160)}"
+    return {
+        "generated_files": files,
+        "revision_result": {"changed_files": changed, "base_version": state.get("base_version")},
+        "validation_result": {},
+        "gameplay_qa_result": {},
+        "repair_attempts": attempts,
+        "_agent": "CodeRevisionRepairAgent",
+        "_tokens_delta": tokens,
+        "_logs": [
+            f"revision repair attempt: {attempts}/{MAX_REPAIR}",
+            f"previous error: {_clip(state.get('last_error'), 180)}",
+            f"revision mode: {mode}",
+            "changed files: " + (", ".join(changed) if changed else "none"),
+            "queued validation retry",
+        ],
     }
 
 
@@ -1401,6 +1520,26 @@ def publish_artifact_node(state: dict) -> dict:
     }
 
 
+def publish_revision_node(state: dict) -> dict:
+    from app.services import packaging
+
+    game_id, version_id, version, manifest_url = packaging.publish_revision(state)
+    return {
+        "status": "succeeded",
+        "game_id": game_id,
+        "version_id": version_id,
+        "manifest_url": manifest_url,
+        "preview_url": f"/play/{game_id}",
+        "_agent": "PublishRevisionAgent",
+        "_logs": [
+            f"incremental files: {', '.join((state.get('revision_result') or {}).get('changed_files') or [])}",
+            f"saved preview version: {version}",
+            f"manifest url: {manifest_url}",
+            "previous version retained for rollback",
+        ],
+    }
+
+
 def failed_node(state: dict) -> dict:
     msg = state.get("error_message") or state.get("last_error") or "generation failed"
     return {
@@ -1425,10 +1564,16 @@ def done_node(state: dict) -> dict:
 
 
 def should_continue_after_safety(state: dict) -> str:
-    return "failed" if state.get("status") == "failed" else "intent_spec"
+    if state.get("status") == "failed":
+        return "failed"
+    return "feedback_understanding" if state.get("task_kind") == "revision" else "intent_spec"
 
 
 def should_continue_after_validation(state: dict) -> str:
+    if state.get("task_kind") == "revision":
+        if (state.get("validation_result") or {}).get("valid"):
+            return "gameplay_qa"
+        return "revision_repair" if state.get("repair_attempts", 0) < MAX_REPAIR else "failed"
     if (state.get("validation_result") or {}).get("valid"):
         return "gameplay_qa"
     if state.get("repair_attempts", 0) < MAX_REPAIR:
@@ -1439,6 +1584,10 @@ def should_continue_after_validation(state: dict) -> str:
 
 
 def should_continue_after_gameplay_qa(state: dict) -> str:
+    if state.get("task_kind") == "revision":
+        if (state.get("gameplay_qa_result") or {}).get("passed"):
+            return "publish_revision"
+        return "revision_repair" if state.get("repair_attempts", 0) < MAX_REPAIR else "failed"
     if (state.get("gameplay_qa_result") or {}).get("passed"):
         return "publish_artifact"
     if state.get("gameplay_repair_attempts", 0) < MAX_GAMEPLAY_REPAIR:

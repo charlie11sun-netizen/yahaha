@@ -22,10 +22,20 @@ _STAGES = [
     ("GameplayRepairAgent", "gameplay_repair", "玩法调参修复"),
     ("PublishArtifactAgent", "publish_artifact", "准备预览版本"),
 ]
+_REVISION_STAGES = [
+    ("SafetyIntakeAgent", "safety_intake", "检查修改反馈"),
+    ("FeedbackUnderstandingAgent", "feedback_understanding", "理解用户反馈"),
+    ("CodeRevisionAgent", "code_revision", "修改现有代码"),
+    ("BuildValidateAgent", "build_validation", "验证修改结果"),
+    ("GameplayQAAgent", "gameplay_qa", "回归测试玩法"),
+    ("PublishRevisionAgent", "publish_revision", "保存新版 Preview"),
+]
 _PROGRESS = {"safety_intake": 10, "intent_spec": 18, "brief_expansion": 24, "mechanic_planner": 30,
              "archetype_router": 34, "asset_processing": 40, "game_design": 50, "content_plan": 56,
              "balance_plan": 62, "code_generation": 72, "build_validation": 82,
-             "gameplay_qa": 90, "gameplay_repair": 88, "publish_artifact": 96}
+             "gameplay_qa": 90, "gameplay_repair": 88, "publish_artifact": 96,
+             "feedback_understanding": 25, "code_revision": 55, "revision_repair": 65,
+             "publish_revision": 96}
 _ST = {"done": "completed", "running": "running", "failed": "failed"}
 
 
@@ -183,7 +193,8 @@ def task_out(t) -> dict:
 
     step_summaries = []
     progress = 0
-    for agent, key, title in _STAGES:
+    stages = _REVISION_STAGES if getattr(t, "task_kind", "generation") == "revision" else _STAGES
+    for agent, key, title in stages:
         s = steps_by_agent.get(agent)
         status = _ST.get(s.status, "pending") if s else "pending"
         summary = (s.logs[-1].line if (s and s.logs) else None)
@@ -219,6 +230,11 @@ def task_out(t) -> dict:
 
     return {
         "id": t.id, "status": t.status, "current_step": t.current_step, "current_agent": t.current_agent,
+        "task_kind": getattr(t, "task_kind", "generation") or "generation",
+        "base_game_id": getattr(t, "base_game_id", None),
+        "base_version": getattr(t, "base_version", None),
+        "feedback_text": getattr(t, "feedback_text", None),
+        "feedback_brief": getattr(t, "feedback_brief", None),
         "repair_attempts": t.repair_attempts, "replan_attempts": t.replan_attempts,
         "max_repair_attempts": t.max_repair_attempts, "max_replan_attempts": t.max_replan_attempts,
         "tokens": t.tokens_used, "error": t.error, "error_code": t.error_code, "idea": t.idea,

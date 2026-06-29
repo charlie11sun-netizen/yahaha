@@ -75,6 +75,11 @@ export interface TaskAsset {
 export interface Task {
   id: string;
   status: string;
+  task_kind?: "generation" | "revision";
+  base_game_id?: string | null;
+  base_version?: string | null;
+  feedback_text?: string | null;
+  feedback_brief?: string | null;
   created_at?: string;
   updated_at?: string;
   started_at?: string | null;

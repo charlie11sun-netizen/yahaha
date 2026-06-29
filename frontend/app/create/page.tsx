@@ -51,6 +51,15 @@ const USER_STEPS: UserStep[] = [
   { key: "publish_artifact", label: "Preparing preview" },
   { key: "ready", label: "Ready to publish" },
 ];
+const USER_REVISION_STEPS: UserStep[] = [
+  { key: "safety_intake", label: "Feedback checked" },
+  { key: "feedback_understanding", label: "Feedback understood" },
+  { key: "code_revision", label: "Existing files revised" },
+  { key: "build_validation", label: "Validating changes" },
+  { key: "gameplay_qa", label: "Regression playtest" },
+  { key: "publish_revision", label: "Saving new preview" },
+  { key: "ready", label: "Ready to publish" },
+];
 
 type StepState = "pending" | "running" | "completed" | "failed";
 type StepRow = { key: string; label: string; status: StepState; summary?: string | null };
@@ -79,6 +88,8 @@ function CreatePageInner() {
   const [taskId, setTaskId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  const [revising, setRevising] = useState(false);
+  const [revisionFeedback, setRevisionFeedback] = useState("");
   const [activityOpen, setActivityOpen] = useState(false);
   const [tasksOpen, setTasksOpen] = useState(false);
 
@@ -223,6 +234,24 @@ function CreatePageInner() {
     }
   };
 
+  const reviseGame = async () => {
+    if (!task?.game || !revisionFeedback.trim() || revising) return;
+    setRevising(true);
+    try {
+      const result = await api.reviseTask(task.id, revisionFeedback.trim());
+      setRevisionFeedback("");
+      setTaskId(result.task_id);
+      localStorage.setItem(LAST_TASK_KEY, result.task_id);
+      router.replace(`/create?task=${encodeURIComponent(result.task_id)}`);
+      await queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      flash("Revision task started from the current preview");
+    } catch {
+      flash("Could not start revision");
+    } finally {
+      setRevising(false);
+    }
+  };
+
   const openPreview = () => {
     if (task?.game) {
       window.open(`/play/${task.game.id}`, "_blank", "noopener");
@@ -262,8 +291,12 @@ function CreatePageInner() {
             onOpenActivity={() => setActivityOpen(true)}
             onPreview={openPreview}
             onPublish={publishGame}
+            onRevision={reviseGame}
             onRetry={retryTask}
             publishing={publishing}
+            revisionFeedback={revisionFeedback}
+            revising={revising}
+            setRevisionFeedback={setRevisionFeedback}
             task={task}
           />
         ) : (
@@ -440,8 +473,12 @@ function CreateInput({
           onOpenActivity={onOpenActivity}
           onPreview={() => undefined}
           onPublish={() => undefined}
+          onRevision={() => undefined}
           onRetry={() => undefined}
           publishing={false}
+          revisionFeedback=""
+          revising={false}
+          setRevisionFeedback={() => undefined}
           task={undefined}
         />
       </aside>
@@ -458,8 +495,12 @@ function CreateWorkspace({
   onOpenActivity,
   onPreview,
   onPublish,
+  onRevision,
   onRetry,
   publishing,
+  revisionFeedback,
+  revising,
+  setRevisionFeedback,
   task,
 }: {
   connectionStatus: string;
@@ -470,8 +511,12 @@ function CreateWorkspace({
   onOpenActivity: () => void;
   onPreview: () => void;
   onPublish: () => void;
+  onRevision: () => void;
   onRetry: () => void;
   publishing: boolean;
+  revisionFeedback: string;
+  revising: boolean;
+  setRevisionFeedback: (value: string) => void;
   task?: Task;
 }) {
   const rows = useMemo(() => buildStepRows(task), [task]);
@@ -505,8 +550,12 @@ function CreateWorkspace({
           onOpenActivity={onOpenActivity}
           onPreview={onPreview}
           onPublish={onPublish}
+          onRevision={onRevision}
           onRetry={onRetry}
           publishing={publishing}
+          revisionFeedback={revisionFeedback}
+          revising={revising}
+          setRevisionFeedback={setRevisionFeedback}
           task={task}
         />
       </aside>
@@ -657,6 +706,7 @@ function ProgressCard({
 
 function PreviewCard({ now, task }: { now: number; task?: Task }) {
   const succeeded = task?.status === "succeeded" && task.game;
+  const previewAvailable = Boolean(task?.game);
   const previewSrc = task?.game?.bundle_url || task?.preview_url || (task?.game ? `/play/${task.game.id}` : "");
   const active = isActiveTask(task?.status);
   const failed = task?.status === "failed";
@@ -679,12 +729,12 @@ function PreviewCard({ now, task }: { now: number; task?: Task }) {
         <Gamepad2 size={19} />
       </h2>
 
-      {succeeded ? (
+      {previewAvailable ? (
         <div className="pf-preview-frame">
           <iframe
             sandbox="allow-scripts allow-pointer-lock"
             src={previewSrc}
-            title={`${task.game?.title} preview`}
+            title={`${task?.game?.title || "Game"} preview`}
           />
         </div>
       ) : (
@@ -725,16 +775,24 @@ function ActionPanel({
   onOpenActivity,
   onPreview,
   onPublish,
+  onRevision,
   onRetry,
   publishing,
+  revisionFeedback,
+  revising,
+  setRevisionFeedback,
   task,
 }: {
   onCancel: () => void;
   onOpenActivity: () => void;
   onPreview: () => void;
   onPublish: () => void;
+  onRevision: () => void;
   onRetry: () => void;
   publishing: boolean;
+  revisionFeedback: string;
+  revising: boolean;
+  setRevisionFeedback: (value: string) => void;
   task?: Task;
 }) {
   const succeeded = task?.status === "succeeded" && task.game;
@@ -759,6 +817,25 @@ function ActionPanel({
             {publishing ? <Loader2 className="pf-spin" size={17} /> : <CheckCircle2 size={17} />}
             {publishing ? "Publishing..." : "Publish to Home"}
           </button>
+          <div className="pf-revision-form">
+            <label htmlFor="preview-feedback">What should change?</label>
+            <textarea
+              id="preview-feedback"
+              maxLength={2000}
+              onChange={(event) => setRevisionFeedback(event.target.value)}
+              placeholder="Describe the feel, behavior, visuals, or rules you want changed. Your wording is preserved."
+              value={revisionFeedback}
+            />
+            <button
+              className="pf-outline-wide"
+              disabled={revising || !revisionFeedback.trim()}
+              onClick={onRevision}
+              type="button"
+            >
+              {revising ? <Loader2 className="pf-spin" size={17} /> : <WandSparkles size={17} />}
+              {revising ? "Starting revision..." : "Apply feedback to this version"}
+            </button>
+          </div>
         </>
       )}
 
@@ -913,7 +990,8 @@ function TechItem({ label, value }: { label: string; value: string }) {
 
 function buildStepRows(task?: Task): StepRow[] {
   const backend = new Map<string, StepSummary>((task?.step_summaries ?? []).map((step) => [step.step, step]));
-  const visibleSteps = USER_STEPS.filter((step) => !step.optional || stepHasBackendSummary(step, backend));
+  const configuredSteps = task?.task_kind === "revision" ? USER_REVISION_STEPS : USER_STEPS;
+  const visibleSteps = configuredSteps.filter((step) => !step.optional || stepHasBackendSummary(step, backend));
   const rows = visibleSteps.map((step) => {
     if (step.key === "ready") {
       return {

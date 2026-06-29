@@ -128,6 +128,8 @@ export const api = {
   tasks: () => req<{ items: Task[] }>("/tasks"),
   task: (id: string) => req<Task>(`/tasks/${id}`),
   retryTask: (id: string) => req<{ task_id: string }>(`/tasks/${id}/retry`, { method: "POST" }),
+  reviseTask: (id: string, feedback: string) =>
+    req<{ task_id: string }>(`/tasks/${id}/revise`, { json: { feedback } }),
   cancelTask: (id: string) => req<Task>(`/tasks/${id}/cancel`, { method: "POST" }),
   deleteTask: (id: string) => req<{ ok: boolean }>(`/tasks/${id}`, { method: "DELETE" }),
 };

@@ -31,12 +31,17 @@ def build_graph():
     g.add_node("gameplay_qa", logged("gameplay_qa")(nodes.gameplay_qa_node))
     g.add_node("gameplay_repair", logged("gameplay_repair")(nodes.gameplay_repair_node))
     g.add_node("publish_artifact", logged("publish_artifact")(nodes.publish_artifact_node))
+    g.add_node("feedback_understanding", logged("feedback_understanding")(nodes.feedback_understanding_node))
+    g.add_node("code_revision", logged("code_revision")(nodes.code_revision_node))
+    g.add_node("revision_repair", logged("revision_repair")(nodes.revision_repair_node))
+    g.add_node("publish_revision", logged("publish_revision")(nodes.publish_revision_node))
     g.add_node("failed", nodes.failed_node)
     g.add_node("done", nodes.done_node)
 
     g.add_edge(START, "safety_intake")
     g.add_conditional_edges("safety_intake", nodes.should_continue_after_safety,
-                            {"intent_spec": "intent_spec", "failed": "failed"})
+                            {"intent_spec": "intent_spec", "feedback_understanding": "feedback_understanding",
+                             "failed": "failed"})
     g.add_edge("intent_spec", "brief_expansion")
     g.add_edge("brief_expansion", "mechanic_planner")
     g.add_edge("mechanic_planner", "archetype_router")
@@ -48,14 +53,20 @@ def build_graph():
     g.add_edge("code_generation", "build_validation")
     g.add_conditional_edges("build_validation", nodes.should_continue_after_validation,
                             {"gameplay_qa": "gameplay_qa", "repair_code": "repair_code",
-                             "replan_game_design": "replan_game_design", "failed": "failed"})
+                             "replan_game_design": "replan_game_design", "revision_repair": "revision_repair",
+                             "failed": "failed"})
     g.add_edge("repair_code", "build_validation")
     g.add_edge("replan_game_design", "balance_plan")
     g.add_conditional_edges("gameplay_qa", nodes.should_continue_after_gameplay_qa,
                             {"publish_artifact": "publish_artifact", "gameplay_repair": "gameplay_repair",
-                             "replan_game_design": "replan_game_design", "failed": "failed"})
+                             "replan_game_design": "replan_game_design", "publish_revision": "publish_revision",
+                             "revision_repair": "revision_repair", "failed": "failed"})
     g.add_edge("gameplay_repair", "code_generation")
     g.add_edge("publish_artifact", "done")
+    g.add_edge("feedback_understanding", "code_revision")
+    g.add_edge("code_revision", "build_validation")
+    g.add_edge("revision_repair", "build_validation")
+    g.add_edge("publish_revision", "done")
     g.add_edge("done", END)
     g.add_edge("failed", END)
 

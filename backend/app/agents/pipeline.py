@@ -12,6 +12,26 @@ from app.models import GenerationTask
 from app.models.common import TaskStatus, now_utc
 
 
+def _json_object(raw: str | None) -> dict:
+    try:
+        value = json.loads(raw or "{}")
+        return value if isinstance(value, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _load_revision_files(game_id: str, version: str) -> list[dict]:
+    from app.storage import s3
+
+    files = []
+    for path in ("index.html", "style.css", "game.js"):
+        raw = s3.get_object(f"games/{game_id}/{version}/{path}")
+        if raw is None:
+            raise RuntimeError(f"revision base file is missing: {path}")
+        files.append({"path": path, "content": raw.decode("utf-8")})
+    return files
+
+
 def run_generation(task_id: str) -> None:
     # 1) 置 running + 读取入参
     db = SessionLocal()
@@ -31,6 +51,12 @@ def run_generation(task_id: str) -> None:
         task.repair_attempts = 0
         task.replan_attempts = 0
         idea = task.idea
+        task_kind = task.task_kind or "generation"
+        feedback_text = task.feedback_text or ""
+        base_game_id = task.base_game_id
+        base_version = task.base_version
+        spec = _json_object(task.spec_json)
+        design = _json_object(task.design_json)
         user_id = task.user_id
         dimension = task.dimension or "2d"
         asset_ids = [a.id for a in task.assets]
@@ -46,12 +72,26 @@ def run_generation(task_id: str) -> None:
 
         use_real = settings.USE_REAL_MODEL and bool(settings.OPENAI_API_KEY.strip())
         graph = build_graph()
-        final = graph.invoke({
+        initial = {
             "task_id": task_id, "user_id": user_id, "use_real": use_real, "status": "running",
-            "prompt": idea, "asset_ids": asset_ids, "dimension": dimension,
+            "task_kind": task_kind,
+            "prompt": feedback_text if task_kind == "revision" else idea,
+            "asset_ids": asset_ids, "dimension": dimension,
             "repair_attempts": 0, "replan_attempts": 0,
             "gameplay_repair_attempts": 0,
-        })
+        }
+        if task_kind == "revision":
+            if not base_game_id or not base_version or not feedback_text:
+                raise RuntimeError("revision task is missing its base version or feedback")
+            initial.update({
+                "source_feedback": feedback_text,
+                "base_game_id": base_game_id,
+                "base_version": base_version,
+                "existing_files": _load_revision_files(base_game_id, base_version),
+                "game_spec": spec,
+                "game_design": design,
+            })
+        final = graph.invoke(initial)
     except Exception as exc:  # noqa: BLE001
         err = str(exc)[:500]
 
@@ -71,6 +111,8 @@ def run_generation(task_id: str) -> None:
                 task.spec_json = json.dumps(final["game_spec"], ensure_ascii=False)
             if final.get("game_design"):
                 task.design_json = json.dumps(final["game_design"], ensure_ascii=False)
+            if final.get("feedback_brief"):
+                task.feedback_brief = str(final["feedback_brief"])
             if final.get("status") == "succeeded" and final.get("game_id"):
                 task.result_game_id = final["game_id"]
                 task.version_id = final.get("version_id")

@@ -152,3 +152,105 @@ def publish_generated(state: dict) -> tuple[str, str, str]:
         return gid, vid, s3.manifest_url(gid, "v1")
     finally:
         db.close()
+
+
+def publish_revision(state: dict) -> tuple[str, str, str, str]:
+    """Upload a full vN+1 bundle assembled from incremental edits.
+
+    Existing versions are immutable. The base-version check prevents two
+    revision tasks from silently overwriting each other.
+    """
+    from app.db.session import SessionLocal
+    from app.models import Game, GameVersion
+    from app.models.common import GameStatus
+
+    game_id = state.get("base_game_id")
+    base_version = state.get("base_version")
+    files = state.get("generated_files") or []
+    db = SessionLocal()
+    try:
+        game = db.get(Game, game_id)
+        if not game or game.author_id != state.get("user_id"):
+            raise RuntimeError("revision target is missing or not owned by the user")
+        if game.status == GameStatus.PUBLISHED:
+            raise RuntimeError("published games cannot be revised in the preview workflow")
+        if game.current_version != base_version:
+            raise RuntimeError(
+                f"stale revision base: expected {base_version}, current is {game.current_version}"
+            )
+
+        version_numbers = []
+        for row in game.versions:
+            value = str(row.version or "")
+            if value.startswith("v") and value[1:].isdigit():
+                version_numbers.append(int(value[1:]))
+        version_name = f"v{max(version_numbers or [0]) + 1}"
+        prefix = s3.game_prefix(game.id, version_name)
+        uploaded = []
+        size_bytes = 0
+        for file in files:
+            path = str(file.get("path") or "")
+            content = str(file.get("content") or "")
+            if path not in {"index.html", "style.css", "game.js"}:
+                continue
+            key = f"{prefix}/{path}"
+            encoded = content.encode("utf-8")
+            s3.put_object(key, encoded, _CONTENT_TYPE.get(path, "text/plain; charset=utf-8"))
+            size_bytes += len(encoded)
+            uploaded.append({
+                "path": path,
+                "url": s3.public_url(key),
+                "sha256": hashlib.sha256(encoded).hexdigest(),
+            })
+
+        if str(state.get("dimension")) == "3d":
+            engine = _three_engine_bytes()
+            if engine:
+                engine_key = f"{prefix}/three.min.js"
+                s3.put_object(engine_key, engine, _CONTENT_TYPE["three.min.js"])
+                uploaded.append({
+                    "path": "three.min.js",
+                    "url": s3.public_url(engine_key),
+                    "sha256": hashlib.sha256(engine).hexdigest(),
+                })
+
+        index_sha = next((item["sha256"] for item in uploaded if item["path"] == "index.html"), "")
+        version = GameVersion(
+            game_id=game.id,
+            version=version_name,
+            manifest_key=f"{prefix}/manifest.json",
+            bundle_key=f"{prefix}/index.html",
+            entry="index.html",
+            runtime="iframe-html",
+            sha256=index_sha,
+            size_bytes=size_bytes,
+            source_task_id=state.get("task_id"),
+        )
+        db.add(version)
+        db.flush()
+        manifest = {
+            "schema_version": "game-manifest/v1",
+            "game_id": game.id,
+            "version_id": version.id,
+            "title": game.title,
+            "runtime": "iframe-html",
+            "entry": "index.html",
+            "entry_url": s3.public_url(f"{prefix}/index.html"),
+            "files": uploaded,
+            "permissions": {"network": False, "storage": False, "cookies": False},
+            "revision": {
+                "base_version": base_version,
+                "changed_files": (state.get("revision_result") or {}).get("changed_files") or [],
+            },
+        }
+        s3.put_object(
+            f"{prefix}/manifest.json",
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            "application/json",
+        )
+        game.current_version = version_name
+        game.status = GameStatus.PREVIEW
+        db.commit()
+        return game.id, version.id, version_name, s3.manifest_url(game.id, version_name)
+    finally:
+        db.close()

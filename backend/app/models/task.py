@@ -39,6 +39,13 @@ class GenerationTask(PkMixin, TimestampMixin, Base):
 
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     idea: Mapped[str] = mapped_column(Text)
+    task_kind: Mapped[str] = mapped_column(String(20), default="generation", server_default="generation")
+    base_game_id: Mapped[str | None] = mapped_column(
+        ForeignKey("games.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    base_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    feedback_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    feedback_brief: Mapped[str | None] = mapped_column(Text, nullable=True)
     dimension: Mapped[str] = mapped_column(String(8), default="2d", server_default="2d")  # 2d | 3d
     status: Mapped[str] = mapped_column(String(20), default=TaskStatus.PENDING, index=True)
     current_step: Mapped[int] = mapped_column(Integer, default=0)
@@ -63,7 +70,7 @@ class GenerationTask(PkMixin, TimestampMixin, Base):
         back_populates="task", cascade="all, delete-orphan", lazy="selectin", order_by="AgentStep.seq"
     )
     assets: Mapped[list["Asset"]] = relationship("Asset", secondary=task_assets, lazy="selectin")
-    result_game = relationship("Game", lazy="joined")
+    result_game = relationship("Game", lazy="joined", foreign_keys=[result_game_id])
 
 
 class AgentStep(PkMixin, TimestampMixin, Base):

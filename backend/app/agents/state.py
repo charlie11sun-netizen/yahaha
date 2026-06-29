@@ -23,6 +23,10 @@ STEP_META: dict[str, tuple[str, str]] = {
     "gameplay_qa": ("GameplayQAAgent", "Gameplay QA"),
     "gameplay_repair": ("GameplayRepairAgent", "Gameplay Repair"),
     "publish_artifact": ("PublishArtifactAgent", "Publish Artifact"),
+    "feedback_understanding": ("FeedbackUnderstandingAgent", "Understand Feedback"),
+    "code_revision": ("CodeRevisionAgent", "Revise Existing Code"),
+    "revision_repair": ("CodeRevisionRepairAgent", "Repair Revision"),
+    "publish_revision": ("PublishRevisionAgent", "Save Preview Version"),
 }
 
 
@@ -31,10 +35,17 @@ class GenerationState(TypedDict, total=False):
     user_id: str
     use_real: bool
     dimension: str  # "2d" | "3d"
+    task_kind: str  # "generation" | "revision"
 
     status: str
     prompt: str
     normalized_prompt: str
+    source_feedback: str
+    feedback_brief: str
+    base_game_id: str
+    base_version: str
+    existing_files: list
+    revision_result: dict
 
     asset_ids: list
     uploaded_assets: list

@@ -1862,6 +1862,37 @@ img {
   text-align: center;
 }
 
+.pf-revision-form {
+  display: grid;
+  gap: 9px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(148, 163, 184, 0.22);
+}
+
+.pf-revision-form label {
+  color: #dbeafe;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.pf-revision-form textarea {
+  width: 100%;
+  min-height: 104px;
+  resize: vertical;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.72);
+  color: #f8fafc;
+  padding: 11px 12px;
+  font: inherit;
+  line-height: 1.5;
+}
+
+.pf-revision-form textarea:focus {
+  border-color: #60a5fa;
+  outline: 2px solid rgba(96, 165, 250, 0.18);
+}
+
 .pf-input-card {
   padding: 28px;
 }
