@@ -124,3 +124,29 @@ export interface Comment {
   author_init: string;
   author_id: string;
 }
+
+export interface MemoryItem {
+  id: string;
+  scope_type: "user" | "game" | "task";
+  scope_id?: string | null;
+  category: "style" | "mechanics" | "controls" | "difficulty" | "content" | "constraints" | "feedback";
+  raw_text: string;
+  extracted_text?: string | null;
+  source_type: string;
+  source_task_id?: string | null;
+  source_game_id?: string | null;
+  source_version?: string | null;
+  importance: number;
+  confidence: number;
+  pinned: boolean;
+  status: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface MemorySettings {
+  enabled: boolean;
+  allow_cross_game_memory: boolean;
+  allow_memory_extraction: boolean;
+  retention_days?: number | null;
+}

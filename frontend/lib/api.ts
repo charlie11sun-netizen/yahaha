@@ -1,4 +1,4 @@
-import type { Comment, Game, Task, UploadedAsset, User } from "./types";
+import type { Comment, Game, MemoryItem, MemorySettings, Task, UploadedAsset, User } from "./types";
 
 export const BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -132,4 +132,28 @@ export const api = {
     req<{ task_id: string }>(`/tasks/${id}/revise`, { json: { feedback } }),
   cancelTask: (id: string) => req<Task>(`/tasks/${id}/cancel`, { method: "POST" }),
   deleteTask: (id: string) => req<{ ok: boolean }>(`/tasks/${id}`, { method: "DELETE" }),
+
+  memories: (params: { scope_type?: string; scope_id?: string; category?: string; status?: string } = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value) qs.set(key, value);
+    });
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return req<{ items: MemoryItem[] }>(`/memory${suffix}`);
+  },
+  createMemory: (body: {
+    scope_type: "user" | "game" | "task";
+    scope_id?: string | null;
+    category: MemoryItem["category"];
+    raw_text: string;
+    extracted_text?: string | null;
+    importance?: number;
+    pinned?: boolean;
+  }) => req<MemoryItem>("/memory", { json: body }),
+  updateMemory: (id: string, patch: Partial<Pick<MemoryItem, "category" | "raw_text" | "extracted_text" | "importance" | "pinned" | "status">>) =>
+    req<MemoryItem>(`/memory/${id}`, { method: "PATCH", json: patch }),
+  deleteMemory: (id: string) => req<{ ok: boolean }>(`/memory/${id}`, { method: "DELETE" }),
+  memorySettings: () => req<MemorySettings>("/memory/settings"),
+  updateMemorySettings: (patch: Partial<MemorySettings>) =>
+    req<MemorySettings>("/memory/settings", { method: "PATCH", json: patch }),
 };

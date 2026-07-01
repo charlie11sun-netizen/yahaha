@@ -1046,6 +1046,7 @@ def _generate_revision_code(
             state.get("game_design") or {},
             source_files,
             repair_error,
+            state.get("memory_context") or "",
         ),
     )
     returned = _extract_bundle(raw)
@@ -1103,11 +1104,80 @@ def safety_intake_node(state: dict) -> dict:
     }
 
 
+def memory_retrieval_node(state: dict) -> dict:
+    from app.db.session import SessionLocal
+    from app.services import memory as memory_service
+
+    user_id = state.get("user_id")
+    query = state.get("source_feedback") or state.get("normalized_prompt") or state.get("prompt") or ""
+    game_id = state.get("base_game_id") if state.get("task_kind") == "revision" else None
+    if not user_id:
+        return {
+            "retrieved_memories": [],
+            "memory_context": "",
+            "_agent": "MemoryRetrievalAgent",
+            "_logs": ["memory skipped: missing user id"],
+        }
+    categories = (
+        ["feedback", "controls", "difficulty", "constraints", "style", "mechanics"]
+        if state.get("task_kind") == "revision"
+        else ["style", "mechanics", "controls", "difficulty", "constraints", "content"]
+    )
+    db = SessionLocal()
+    try:
+        items = memory_service.retrieve_memories(
+            db,
+            user_id=user_id,
+            query=query,
+            game_id=game_id,
+            categories=categories,
+            limit=8,
+        )
+        context = memory_service.render_memory_context(items)
+        # Persist lazily generated vectors for memories created before the
+        # embedding migration. Retrieval remains fail-open if this commit fails.
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        items, context = [], ""
+        return {
+            "retrieved_memories": items,
+            "memory_context": context,
+            "_agent": "MemoryRetrievalAgent",
+            "_logs": [f"memory retrieval failed open: {_clip(exc, 160)}"],
+        }
+    finally:
+        db.close()
+    scope = f"game={game_id}" if game_id else "user"
+    strategy = (items[0].get("retrieval") or {}).get("strategy") if items else "none"
+    return {
+        "retrieved_memories": items,
+        "memory_context": context,
+        "_agent": "MemoryRetrievalAgent",
+        "_logs": [
+            f"scope: {scope}",
+            f"query: {_clip(query, 140)}",
+            f"retrieved memories: {len(items)}",
+            f"retrieval strategy: {strategy}",
+        ]
+        + [
+            f"- {item.get('scope_type')}/{item.get('category')}: {_clip(item.get('raw_text'), 120)}"
+            for item in items[:5]
+        ],
+    }
+
+
 def intent_spec_node(state: dict) -> dict:
     prompt = state.get("normalized_prompt") or state.get("prompt", "")
     if state.get("use_real"):
         try:
-            raw, tokens = llm.chat(prompts.INTENT_SPEC_SYSTEM_PROMPT, prompts.build_intent_spec_prompt(prompt, len(state.get("asset_ids") or [])))
+            raw, tokens = llm.chat(
+                prompts.INTENT_SPEC_SYSTEM_PROMPT,
+                prompts.build_intent_spec_prompt(
+                    prompt,
+                    len(state.get("asset_ids") or []),
+                    state.get("memory_context") or "",
+                ),
+            )
             spec = _coerce_spec(_parse_json(raw), prompt)
             return {"game_spec": spec, "_agent": "IntentSpecAgent", "_tokens_delta": tokens, "_logs": _spec_log_lines(spec, "model GameSpec JSON")}
         except Exception as exc:  # noqa: BLE001
@@ -1228,6 +1298,7 @@ def game_design_node(state: dict) -> dict:
                 expanded_brief=state.get("expanded_brief"),
                 mechanic_plan=state.get("mechanic_plan"),
                 player_idea=state.get("normalized_prompt") or state.get("prompt"),
+                memory_context=state.get("memory_context") or "",
             ))
             design = _coerce_design(_parse_json(raw), spec)
             fed = [k for k, v in (("brief", state.get("expanded_brief")), ("mechanic_plan", state.get("mechanic_plan")), ("player_idea", state.get("normalized_prompt"))) if v]
@@ -1295,6 +1366,7 @@ def feedback_understanding_node(state: dict) -> dict:
                     feedback,
                     state.get("game_spec") or {},
                     state.get("game_design") or {},
+                    state.get("memory_context") or "",
                 ),
             )
         except Exception as exc:  # noqa: BLE001
@@ -1540,6 +1612,41 @@ def publish_revision_node(state: dict) -> dict:
     }
 
 
+def memory_update_node(state: dict) -> dict:
+    from app.db.session import SessionLocal
+    from app.services import memory as memory_service
+
+    task_id = state.get("task_id")
+    if not task_id:
+        return {
+            "_agent": "MemoryUpdateAgent",
+            "_logs": ["memory update skipped: missing task id"],
+        }
+    db = SessionLocal()
+    try:
+        created = memory_service.capture_success_memories(db, task_id=task_id, state=state)
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        return {
+            "_agent": "MemoryUpdateAgent",
+            "_logs": [f"memory update failed open: {_clip(exc, 160)}"],
+        }
+    finally:
+        db.close()
+    return {
+        "_agent": "MemoryUpdateAgent",
+        "_logs": [
+            f"stored memory items: {len(created)}",
+            "memory update is non-blocking; generation result already persisted",
+        ]
+        + [
+            f"- {item.scope_type}/{item.category}: {_clip(item.raw_text, 120)}"
+            for item in created[:5]
+        ],
+    }
+
+
 def failed_node(state: dict) -> dict:
     msg = state.get("error_message") or state.get("last_error") or "generation failed"
     return {
@@ -1566,6 +1673,10 @@ def done_node(state: dict) -> dict:
 def should_continue_after_safety(state: dict) -> str:
     if state.get("status") == "failed":
         return "failed"
+    return "memory_retrieval"
+
+
+def next_after_memory_retrieval(state: dict) -> str:
     return "feedback_understanding" if state.get("task_kind") == "revision" else "intent_spec"
 
 

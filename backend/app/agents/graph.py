@@ -16,6 +16,7 @@ def build_graph():
 
     # 用 logged() 包住每个节点：开始写 running 步骤、结束翻 done（前端实时可见）
     g.add_node("safety_intake", logged("safety_intake")(nodes.safety_intake_node))
+    g.add_node("memory_retrieval", logged("memory_retrieval")(nodes.memory_retrieval_node))
     g.add_node("intent_spec", logged("intent_spec")(nodes.intent_spec_node))
     g.add_node("brief_expansion", logged("brief_expansion")(nodes.brief_expansion_node))
     g.add_node("mechanic_planner", logged("mechanic_planner")(nodes.mechanic_planner_node))
@@ -35,13 +36,16 @@ def build_graph():
     g.add_node("code_revision", logged("code_revision")(nodes.code_revision_node))
     g.add_node("revision_repair", logged("revision_repair")(nodes.revision_repair_node))
     g.add_node("publish_revision", logged("publish_revision")(nodes.publish_revision_node))
+    g.add_node("memory_update", logged("memory_update")(nodes.memory_update_node))
     g.add_node("failed", nodes.failed_node)
     g.add_node("done", nodes.done_node)
 
     g.add_edge(START, "safety_intake")
     g.add_conditional_edges("safety_intake", nodes.should_continue_after_safety,
-                            {"intent_spec": "intent_spec", "feedback_understanding": "feedback_understanding",
+                            {"memory_retrieval": "memory_retrieval",
                              "failed": "failed"})
+    g.add_conditional_edges("memory_retrieval", nodes.next_after_memory_retrieval,
+                            {"intent_spec": "intent_spec", "feedback_understanding": "feedback_understanding"})
     g.add_edge("intent_spec", "brief_expansion")
     g.add_edge("brief_expansion", "mechanic_planner")
     g.add_edge("mechanic_planner", "archetype_router")
@@ -62,11 +66,12 @@ def build_graph():
                              "replan_game_design": "replan_game_design", "publish_revision": "publish_revision",
                              "revision_repair": "revision_repair", "failed": "failed"})
     g.add_edge("gameplay_repair", "code_generation")
-    g.add_edge("publish_artifact", "done")
+    g.add_edge("publish_artifact", "memory_update")
     g.add_edge("feedback_understanding", "code_revision")
     g.add_edge("code_revision", "build_validation")
     g.add_edge("revision_repair", "build_validation")
-    g.add_edge("publish_revision", "done")
+    g.add_edge("publish_revision", "memory_update")
+    g.add_edge("memory_update", "done")
     g.add_edge("done", END)
     g.add_edge("failed", END)
 

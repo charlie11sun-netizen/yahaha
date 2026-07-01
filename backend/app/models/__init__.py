@@ -7,6 +7,14 @@ from app.models.game import (
     Tag,
     game_tags,
 )
+from app.models.memory import (
+    MemoryCategory,
+    MemoryItem,
+    MemoryScope,
+    MemorySettings,
+    MemorySource,
+    MemoryStatus,
+)
 from app.models.task import (
     AgentLog,
     AgentStep,
@@ -30,6 +38,12 @@ __all__ = [
     "Like",
     "Favorite",
     "PlayEvent",
+    "MemoryCategory",
+    "MemoryItem",
+    "MemoryScope",
+    "MemorySettings",
+    "MemorySource",
+    "MemoryStatus",
     "Asset",
     "task_assets",
     "GenerationTask",

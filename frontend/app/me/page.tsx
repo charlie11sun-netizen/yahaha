@@ -3,6 +3,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BadgeCheck,
+  Brain,
   ChevronRight,
   ExternalLink,
   Eye,
@@ -28,9 +29,9 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { fmt } from "@/lib/format";
 import { useToast } from "@/lib/toast";
-import type { Game, Task } from "@/lib/types";
+import type { Game, MemoryItem, MemorySettings, Task } from "@/lib/types";
 
-type Section = "overview" | "games" | "tasks" | "drafts" | "favorites" | "settings";
+type Section = "overview" | "games" | "tasks" | "drafts" | "favorites" | "memory" | "settings";
 
 const SECTIONS: { id: Section; label: string; icon: ElementType }[] = [
   { id: "overview", label: "Overview", icon: House },
@@ -38,6 +39,7 @@ const SECTIONS: { id: Section; label: string; icon: ElementType }[] = [
   { id: "tasks", label: "Generation Tasks", icon: Sparkles },
   { id: "drafts", label: "Drafts", icon: FileText },
   { id: "favorites", label: "Favorites", icon: Star },
+  { id: "memory", label: "Memory", icon: Brain },
   { id: "settings", label: "Account Settings", icon: Settings },
 ];
 
@@ -66,6 +68,10 @@ function StudioPage() {
   const [changingPassword, setChangingPassword] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
+  const [newMemoryText, setNewMemoryText] = useState("");
+  const [savingMemory, setSavingMemory] = useState(false);
+  const [deletingMemoryId, setDeletingMemoryId] = useState<string | null>(null);
+  const [savingMemorySettings, setSavingMemorySettings] = useState(false);
 
   useEffect(() => {
     if (!loading && !user) router.replace("/login");
@@ -86,10 +92,14 @@ function StudioPage() {
   const gamesQ = useQuery({ queryKey: ["me-games"], queryFn: api.myGames, enabled: !!user });
   const favQ = useQuery({ queryKey: ["me-favorites"], queryFn: api.myFavorites, enabled: !!user });
   const tasksQ = useQuery({ queryKey: ["tasks"], queryFn: api.tasks, enabled: !!user, refetchInterval: 3500 });
+  const memoryQ = useQuery({ queryKey: ["memory"], queryFn: () => api.memories(), enabled: !!user });
+  const memorySettingsQ = useQuery({ queryKey: ["memory-settings"], queryFn: api.memorySettings, enabled: !!user });
 
   const games = gamesQ.data?.items ?? [];
   const favorites = favQ.data?.items ?? [];
   const tasks = tasksQ.data?.items ?? [];
+  const memories = memoryQ.data?.items ?? [];
+  const memorySettings = memorySettingsQ.data;
   const published = useMemo(() => games.filter((game) => game.status === "published"), [games]);
   const drafts = useMemo(() => games.filter((game) => game.status !== "published"), [games]);
   const totalPlays = useMemo(() => games.reduce((sum, game) => sum + (game.plays || 0), 0), [games]);
@@ -239,6 +249,57 @@ function StudioPage() {
     router.push(`/create?task=${encodeURIComponent(task.id)}`);
   };
 
+  const addMemory = async () => {
+    const text = newMemoryText.trim();
+    if (!text) {
+      flash("Memory text is required");
+      return;
+    }
+    try {
+      setSavingMemory(true);
+      await api.createMemory({
+        scope_type: "user",
+        category: "style",
+        raw_text: text,
+        importance: 4,
+        pinned: true,
+      });
+      setNewMemoryText("");
+      await queryClient.invalidateQueries({ queryKey: ["memory"] });
+      flash("Memory saved");
+    } catch (err) {
+      flash(err instanceof Error ? err.message : "Could not save memory");
+    } finally {
+      setSavingMemory(false);
+    }
+  };
+
+  const removeMemory = async (item: MemoryItem) => {
+    try {
+      setDeletingMemoryId(item.id);
+      await api.deleteMemory(item.id);
+      await queryClient.invalidateQueries({ queryKey: ["memory"] });
+      flash("Memory deleted");
+    } catch (err) {
+      flash(err instanceof Error ? err.message : "Could not delete memory");
+    } finally {
+      setDeletingMemoryId(null);
+    }
+  };
+
+  const updateMemorySettings = async (patch: Partial<MemorySettings>) => {
+    try {
+      setSavingMemorySettings(true);
+      await api.updateMemorySettings(patch);
+      await queryClient.invalidateQueries({ queryKey: ["memory-settings"] });
+      flash("Memory settings updated");
+    } catch (err) {
+      flash(err instanceof Error ? err.message : "Could not update memory settings");
+    } finally {
+      setSavingMemorySettings(false);
+    }
+  };
+
   return (
     <div className="pf-studio-page">
       <div className="pf-studio-shell">
@@ -369,6 +430,22 @@ function StudioPage() {
                   tasks={tasks}
                 />
               </Panel>
+            )}
+
+            {section === "memory" && (
+              <MemorySection
+                deletingId={deletingMemoryId}
+                items={memories}
+                loading={memoryQ.isLoading || memorySettingsQ.isLoading}
+                newMemoryText={newMemoryText}
+                onAdd={addMemory}
+                onDelete={removeMemory}
+                onTextChange={setNewMemoryText}
+                onUpdateSettings={updateMemorySettings}
+                saving={savingMemory}
+                savingSettings={savingMemorySettings}
+                settings={memorySettings}
+              />
             )}
 
             {section === "settings" && (
@@ -679,6 +756,118 @@ function TaskTable({
   );
 }
 
+function MemorySection({
+  deletingId,
+  items,
+  loading,
+  newMemoryText,
+  onAdd,
+  onDelete,
+  onTextChange,
+  onUpdateSettings,
+  saving,
+  savingSettings,
+  settings,
+}: {
+  deletingId: string | null;
+  items: MemoryItem[];
+  loading: boolean;
+  newMemoryText: string;
+  onAdd: () => void;
+  onDelete: (item: MemoryItem) => void;
+  onTextChange: (value: string) => void;
+  onUpdateSettings: (patch: Partial<MemorySettings>) => void;
+  saving: boolean;
+  savingSettings: boolean;
+  settings?: MemorySettings;
+}) {
+  return (
+    <div className="pf-memory-layout">
+      <Panel title="Memory controls">
+        <div className="pf-memory-copy">
+          Memory helps generation and revision preserve your preferences. Current prompts always override memory.
+        </div>
+        <div className="pf-memory-toggles">
+          <label>
+            <input
+              checked={settings?.enabled ?? true}
+              disabled={savingSettings || !settings}
+              onChange={(event) => onUpdateSettings({ enabled: event.target.checked })}
+              type="checkbox"
+            />
+            Enable memory
+          </label>
+          <label>
+            <input
+              checked={settings?.allow_cross_game_memory ?? true}
+              disabled={savingSettings || !settings || settings.enabled === false}
+              onChange={(event) => onUpdateSettings({ allow_cross_game_memory: event.target.checked })}
+              type="checkbox"
+            />
+            Use long-term preferences across games
+          </label>
+          <label>
+            <input
+              checked={settings?.allow_memory_extraction ?? true}
+              disabled={savingSettings || !settings || settings.enabled === false}
+              onChange={(event) => onUpdateSettings({ allow_memory_extraction: event.target.checked })}
+              type="checkbox"
+            />
+            Learn from successful previews and revisions
+          </label>
+        </div>
+      </Panel>
+
+      <Panel title="Add manual memory">
+        <label className="pf-studio-field pf-memory-field">
+          <span>Preference or constraint</span>
+          <textarea
+            maxLength={4000}
+            onChange={(event) => onTextChange(event.target.value)}
+            placeholder="Example: I prefer pixel art and medium difficulty by default."
+            value={newMemoryText}
+          />
+        </label>
+        <div className="pf-studio-settings-actions">
+          <button className="pf-studio-primary" disabled={saving || !newMemoryText.trim()} onClick={onAdd} type="button">
+            <Brain size={16} />
+            {saving ? "Saving..." : "Save memory"}
+          </button>
+        </div>
+      </Panel>
+
+      <Panel title="Stored memories">
+        {loading ? (
+          <div className="pf-studio-empty">Loading memories...</div>
+        ) : items.length === 0 ? (
+          <div className="pf-studio-empty">No memories yet</div>
+        ) : (
+          <div className="pf-memory-list">
+            {items.map((item) => (
+              <article className="pf-memory-item" key={item.id}>
+                <div>
+                  <span>{memoryScopeLabel(item)} · {item.category}</span>
+                  <strong>{item.raw_text}</strong>
+                  {item.extracted_text ? <p>{item.extracted_text}</p> : null}
+                  <small>{item.source_type} · importance {item.importance} · {memoryDate(item.created_at)}</small>
+                </div>
+                <button
+                  aria-label="Delete memory"
+                  disabled={deletingId === item.id}
+                  onClick={() => onDelete(item)}
+                  type="button"
+                >
+                  <Trash2 size={15} />
+                </button>
+              </article>
+            ))}
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
 function Avatar({ size, user }: { size: "large" | "medium"; user: { init: string; name: string } }) {
   return (
     <div aria-label={user.name} className={`pf-studio-avatar is-${size}`}>
@@ -737,6 +926,19 @@ function taskStep(task: Task) {
   return running?.title || lastDone?.title || "Queued";
 }
 
+function memoryScopeLabel(item: MemoryItem) {
+  if (item.scope_type === "game") return `Game ${item.source_version || ""}`.trim();
+  if (item.scope_type === "task") return "Task";
+  return item.pinned ? "User preference · pinned" : "User preference";
+}
+
+function memoryDate(value?: string | null) {
+  if (!value) return "recently";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "recently";
+  return new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(date);
+}
+
 function isSection(value: string | null): value is Section {
-  return value === "overview" || value === "games" || value === "tasks" || value === "drafts" || value === "favorites" || value === "settings";
+  return value === "overview" || value === "games" || value === "tasks" || value === "drafts" || value === "favorites" || value === "memory" || value === "settings";
 }

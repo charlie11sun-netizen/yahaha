@@ -3086,8 +3086,134 @@ img {
   box-shadow: 0 0 0 4px rgba(124, 92, 255, 0.12);
 }
 
+.pf-studio-field textarea {
+  background: #fff;
+  border: 1px solid #dfe5f1;
+  border-radius: 10px;
+  color: #0f172a;
+  min-height: 110px;
+  outline: 0;
+  padding: 12px 14px;
+  resize: vertical;
+  width: 100%;
+}
+
+.pf-studio-field textarea:focus {
+  border-color: #8175ff;
+  box-shadow: 0 0 0 4px rgba(124, 92, 255, 0.12);
+}
+
 .pf-studio-settings-actions {
   margin-top: 18px;
+}
+
+.pf-memory-layout {
+  display: grid;
+  gap: 16px;
+}
+
+.pf-memory-copy {
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  color: #475569;
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 16px;
+}
+
+.pf-memory-toggles {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.pf-memory-toggles label {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  color: #0f172a;
+  display: flex;
+  font-size: 14px;
+  font-weight: 700;
+  gap: 10px;
+  padding: 13px 14px;
+}
+
+.pf-memory-toggles input {
+  accent-color: #7c5cff;
+  height: 16px;
+  width: 16px;
+}
+
+.pf-memory-field {
+  margin-top: 0;
+}
+
+.pf-memory-list {
+  display: grid;
+  gap: 12px;
+}
+
+.pf-memory-item {
+  align-items: start;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 16px;
+}
+
+.pf-memory-item span {
+  color: #7c5cff;
+  display: block;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.pf-memory-item strong {
+  color: #0f172a;
+  display: block;
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.pf-memory-item p {
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.45;
+  margin-top: 6px;
+}
+
+.pf-memory-item small {
+  color: #94a3b8;
+  display: block;
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+.pf-memory-item button {
+  align-items: center;
+  background: #fff7f7;
+  border: 1px solid #ffd4d4;
+  border-radius: 10px;
+  color: #dc2626;
+  cursor: pointer;
+  display: inline-flex;
+  height: 36px;
+  justify-content: center;
+  width: 36px;
+}
+
+.pf-memory-item button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .pf-play-page {

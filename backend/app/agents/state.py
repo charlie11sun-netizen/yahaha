@@ -8,6 +8,7 @@ MAX_GAMEPLAY_REPAIR = 2
 # step -> (agent_name, 展示名)
 STEP_META: dict[str, tuple[str, str]] = {
     "safety_intake": ("SafetyIntakeAgent", "Safety Intake"),
+    "memory_retrieval": ("MemoryRetrievalAgent", "Retrieve Memory"),
     "intent_spec": ("IntentSpecAgent", "Intent Spec"),
     "brief_expansion": ("BriefExpansionAgent", "Brief Expansion"),
     "mechanic_planner": ("MechanicPlannerAgent", "Mechanic Planner"),
@@ -27,6 +28,7 @@ STEP_META: dict[str, tuple[str, str]] = {
     "code_revision": ("CodeRevisionAgent", "Revise Existing Code"),
     "revision_repair": ("CodeRevisionRepairAgent", "Repair Revision"),
     "publish_revision": ("PublishRevisionAgent", "Save Preview Version"),
+    "memory_update": ("MemoryUpdateAgent", "Update Memory"),
 }
 
 
@@ -42,6 +44,8 @@ class GenerationState(TypedDict, total=False):
     normalized_prompt: str
     source_feedback: str
     feedback_brief: str
+    retrieved_memories: list
+    memory_context: str
     base_game_id: str
     base_version: str
     existing_files: list

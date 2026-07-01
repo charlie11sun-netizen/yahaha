@@ -49,3 +49,35 @@ class TaskCreateIn(BaseModel):
 
 class TaskRevisionIn(BaseModel):
     feedback: str = Field(min_length=1, max_length=2000)
+
+
+MemoryScopeLiteral = Literal["user", "game", "task"]
+MemoryCategoryLiteral = Literal[
+    "style", "mechanics", "controls", "difficulty", "content", "constraints", "feedback"
+]
+
+
+class MemoryCreateIn(BaseModel):
+    scope_type: MemoryScopeLiteral = "user"
+    scope_id: str | None = None
+    category: MemoryCategoryLiteral = "feedback"
+    raw_text: str = Field(min_length=1, max_length=4000)
+    extracted_text: str | None = Field(default=None, max_length=4000)
+    importance: int = Field(default=3, ge=1, le=5)
+    pinned: bool = False
+
+
+class MemoryUpdateIn(BaseModel):
+    category: MemoryCategoryLiteral | None = None
+    raw_text: str | None = Field(default=None, min_length=1, max_length=4000)
+    extracted_text: str | None = Field(default=None, max_length=4000)
+    importance: int | None = Field(default=None, ge=1, le=5)
+    pinned: bool | None = None
+    status: Literal["active", "superseded", "deleted"] | None = None
+
+
+class MemorySettingsIn(BaseModel):
+    enabled: bool | None = None
+    allow_cross_game_memory: bool | None = None
+    allow_memory_extraction: bool | None = None
+    retention_days: int | None = Field(default=None, ge=1, le=3650)

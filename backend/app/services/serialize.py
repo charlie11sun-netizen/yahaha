@@ -8,6 +8,7 @@ from app.storage import s3
 # 主阶段（agent → step key → 中文标题），对应 Create 生成控制台
 _STAGES = [
     ("SafetyIntakeAgent", "safety_intake", "检查创意和素材"),
+    ("MemoryRetrievalAgent", "memory_retrieval", "检索创作记忆"),
     ("IntentSpecAgent", "intent_spec", "理解你的游戏创意"),
     ("BriefExpansionAgent", "brief_expansion", "扩展玩法简报"),
     ("MechanicPlannerAgent", "mechanic_planner", "规划核心机制"),
@@ -21,21 +22,24 @@ _STAGES = [
     ("GameplayQAAgent", "gameplay_qa", "玩法可玩性测试"),
     ("GameplayRepairAgent", "gameplay_repair", "玩法调参修复"),
     ("PublishArtifactAgent", "publish_artifact", "准备预览版本"),
+    ("MemoryUpdateAgent", "memory_update", "保存创作记忆"),
 ]
 _REVISION_STAGES = [
     ("SafetyIntakeAgent", "safety_intake", "检查修改反馈"),
+    ("MemoryRetrievalAgent", "memory_retrieval", "检索历史反馈"),
     ("FeedbackUnderstandingAgent", "feedback_understanding", "理解用户反馈"),
     ("CodeRevisionAgent", "code_revision", "修改现有代码"),
     ("BuildValidateAgent", "build_validation", "验证修改结果"),
     ("GameplayQAAgent", "gameplay_qa", "回归测试玩法"),
     ("PublishRevisionAgent", "publish_revision", "保存新版 Preview"),
+    ("MemoryUpdateAgent", "memory_update", "保存修改记忆"),
 ]
 _PROGRESS = {"safety_intake": 10, "intent_spec": 18, "brief_expansion": 24, "mechanic_planner": 30,
              "archetype_router": 34, "asset_processing": 40, "game_design": 50, "content_plan": 56,
              "balance_plan": 62, "code_generation": 72, "build_validation": 82,
              "gameplay_qa": 90, "gameplay_repair": 88, "publish_artifact": 96,
              "feedback_understanding": 25, "code_revision": 55, "revision_repair": 65,
-             "publish_revision": 96}
+             "publish_revision": 96, "memory_retrieval": 14, "memory_update": 98}
 _ST = {"done": "completed", "running": "running", "failed": "failed"}
 
 

@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     MODEL_NAME: str = "gpt-5.5"
     USE_REAL_MODEL: bool = False
+    MEMORY_VECTOR_ENABLED: bool = True
+    MEMORY_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    MEMORY_EMBEDDING_API_KEY: str = ""
+    MEMORY_EMBEDDING_BASE_URL: str = ""
+    MEMORY_EMBEDDING_TIMEOUT: int = 15
+    MEMORY_RRF_K: int = 60
+    MEMORY_SEMANTIC_MIN_SCORE: float = 0.20
     OPENAI_TIMEOUT: int = 600  # 写整个 game.js 耗时长，给足超时
 
     # OAuth (optional)
