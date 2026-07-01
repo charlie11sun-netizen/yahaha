@@ -12,16 +12,16 @@ export async function generateMetadata({
   const { id } = await params;
   try {
     const res = await fetch(`${BASE}/games/${id}`, { cache: "no-store" });
-    if (!res.ok) return { title: "Game · PlayForge AI" };
+    if (!res.ok) return { title: "Game · GameWeave AI" };
     const g = await res.json();
     const images = typeof g.cover === "string" && (g.cover.startsWith("http") || g.cover.startsWith("/")) ? [g.cover] : [];
     return {
-      title: `${g.title} · PlayForge AI`,
+      title: `${g.title} · GameWeave AI`,
       description: g.summary,
       openGraph: { title: g.title, description: g.summary, images },
     };
   } catch {
-    return { title: "Game · PlayForge AI" };
+    return { title: "Game · GameWeave AI" };
   }
 }
 

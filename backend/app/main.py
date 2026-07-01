@@ -17,7 +17,7 @@ from app.db.session import engine
 from app.storage.s3 import ensure_bucket
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-logger = logging.getLogger("playforge")
+logger = logging.getLogger("gameweave")
 
 
 @asynccontextmanager
@@ -27,7 +27,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="PlayForge API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="GameWeave API", version="0.1.0", lifespan=lifespan)
 
 # Front-door site gate: when SITE_PASSWORD is set, every request must carry a
 # valid X-Gate-Token (the web front-end attaches it after unlock). Exempts CORS

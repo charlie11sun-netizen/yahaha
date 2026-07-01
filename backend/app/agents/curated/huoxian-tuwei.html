@@ -241,7 +241,7 @@ function gameOver(win){
  state="over";ui.over.classList.remove("hide");ui.finalScore.textContent=score|0;
  ui.overTitle.textContent=win?"突围成功":"突围失败";ui.overTag.textContent=win?"Mission complete":"Mission failed";
  ui.overText.textContent=win?"Iron Gate Captain 已被击溃，街区重新归于寂静。":"你倒在了火线中，但下一次部署会更锋利。";
- if(!sentScore){sentScore=true;try{window.parent.postMessage({type:"playforge:score",points:score|0,name:"火线突围"},"*")}catch(e){}}
+ if(!sentScore){sentScore=true;try{window.parent.postMessage({type:"gameweave:score",points:score|0,name:"火线突围"},"*")}catch(e){}}
  snd(win?760:110,win?.55:.55,win?"triangle":"sawtooth",.18);
 }
 function resetUI(){

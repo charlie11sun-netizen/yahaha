@@ -231,24 +231,24 @@ def pick_bundle(idea: str) -> dict:
     t = idea.lower()
     if re.search(r"dodge|race|run|avoid|lane", t):
         return {"bundle": "neondodge", "genre": "ENDLESS RUNNER",
-                "cover": "/playforge/covers/neon-drift-dodge.jpg", "tags": ["Arcade", "Endless"]}
+                "cover": "/gameweave/covers/neon-drift-dodge.jpg", "tags": ["Arcade", "Endless"]}
     if re.search(r"memory|match|color|simon", t):
         return {"bundle": "colormatch", "genre": "MEMORY PUZZLE",
-                "cover": "/playforge/covers/color-echo.jpg", "tags": ["Puzzle", "Memory"]}
+                "cover": "/gameweave/covers/color-echo.jpg", "tags": ["Puzzle", "Memory"]}
     if re.search(r"koi|fish|pond|water", t):
         return {"bundle": "moonlitkoi", "genre": "ZEN ARCADE",
-                "cover": "/playforge/covers/moonlit-koi.jpg", "tags": ["Arcade", "Zen"]}
+                "cover": "/gameweave/covers/moonlit-koi.jpg", "tags": ["Arcade", "Zen"]}
     if re.search(r"rune|circuit|pipe|connect", t):
         return {"bundle": "runecircuit", "genre": "LOGIC PUZZLE",
-                "cover": "/playforge/covers/rune-circuit.jpg", "tags": ["Puzzle", "Logic"]}
+                "cover": "/gameweave/covers/rune-circuit.jpg", "tags": ["Puzzle", "Logic"]}
     if re.search(r"cloud|fly|courier|mail", t):
         return {"bundle": "cloudcourier", "genre": "SKY ARCADE",
-                "cover": "/playforge/covers/cloud-courier.jpg", "tags": ["Arcade", "Flight"]}
+                "cover": "/gameweave/covers/cloud-courier.jpg", "tags": ["Arcade", "Flight"]}
     if re.search(r"orbit|bloom|flower|garden", t):
         return {"bundle": "orbitbloom", "genre": "ONE-TAP ARCADE",
-                "cover": "/playforge/covers/orbit-bloom.jpg", "tags": ["Arcade", "Timing"]}
+                "cover": "/gameweave/covers/orbit-bloom.jpg", "tags": ["Arcade", "Timing"]}
     return {"bundle": "starcatch", "genre": "CASUAL COZY",
-            "cover": "/playforge/covers/star-catcher.jpg", "tags": ["Casual", "Cozy"]}
+            "cover": "/gameweave/covers/star-catcher.jpg", "tags": ["Casual", "Cozy"]}
 
 
 def title_from(idea: str) -> str:
@@ -352,7 +352,7 @@ function clearWaveIfEmpty(){if(!enemies.length){wave++;document.getElementById("
 function burst(pos,color){for(var i=0;i<14;i++){var m=new THREE.Mesh(new THREE.BoxGeometry(0.16,0.16,0.16),new THREE.MeshBasicMaterial({color:color}));m.position.copy(pos);m.userData.v=new THREE.Vector3((Math.random()-0.5)*8,Math.random()*7,(Math.random()-0.5)*8);m.userData.l=1;scene.add(m);bursts.push(m)}}
 function shoot(){beep(720,0.08,"square");shake=0.5;raycaster.setFromCamera(center,camera);var meshes=enemies.map(function(e){return e.userData.body});var hit=raycaster.intersectObjects(meshes,false);if(hit.length){var grp=hit[0].object.parent;burst(grp.position,0xff7a90);scene.remove(grp);enemies.splice(enemies.indexOf(grp),1);score+=10;document.getElementById("sc").textContent=score;beep(180,0.16,"sawtooth");clearWaveIfEmpty()}}
 function damage(n){hp-=n;document.getElementById("hp").textContent=Math.max(0,Math.round(hp));if(hp<=0)end()}
-function end(){run=false;if(document.pointerLockElement)document.exitPointerLock();document.getElementById("of").textContent=score;document.getElementById("over").classList.add("show");try{window.parent.postMessage({type:"playforge:score",points:score},"*")}catch(e){}}
+function end(){run=false;if(document.pointerLockElement)document.exitPointerLock();document.getElementById("of").textContent=score;document.getElementById("over").classList.add("show");try{window.parent.postMessage({type:"gameweave:score",points:score},"*")}catch(e){}}
 var fwd=new THREE.Vector3(),right=new THREE.Vector3(),mv=new THREE.Vector3();
 function frame(){if(!run)return;requestAnimationFrame(frame);var dt=Math.min(0.05,clock.getDelta());
 camera.rotation.y=yaw;camera.rotation.x=pitch;fwd.set(-Math.sin(yaw),0,-Math.cos(yaw));right.set(Math.cos(yaw),0,-Math.sin(yaw));mv.set(0,0,0);
@@ -391,7 +391,7 @@ addEventListener("keydown",function(e){if(e.code==="ArrowLeft"||e.code==="KeyA")
 addEventListener("pointerdown",function(e){if(e.clientX<innerWidth*0.5)setLane(lane-1);else setLane(lane+1)});
 function obstacle(z){var bad=Math.random()<0.62,m;if(bad){m=new THREE.Mesh(new THREE.BoxGeometry(1.4,1.4,1.4),new THREE.MeshStandardMaterial({color:0xff3e6a,emissive:0x4a0d1d,roughness:0.5}));m.position.y=0.7}else{m=new THREE.Mesh(new THREE.TorusGeometry(0.45,0.16,10,18),new THREE.MeshStandardMaterial({color:0xffd166,emissive:0x4a3a00}));m.position.y=1;m.rotation.x=Math.PI/2}m.position.x=LANES[Math.floor(Math.random()*3)];m.position.z=z;m.userData.bad=bad;scene.add(m);items.push(m)}
 for(var i=0;i<6;i++)obstacle(-20-i*14);
-function end(){run=false;document.getElementById("of").textContent=score;document.getElementById("over").classList.add("show");try{window.parent.postMessage({type:"playforge:score",points:score},"*")}catch(e){}}
+function end(){run=false;document.getElementById("of").textContent=score;document.getElementById("over").classList.add("show");try{window.parent.postMessage({type:"gameweave:score",points:score},"*")}catch(e){}}
 function frame(){if(!run)return;requestAnimationFrame(frame);var dt=Math.min(0.05,clock.getDelta());speed+=dt*0.6;dist+=speed*dt;
 player.position.x+=(targetX-player.position.x)*Math.min(1,dt*12);
 if(jumping){vy-=26*dt;player.position.y+=vy*dt;if(player.position.y<=0.9){player.position.y=0.9;jumping=false;vy=0}}

@@ -33,7 +33,7 @@ export default function Nav() {
           <span className="pf-logo-mark">
             <Box size={18} />
           </span>
-          <span>PlayForge AI</span>
+          <span>GameWeave AI</span>
         </button>
 
         <div className="pf-navlinks">

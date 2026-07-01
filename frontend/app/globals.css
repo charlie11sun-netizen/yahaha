@@ -5,7 +5,7 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* ── shadcn/ui design tokens, tuned to the PlayForge brand ── */
+/* ── shadcn/ui design tokens, tuned to the GameWeave brand ── */
 :root {
   --radius: 0.75rem;
 
@@ -4091,7 +4091,7 @@ img {
   }
 }
 
-/* Cohesive 2026 PlayForge surface system */
+/* Cohesive 2026 GameWeave surface system */
 .pf-root-layout {
   background:
     linear-gradient(180deg, rgba(247, 250, 255, 0.94) 0%, rgba(255, 255, 255, 0.98) 42%, rgba(246, 248, 254, 0.94) 100%);

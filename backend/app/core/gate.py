@@ -3,7 +3,7 @@
 When SITE_PASSWORD is set, the API requires a matching X-Gate-Token header
 (see the site_gate middleware in app.main). The token must be byte-identical to
 the one the web front-end computes, so the hashing here mirrors frontend/lib/gate.ts:
-``sha256("playforge-gate:v1:" + password)`` over the trimmed password.
+``sha256("gameweave-gate:v1:" + password)`` over the trimmed password.
 """
 import hashlib
 import hmac
@@ -20,7 +20,7 @@ def gate_enabled() -> bool:
 
 
 def _token(password: str) -> str:
-    return hashlib.sha256(f"playforge-gate:v1:{password}".encode()).hexdigest()
+    return hashlib.sha256(f"gameweave-gate:v1:{password}".encode()).hexdigest()
 
 
 def expected_token() -> str:

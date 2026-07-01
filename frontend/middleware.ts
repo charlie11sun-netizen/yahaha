@@ -36,7 +36,7 @@ export async function middleware(req: NextRequest) {
 
 export const config = {
   // Gate everything except the gate page/endpoint, Next internals, and public
-  // assets (favicon + /public/playforge/*). HMR lives under /_next, so excluding
+  // assets (favicon + /public/gameweave/*). HMR lives under /_next, so excluding
   // it keeps dev reloads working.
-  matcher: ["/((?!_next|favicon.ico|gate|api/gate|playforge/).*)"],
+  matcher: ["/((?!_next|favicon.ico|gate|api/gate|gameweave/).*)"],
 };

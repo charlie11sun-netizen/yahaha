@@ -1,4 +1,4 @@
-# PlayForge 部署指南
+# GameWeave 部署指南
 
 > 两种部署方式:**A. 本地一条命令(docker compose)** · **B. Zeabur 托管(多服务)**。
 > 文中所有密码、密钥、令牌、域名一律用 `<占位符>` 表示,部署时替换成你自己的值。
@@ -7,7 +7,7 @@
 
 ## 一、架构与游戏数据
 
-PlayForge 由 6 个服务组成:
+GameWeave 由 6 个服务组成:
 
 | 服务 | 作用 |
 |---|---|
@@ -84,8 +84,8 @@ Zeabur 默认部署默认分支。确保要部署的代码在 `main`(或在服�
 
 ```sh
 mc alias set local http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
-mc mb --ignore-existing local/playforge
-mc anonymous set download local/playforge
+mc mb --ignore-existing local/gameweave
+mc anonymous set download local/gameweave
 ```
 
 ### 3. 各服务环境变量(粘进「编辑原始环境变量」)
@@ -99,7 +99,7 @@ S3_ENDPOINT=http://minio.zeabur.internal:9000
 S3_PUBLIC_ENDPOINT=https://<MINIO_DOMAIN>
 S3_ACCESS_KEY=<MINIO_USER>
 S3_SECRET_KEY=<MINIO_PASSWORD>
-S3_BUCKET=playforge
+S3_BUCKET=gameweave
 JWT_SECRET=<长随机串>
 OPENAI_API_KEY=<模型 key>
 OPENAI_BASE_URL=<模型地址>

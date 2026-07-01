@@ -1,14 +1,14 @@
 import type { Metadata } from "next";
 
-export const metadata: Metadata = { title: "About - PlayForge AI" };
+export const metadata: Metadata = { title: "About - GameWeave AI" };
 
 export default function AboutPage() {
   return (
     <main className="pf-legal-page">
       <article className="pf-legal-card">
-        <h1>About PlayForge AI</h1>
+        <h1>About GameWeave AI</h1>
         <p className="pf-legal-lead">
-          PlayForge AI is an AI-native platform for creating, sharing, and playing web games from natural language.
+          GameWeave AI is an AI-native platform for creating, sharing, and playing web games from natural language.
         </p>
         <section>
           <h2>How it works</h2>

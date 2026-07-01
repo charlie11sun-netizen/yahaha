@@ -5,7 +5,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # Database
-    DATABASE_URL: str = "postgresql+psycopg://playforge:playforge@localhost:5432/playforge"
+    DATABASE_URL: str = "postgresql+psycopg://gameweave:gameweave@localhost:5432/gameweave"
 
     # Redis / Celery
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     S3_PUBLIC_ENDPOINT: str = "http://localhost:9000"    # 浏览器访问 OSS（Play 远端加载）
     S3_ACCESS_KEY: str = "minioadmin"
     S3_SECRET_KEY: str = "minioadmin"
-    S3_BUCKET: str = "playforge"
+    S3_BUCKET: str = "gameweave"
     S3_REGION: str = "us-east-1"
 
     # Auth (JWT)

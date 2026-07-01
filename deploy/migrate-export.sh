@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Export live PlayForge data (Postgres + MinIO bucket) to a portable folder so you
+# Export live GameWeave data (Postgres + MinIO bucket) to a portable folder so you
 # can carry ALL games — including Create-generated ones, which live only in the
 # volumes, not in git — to another host.
 #
@@ -11,13 +11,13 @@
 set -eu
 
 OUT="${1:-pf-backup}"
-PROJECT="${COMPOSE_PROJECT_NAME:-playforge}"
+PROJECT="${COMPOSE_PROJECT_NAME:-gameweave}"
 COMPOSE="${COMPOSE:-docker compose}"
 
 # Load creds from .env so we know db/minio user, password and bucket name.
 if [ -f .env ]; then set -a; . ./.env; set +a; fi
-PGUSER="${POSTGRES_USER:-playforge}"; PGDB="${POSTGRES_DB:-playforge}"
-MCU="${MINIO_ROOT_USER:-minioadmin}"; MCP="${MINIO_ROOT_PASSWORD:-minioadmin}"; BUCKET="${S3_BUCKET:-playforge}"
+PGUSER="${POSTGRES_USER:-gameweave}"; PGDB="${POSTGRES_DB:-gameweave}"
+MCU="${MINIO_ROOT_USER:-minioadmin}"; MCP="${MINIO_ROOT_PASSWORD:-minioadmin}"; BUCKET="${S3_BUCKET:-gameweave}"
 
 mkdir -p "$OUT/bucket"
 

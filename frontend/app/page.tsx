@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect } from "react";
 
-const VIDEO_URL = "/playforge/homepage/hero-scroll.mp4";
+const VIDEO_URL = "/gameweave/homepage/hero-scroll.mp4";
 
 export default function HomePage() {
   useEffect(() => {
@@ -370,7 +370,7 @@ export default function HomePage() {
             <h3>Explore community games</h3>
             <p>
               Browse playable worlds from creators, remix the ideas you love, and jump into web games
-              instantly from the PlayForge library.
+              instantly from the GameWeave library.
             </p>
           </div>
           <div className="card">
@@ -393,7 +393,7 @@ export default function HomePage() {
       <nav className="fp-home-nav" aria-label="Home navigation">
         <div className="nav-left">
           <Link href="/" className="logo">
-            PlayForge AI
+            GameWeave AI
           </Link>
           <div className="nav-links">
             <Link href="/explore">Explore</Link>
@@ -403,7 +403,7 @@ export default function HomePage() {
         </div>
         <div className="social">
           <Link href="/login">Log in</Link>
-          <Link href="/about" aria-label="About PlayForge">
+          <Link href="/about" aria-label="About GameWeave">
             <svg fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 2 3.5 6.8v10.4L12 22l8.5-4.8V6.8L12 2Zm0 2.3 6.5 3.7L12 11.7 5.5 8 12 4.3Zm-6.5 6 5.5 3.1v5.7l-5.5-3.1v-5.7Zm7.5 8.8v-5.7l5.5-3.1V16L13 19.1Z" />
             </svg>
@@ -415,7 +415,7 @@ export default function HomePage() {
         <section id="hero">
           <div className="gradient-overlay" />
           <div className="content">
-            <p className="subtitle">PLAYFORGE AI</p>
+            <p className="subtitle">GAMEWEAVE AI</p>
             <h1>
               Instantly craft playable{" "}
               <span className="underlined">

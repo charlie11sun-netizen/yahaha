@@ -6,7 +6,7 @@
 
 - **AI 工具**：Claude Code（Claude Opus 4.x）。
 - **协作模式**：对话式迭代。人类负责提需求、真机测试、贴日志/截图、纠偏与提供设计文档；AI 负责写后端/前端代码、设计文档、调试与提交。
-- **AI 贡献比例**：代码与文档约 **95%+ 由 AI 生成**；人类主要贡献为需求与设计输入（`docs/multi-agent_design.md`、`docs/create-page-design.md`、PlayForge 设计稿）、真机验证与问题反馈。
+- **AI 贡献比例**：代码与文档约 **95%+ 由 AI 生成**；人类主要贡献为需求与设计输入（`docs/multi-agent_design.md`、`docs/create-page-design.md`、GameWeave 设计稿）、真机验证与问题反馈。
 - **Review / 测试方法**：
   - 真机 `docker compose up` 跑全栈，人工点测各页面，出问题贴 `docker compose logs` / 截图。
   - AI 侧用 `python -m compileall` 做语法自检 + `configure_mappers` 接线自检；并直接 `curl` 后端、查 MinIO/DB 定位问题。
@@ -25,7 +25,7 @@
 | 补：安全 / 失败恢复 / 可观测 / 已知问题 | `docs/安全与可观测性.md` | `2d82307` |
 | handoff 文件夹加进 gitignore | `.gitignore` | `2533b69` |
 
-### 阶段二 · 脚手架（参考 PlayForge 设计稿）
+### 阶段二 · 脚手架（参考 GameWeave 设计稿）
 | 我提的 | AI 改动 | 提交 |
 |---|---|---|
 | 进脚手架，页面参考 handoff | 基础设施：docker-compose / .env.example / Dockerfile / README | `3e1d253` |
@@ -95,9 +95,9 @@
 ### 阶段十一 · 玩法质量工作流（仍模板期）
 | 我提的 | AI 改动 | 提交 |
 |---|---|---|
-| 生成的游戏太单薄，先定一套玩法质量工作流 | `docs/playforge_multiagent_gameplay_quality_redesign.md` | `370e802` |
+| 生成的游戏太单薄，先定一套玩法质量工作流 | `docs/gameweave_multiagent_gameplay_quality_redesign.md` | `370e802` |
 | 按它强化生成 | 强化生成流水线 / 加深玩法规划 / 共享 canvas 助手 | `a50d784` `474da0a` `c757f18` |
-| 页面再设计一版 | 重设计 PlayForge 各页 | `ba96a8f` |
+| 页面再设计一版 | 重设计 GameWeave 各页 | `ba96a8f` |
 
 ### 阶段十二 · 模型优先生成 + 2D/3D + shadcn 重构
 | 我提的 | AI 改动 | 提交 |

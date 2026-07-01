@@ -18,7 +18,7 @@ import Nav from "@/components/Nav";
 import Providers from "./providers";
 
 export const metadata: Metadata = {
-  title: "PlayForge AI - AI Native Game Platform",
+  title: "GameWeave AI - AI Native Game Platform",
   description: "Prompt a game. Play it in seconds.",
 };
 

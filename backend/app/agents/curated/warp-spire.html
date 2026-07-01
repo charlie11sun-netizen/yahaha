@@ -285,7 +285,7 @@
       '<span class="pill">Click or press Space to dive again</span>' +
       '<div class="keys"><span><b>Steer</b> A D / &larr; &rarr;</span><span><b>Restart</b> click / Space</span></div>';
     v.classList.remove("hide");
-    try { window.parent.postMessage({ type: "playforge:score", points: score, name: "Warp Spire" }, "*"); } catch (e) {}
+    try { window.parent.postMessage({ type: "gameweave:score", points: score, name: "Warp Spire" }, "*"); } catch (e) {}
   }
 
   // ── Update ──────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-# PlayForge AI Create 页面重新设计说明
+# GameWeave AI Create 页面重新设计说明
 
 > 目标：将 Create 页面从“信息密集的三栏控制台”重新设计为一个更简洁、更聚焦、更适合桌面端的 AI 游戏创作工作台。  
 > 页面风格：明亮、简洁、现代、低噪音、以任务状态为核心。
@@ -7,7 +7,7 @@
 
 ## 1. 设计背景
 
-PlayForge AI 的 Create 页面承担的是平台最核心的创作者旅程：
+GameWeave AI 的 Create 页面承担的是平台最核心的创作者旅程：
 
 ```text
 输入创意 / 上传素材
@@ -147,7 +147,7 @@ Right column: 340–380px
 ### 内容
 
 ```text
-PlayForge AI    Explore    Create    My Games    How It Works          My Tasks    Save Draft    Avatar
+GameWeave AI    Explore    Create    My Games    How It Works          My Tasks    Save Draft    Avatar
 ```
 
 ### 设计要求

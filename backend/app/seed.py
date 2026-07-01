@@ -1,4 +1,4 @@
-"""Idempotent database seed for curated PlayForge sample games.
+"""Idempotent database seed for curated GameWeave sample games.
 
 The API container runs this module at startup. It creates tables, prunes any
 retired sample games (DB rows + their object-storage artifacts), ensures demo
@@ -39,7 +39,7 @@ SEED_GAMES = [
                    "chain combos for big multipliers, and snag multiball, wide-paddle and slow-mo "
                    "power-ups across escalating waves.",
         "tags": ["Arcade", "Action", "Neon"],
-        "cover": "/playforge/covers/prism-break.svg",
+        "cover": "/gameweave/covers/prism-break.svg",
         "plays": 48230,
         "likes": 3960,
         "source": GameSource.SEED,
@@ -54,7 +54,7 @@ SEED_GAMES = [
                    "wall-bars and scoop orbs as the run accelerates. Rendered with self-hosted Three.js "
                    "and loaded from object storage like every other game.",
         "tags": ["3D", "Arcade", "Endless"],
-        "cover": "/playforge/covers/warp-spire.svg",
+        "cover": "/gameweave/covers/warp-spire.svg",
         "plays": 41760,
         "likes": 3515,
         "source": GameSource.SEED,
@@ -167,7 +167,7 @@ def run() -> None:
     try:
         pruned = _prune_retired(db)
 
-        demo = _get_or_create_user(db, "demo@playforge.dev", "PlayForge Demo", "P", with_password=True)
+        demo = _get_or_create_user(db, "demo@gameweave.dev", "GameWeave Demo", "P", with_password=True)
         created = 0
         refreshed = 0
 

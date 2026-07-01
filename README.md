@@ -1,4 +1,4 @@
-# PlayForge — AI Native 互动游戏平台（MVP）
+# GameWeave — AI Native 互动游戏平台（MVP）
 
 面向玩家与创作者的 AI Native 互动游戏平台：创作者用自然语言 + 多模态素材，经 Multi-Agent 流水线生成可发布、可游玩的互动游戏；玩家从首页发现并即点即玩。
 
@@ -57,7 +57,7 @@ docker compose up --build
 
 ## 记忆系统（Memory）
 
-PlayForge 已接入面向生成与修改流程的长期记忆系统：
+GameWeave 已接入面向生成与修改流程的长期记忆系统：
 
 - **原始证据层**：`memory_items` 保存用户原话、来源任务/游戏、版本和作用范围，作为可审计事实来源。
 - **当前状态层**：`memory_profiles` 汇总当前生效偏好或约束，例如画风、难度、操作手感；只有 `active` Profile 会注入生成 Prompt。

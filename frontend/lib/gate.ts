@@ -22,7 +22,7 @@ export function sitePassword(): string {
  * the site stays open — local dev is unaffected and you opt in per deployment.
  */
 export function gateEnabled(): boolean {
-  if (process.env.PLAYFORGE_DISABLE_GATE === "1") return false;
+  if (process.env.GAMEWEAVE_DISABLE_GATE === "1") return false;
   return sitePassword().length > 0;
 }
 
@@ -32,7 +32,7 @@ export function gateEnabled(): boolean {
  * forgeable without knowing the secret, so a stolen cookie can't reveal it.
  */
 export async function gateToken(password: string): Promise<string> {
-  const data = new TextEncoder().encode(`playforge-gate:v1:${password}`);
+  const data = new TextEncoder().encode(`gameweave-gate:v1:${password}`);
   const digest = await globalThis.crypto.subtle.digest("SHA-256", data);
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, "0"))

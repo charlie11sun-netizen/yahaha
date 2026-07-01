@@ -79,7 +79,7 @@ def test_runtime_smoke_allows_three_and_dom():
         "var s=new THREE.Scene(); var c=new THREE.PerspectiveCamera(70,1,0.1,100); c.position.set(0,1,0);"
         "var arr=[]; s.children.forEach(function(x){arr.push(x)});"  # iterating a stub must not throw
         "requestAnimationFrame(function(){}); addEventListener('click',function(){});"
-        "window.parent.postMessage({type:'playforge:score',points:1},'*');"
+        "window.parent.postMessage({type:'gameweave:score',points:1},'*');"
     )
     ok, detail = smoke.run_smoke(js)
     assert ok is True, detail

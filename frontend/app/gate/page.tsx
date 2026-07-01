@@ -56,7 +56,7 @@ function GateInner() {
             <Lock size={22} />
           </span>
           <div className="space-y-1">
-            <h1 className="font-display text-2xl font-semibold tracking-tight">PlayForge AI</h1>
+            <h1 className="font-display text-2xl font-semibold tracking-tight">GameWeave AI</h1>
             <p className="text-sm text-muted-foreground">
               This site is password protected. Enter the access password to continue.
             </p>

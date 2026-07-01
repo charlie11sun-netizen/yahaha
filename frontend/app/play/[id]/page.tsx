@@ -137,11 +137,11 @@ export default function PlayPage() {
     if (error) setPhase("error");
   }, [error]);
 
-  // iframe 游戏可回传分数：window.parent.postMessage({type:"playforge:score", points, name})
+  // iframe 游戏可回传分数：window.parent.postMessage({type:"gameweave:score", points, name})
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       const d = event.data;
-      if (d && typeof d === "object" && d.type === "playforge:score" && typeof d.points === "number") {
+      if (d && typeof d === "object" && d.type === "gameweave:score" && typeof d.points === "number") {
         api
           .submitScore(id, Math.max(0, Math.floor(d.points)), typeof d.name === "string" ? d.name : undefined)
           .then(() => qc.invalidateQueries({ queryKey: ["leaderboard", id] }))
@@ -167,7 +167,7 @@ export default function PlayPage() {
   const share = async () => {
     const url = typeof window !== "undefined" ? window.location.href : "";
     try {
-      if (navigator.share) await navigator.share({ title: game?.title || "PlayForge game", url });
+      if (navigator.share) await navigator.share({ title: game?.title || "GameWeave game", url });
       else await navigator.clipboard.writeText(url);
     } catch {
       /* cancelled */
@@ -204,7 +204,7 @@ export default function PlayPage() {
           <span>
             <Box size={18} />
           </span>
-          <strong>PlayForge AI</strong>
+          <strong>GameWeave AI</strong>
         </button>
         <div className="pf-play-game-meta">
           <h1>{game?.title || "Loading game"}</h1>
@@ -235,7 +235,7 @@ export default function PlayPage() {
           <div className="pf-play-title-card">
             <div>
               <h2>{game?.title || "Generated game"}</h2>
-              <p>{game?.summary || "PlayForge is loading the generated game bundle."}</p>
+              <p>{game?.summary || "GameWeave is loading the generated game bundle."}</p>
             </div>
             {game?.oss_path && <span>{game.oss_path}</span>}
           </div>

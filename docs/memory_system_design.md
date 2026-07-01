@@ -629,4 +629,4 @@ Entity ranking
 1. Zijie Dai, Shiyuan Deng, Sheng Guan, Yizhou Tian, Xin Yao, Xiao Yan, and James Cheng. **RecMem: Recurrence-based Memory Consolidation for Efficient and Effective Long-Running LLM Agents.** Findings of the Association for Computational Linguistics: ACL 2026, 2026. [ACL Anthology](https://aclanthology.org/2026.findings-acl.1619/)
 2. Md Nayem Uddin, Kumar Shubham, Eduardo Blanco, Chitta Baral, and Gengyu Wang. **From Recall to Forgetting: Benchmarking Long-Term Memory for Personalized Agents.** Findings of the Association for Computational Linguistics: ACL 2026, 2026. [ACL Anthology](https://aclanthology.org/2026.findings-acl.1337/)
 
-上述论文提供的是机制与评估思路。当前系统的 Evidence/Profile/History 三层模型、作用域规则、无需用户确认的状态机、晋升阈值、过期时间和 PostgreSQL 实现均为针对 PlayForge 工作流的适配设计，不代表对论文系统的完整复现。
+上述论文提供的是机制与评估思路。当前系统的 Evidence/Profile/History 三层模型、作用域规则、无需用户确认的状态机、晋升阈值、过期时间和 PostgreSQL 实现均为针对 GameWeave 工作流的适配设计，不代表对论文系统的完整复现。

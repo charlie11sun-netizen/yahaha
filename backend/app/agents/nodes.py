@@ -1,4 +1,4 @@
-"""LangGraph nodes for PlayForge generation.
+"""LangGraph nodes for GameWeave generation.
 
 The graph is fixed and safety-critical steps are deterministic. Creative work
 is bounded inside node decisions: choose a proven game archetype, tune balance,
@@ -956,7 +956,7 @@ def _repair_balance(balance: dict, archetype: str, attempt: int) -> dict:
 def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[dict], int, str]:
     spec = state.get("game_spec") or {}
     design = state.get("game_design") or {}
-    title = str(spec.get("title") or "PlayForge Game")
+    title = str(spec.get("title") or "GameWeave Game")
 
     # 3D：无模板兜底，完全由模型产出。失败/过短 → 返回不合规 bundle，交给 repair/replan。
     if state.get("dimension") == "3d":
@@ -1002,7 +1002,7 @@ def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[d
             bundle = _extract_bundle(raw)
             js = bundle.get("game.js", "")
             if js and len(js) > 400:
-                files = _assemble_bundle(bundle, cfg.get("title") or "PlayForge Game")
+                files = _assemble_bundle(bundle, cfg.get("title") or "GameWeave Game")
                 mode = "model (full bundle)" if bundle.get("index.html") else "model (game.js)"
             else:
                 mode = "template (model output too short)"

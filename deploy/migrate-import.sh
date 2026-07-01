@@ -12,12 +12,12 @@
 set -eu
 
 IN="${1:-pf-backup}"
-PROJECT="${COMPOSE_PROJECT_NAME:-playforge}"
+PROJECT="${COMPOSE_PROJECT_NAME:-gameweave}"
 COMPOSE="${COMPOSE:-docker compose -f docker-compose.prod.yml}"
 
 if [ -f .env ]; then set -a; . ./.env; set +a; fi
-PGUSER="${POSTGRES_USER:-playforge}"; PGDB="${POSTGRES_DB:-playforge}"
-MCU="${MINIO_ROOT_USER:-minioadmin}"; MCP="${MINIO_ROOT_PASSWORD:-minioadmin}"; BUCKET="${S3_BUCKET:-playforge}"
+PGUSER="${POSTGRES_USER:-gameweave}"; PGDB="${POSTGRES_DB:-gameweave}"
+MCU="${MINIO_ROOT_USER:-minioadmin}"; MCP="${MINIO_ROOT_PASSWORD:-minioadmin}"; BUCKET="${S3_BUCKET:-gameweave}"
 
 [ -f "$IN/db.sql" ] || { echo "ERROR: $IN/db.sql not found (run migrate-export.sh first / pass the right dir)"; exit 1; }
 

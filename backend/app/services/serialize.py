@@ -1,4 +1,4 @@
-"""ORM → 前端 DTO 序列化（字段对齐 PlayForge 设计稿 + Create 生成控制台）。"""
+"""ORM → 前端 DTO 序列化（字段对齐 GameWeave 设计稿 + Create 生成控制台）。"""
 import json
 from datetime import datetime, timezone
 

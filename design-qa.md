@@ -5,7 +5,7 @@
 - The source is a static screenshot, so lower-page hover/active states are inferred from the visible design language.
 
 **Implementation Checklist**
-- Recreated the PlayForge AI homepage with matching hero, trending panel, featured game card, published games grid, process strip, platform feature row, and footer.
+- Recreated the GameWeave AI homepage with matching hero, trending panel, featured game card, published games grid, process strip, platform feature row, and footer.
 - Added real raster game artwork assets extracted from the provided reference image.
 - Implemented search and category filtering for the published game grid.
 - Verified desktop layout at 941x900 against the source screenshot.
@@ -15,7 +15,7 @@
 - P3: If exact brand icon geometry matters, replace the lucide-based cube mark with a final vector brand asset.
 
 source visual truth path: <external-reference>\ChatGPT Image Jun 19, 2026, 03_34_10 AM.png
-implementation screenshot path: <repo>\frontend\playforge-homepage-qa.png
+implementation screenshot path: <repo>\frontend\gameweave-homepage-qa.png
 viewport: 941x900
 state: home page, logged-out, default filters
 full-view comparison evidence: in-app Browser screenshot captured at 941x900 and compared against the provided reference image.

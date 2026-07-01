@@ -65,69 +65,69 @@ type BoundArt = { image: string; thumb: string; hero: string };
 
 const ART = {
   neon: {
-    image: "/playforge/neon-featured.jpg",
-    thumb: "/playforge/neon-trending.jpg",
-    hero: "/playforge/neon-trending.jpg",
+    image: "/gameweave/neon-featured.jpg",
+    thumb: "/gameweave/neon-trending.jpg",
+    hero: "/gameweave/neon-trending.jpg",
   },
   pixel: {
-    image: "/playforge/pixel-drifter.jpg",
-    thumb: "/playforge/thumb-pixel.jpg",
-    hero: "/playforge/pixel-drifter.jpg",
+    image: "/gameweave/pixel-drifter.jpg",
+    thumb: "/gameweave/thumb-pixel.jpg",
+    hero: "/gameweave/pixel-drifter.jpg",
   },
   sky: {
-    image: "/playforge/skybound-chronicles.jpg",
-    thumb: "/playforge/thumb-skybound.jpg",
-    hero: "/playforge/skybound-chronicles.jpg",
+    image: "/gameweave/skybound-chronicles.jpg",
+    thumb: "/gameweave/thumb-skybound.jpg",
+    hero: "/gameweave/skybound-chronicles.jpg",
   },
   dungeon: {
-    image: "/playforge/dungeon-dice.jpg",
-    thumb: "/playforge/dungeon-dice.jpg",
-    hero: "/playforge/dungeon-dice.jpg",
+    image: "/gameweave/dungeon-dice.jpg",
+    thumb: "/gameweave/dungeon-dice.jpg",
+    hero: "/gameweave/dungeon-dice.jpg",
   },
   circuit: {
-    image: "/playforge/circuit-breakers.jpg",
-    thumb: "/playforge/thumb-circuit.jpg",
-    hero: "/playforge/circuit-breakers.jpg",
+    image: "/gameweave/circuit-breakers.jpg",
+    thumb: "/gameweave/thumb-circuit.jpg",
+    hero: "/gameweave/circuit-breakers.jpg",
   },
   echoes: {
-    image: "/playforge/echoes-deep.jpg",
-    thumb: "/playforge/thumb-echoes.jpg",
-    hero: "/playforge/echoes-deep.jpg",
+    image: "/gameweave/echoes-deep.jpg",
+    thumb: "/gameweave/thumb-echoes.jpg",
+    hero: "/gameweave/echoes-deep.jpg",
   },
   mystic: {
-    image: "/playforge/mystic-grove.jpg",
-    thumb: "/playforge/thumb-mystic.jpg",
-    hero: "/playforge/mystic-grove.jpg",
+    image: "/gameweave/mystic-grove.jpg",
+    thumb: "/gameweave/thumb-mystic.jpg",
+    hero: "/gameweave/mystic-grove.jpg",
   },
   moonlit: {
-    image: "/playforge/covers/moonlit-koi.jpg",
-    thumb: "/playforge/covers/moonlit-koi.jpg",
-    hero: "/playforge/covers/moonlit-koi.jpg",
+    image: "/gameweave/covers/moonlit-koi.jpg",
+    thumb: "/gameweave/covers/moonlit-koi.jpg",
+    hero: "/gameweave/covers/moonlit-koi.jpg",
   },
   rune: {
-    image: "/playforge/covers/rune-circuit.jpg",
-    thumb: "/playforge/covers/rune-circuit.jpg",
-    hero: "/playforge/covers/rune-circuit.jpg",
+    image: "/gameweave/covers/rune-circuit.jpg",
+    thumb: "/gameweave/covers/rune-circuit.jpg",
+    hero: "/gameweave/covers/rune-circuit.jpg",
   },
   cloud: {
-    image: "/playforge/covers/cloud-courier.jpg",
-    thumb: "/playforge/covers/cloud-courier.jpg",
-    hero: "/playforge/covers/cloud-courier.jpg",
+    image: "/gameweave/covers/cloud-courier.jpg",
+    thumb: "/gameweave/covers/cloud-courier.jpg",
+    hero: "/gameweave/covers/cloud-courier.jpg",
   },
   orbit: {
-    image: "/playforge/covers/orbit-bloom.jpg",
-    thumb: "/playforge/covers/orbit-bloom.jpg",
-    hero: "/playforge/covers/orbit-bloom.jpg",
+    image: "/gameweave/covers/orbit-bloom.jpg",
+    thumb: "/gameweave/covers/orbit-bloom.jpg",
+    hero: "/gameweave/covers/orbit-bloom.jpg",
   },
   star: {
-    image: "/playforge/covers/star-catcher.jpg",
-    thumb: "/playforge/covers/star-catcher.jpg",
-    hero: "/playforge/covers/star-catcher.jpg",
+    image: "/gameweave/covers/star-catcher.jpg",
+    thumb: "/gameweave/covers/star-catcher.jpg",
+    hero: "/gameweave/covers/star-catcher.jpg",
   },
   color: {
-    image: "/playforge/covers/color-echo.jpg",
-    thumb: "/playforge/covers/color-echo.jpg",
-    hero: "/playforge/covers/color-echo.jpg",
+    image: "/gameweave/covers/color-echo.jpg",
+    thumb: "/gameweave/covers/color-echo.jpg",
+    hero: "/gameweave/covers/color-echo.jpg",
   },
 } satisfies Record<string, BoundArt>;
 
@@ -190,8 +190,8 @@ const fallbackGames: HomeGame[] = [
     summary:
       "A fast-paced arcade game where a street-smart cat dodges drones, hacks terminals, and outruns the city enforcers in a neon-soaked future.",
     genre: "Action Arcade",
-    image: "/playforge/neon-featured.jpg",
-    thumb: "/playforge/neon-trending.jpg",
+    image: "/gameweave/neon-featured.jpg",
+    thumb: "/gameweave/neon-trending.jpg",
     tags: ["Action", "Arcade", "Cyberpunk", "Cat", "AI Generated"],
     date: "May 8, 2024",
     plays: "12.4K",
@@ -205,8 +205,8 @@ const fallbackGames: HomeGame[] = [
     authorInit: "R",
     summary: "Drift through endless pixel roads, collect boosters, run your best.",
     genre: "Arcade",
-    image: "/playforge/pixel-drifter.jpg",
-    thumb: "/playforge/thumb-pixel.jpg",
+    image: "/gameweave/pixel-drifter.jpg",
+    thumb: "/gameweave/thumb-pixel.jpg",
     tags: ["Arcade", "Racing", "Pixel"],
     date: "Apr 28, 2024",
     plays: "3.1K",
@@ -220,8 +220,8 @@ const fallbackGames: HomeGame[] = [
     authorInit: "S",
     summary: "A story-rich adventure across floating islands and ancient ruins.",
     genre: "RPG Adventure",
-    image: "/playforge/skybound-chronicles.jpg",
-    thumb: "/playforge/thumb-skybound.jpg",
+    image: "/gameweave/skybound-chronicles.jpg",
+    thumb: "/gameweave/thumb-skybound.jpg",
     tags: ["RPG", "Adventure", "Fantasy"],
     date: "May 6, 2024",
     plays: "15.8K",
@@ -235,8 +235,8 @@ const fallbackGames: HomeGame[] = [
     authorInit: "C",
     summary: "Solve logic puzzles by restoring power and lighting the grid.",
     genre: "Puzzle",
-    image: "/playforge/circuit-breakers.jpg",
-    thumb: "/playforge/thumb-circuit.jpg",
+    image: "/gameweave/circuit-breakers.jpg",
+    thumb: "/gameweave/thumb-circuit.jpg",
     tags: ["Puzzle", "Logic", "Grid"],
     date: "May 4, 2024",
     plays: "9.3K",
@@ -528,7 +528,7 @@ export default function HomePage() {
               <span className="flex size-8 items-center justify-center rounded-lg bg-gradient-to-br from-violet-600 to-blue-500 text-white shadow-md shadow-violet-500/30">
                 <Globe2 className="size-4.5" />
               </span>
-              <strong className="font-display text-base font-bold text-slate-900">PlayForge AI</strong>
+              <strong className="font-display text-base font-bold text-slate-900">GameWeave AI</strong>
             </div>
             <p className="mt-3 max-w-56 text-xs leading-relaxed text-slate-500">
               The AI-native platform for creating, sharing, and playing web games.
@@ -558,7 +558,7 @@ export default function HomePage() {
           ))}
         </div>
         <div className={cn(SHELL, "flex flex-col items-center justify-between gap-3 border-t border-slate-200/70 py-5 sm:flex-row")}>
-          <p className="text-xs text-slate-400">© 2024 PlayForge AI. All rights reserved.</p>
+          <p className="text-xs text-slate-400">© 2024 GameWeave AI. All rights reserved.</p>
           <div className="flex gap-5">
             <button onClick={() => router.push("/privacy")} type="button" className="text-xs text-slate-400 transition-colors hover:text-violet-600">Privacy Policy</button>
             <button onClick={() => router.push("/terms")} type="button" className="text-xs text-slate-400 transition-colors hover:text-violet-600">Terms of Service</button>

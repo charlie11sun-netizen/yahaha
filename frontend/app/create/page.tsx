@@ -369,7 +369,7 @@ function CreateInput({
             </span>
             <div>
               <h2>What do you want to create?</h2>
-              <p>Give PlayForge a playable concept, reference style, rules, and win conditions.</p>
+              <p>Give GameWeave a playable concept, reference style, rules, and win conditions.</p>
             </div>
           </div>
 
@@ -738,7 +738,7 @@ function PreviewCard({ now, task }: { now: number; task?: Task }) {
           />
         </div>
       ) : (
-        <img alt="" className="pf-runtime-art" src="/playforge/create-runtime-preview.png" />
+        <img alt="" className="pf-runtime-art" src="/gameweave/create-runtime-preview.png" />
       )}
 
       <h3>{statusLine}</h3>

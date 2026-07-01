@@ -1,4 +1,4 @@
-# 部署 PlayForge（带访问密码，不公开）
+# 部署 GameWeave（带访问密码，不公开）
 
 整套是 **前端(Next) + 后端(FastAPI) + Celery worker + Postgres + Redis + MinIO**。
 游戏分两类：
@@ -8,7 +8,7 @@
 | **curated 旗舰**（Prism Break / Warp Spire / 火线突围） | 仓库源码 → 后端启动时 `seed` 自动灌入 DB+存储 | 自动重建，无需迁移 |
 | **Create 生成的游戏**（如 create 版 Neon Arena: Dronefall） | 只在 `pgdata` / `miniodata` 卷里 | **必须迁移**，否则丢 |
 
-> 同一台机器上从 dev 切到 prod compose（`name` 都是 `playforge`）会**复用同一批命名卷**，
+> 同一台机器上从 dev 切到 prod compose（`name` 都是 `gameweave`）会**复用同一批命名卷**，
 > 数据本来就在，**不用迁移**。下面的迁移只在**换机器**时才需要。
 
 ---

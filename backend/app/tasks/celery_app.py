@@ -3,7 +3,7 @@ from celery import Celery
 from app.core.config import settings
 
 celery = Celery(
-    "playforge",
+    "gameweave",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
     include=["app.tasks.generate"],

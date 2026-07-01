@@ -95,12 +95,12 @@ function LoginInner() {
           <span>
             <Box size={22} />
           </span>
-          <strong>PlayForge AI</strong>
+          <strong>GameWeave AI</strong>
         </div>
         <div className="pf-auth-copy">
           <h1>{isSignup ? "Create your studio" : "Welcome back"}</h1>
           <p>
-            Sign in to generate, publish, save, and tune browser games from one PlayForge workspace.
+            Sign in to generate, publish, save, and tune browser games from one GameWeave workspace.
           </p>
         </div>
         <div className="pf-auth-proof">
@@ -115,7 +115,7 @@ function LoginInner() {
 
       <section className="pf-auth-card" aria-label={isSignup ? "Create account" : "Log in"}>
         <h2>{isSignup ? "Create account" : "Log in"}</h2>
-        <p>{isSignup ? "Start building playable ideas in minutes." : "Continue to your PlayForge studio."}</p>
+        <p>{isSignup ? "Start building playable ideas in minutes." : "Continue to your GameWeave studio."}</p>
 
         <div className="pf-auth-oauth">
           <button onClick={() => oauth("google")} type="button">
@@ -153,7 +153,7 @@ function LoginInner() {
         </button>
 
         <div className="pf-auth-switch">
-          {isSignup ? "Already have an account?" : "New to PlayForge?"}
+          {isSignup ? "Already have an account?" : "New to GameWeave?"}
           <button
             onClick={() => {
               setMode(isSignup ? "login" : "signup");

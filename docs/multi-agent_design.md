@@ -1,7 +1,7 @@
 # AI Native 互动游戏平台 Multi-Agent 设计文档
 
 > 本文档描述 `backend/app/agents/` 下的**真实实现**，与代码保持同步。关键节点附源码位置。
-> 上一版（模板优先、9 节点、仅 2D）的演进背景见 [playforge_multiagent_gameplay_quality_redesign.md](playforge_multiagent_gameplay_quality_redesign.md)（历史 RFC，记录从“可运行”到“可玩 + 可验证”的升级思路）。
+> 上一版（模板优先、9 节点、仅 2D）的演进背景见 [gameweave_multiagent_gameplay_quality_redesign.md](gameweave_multiagent_gameplay_quality_redesign.md)（历史 RFC，记录从“可运行”到“可玩 + 可验证”的升级思路）。
 
 ## 1. 背景与目标
 
@@ -490,7 +490,7 @@ localStorage  |  sessionStorage  |  fetch(  |  XMLHttpRequest  |  WebSocket
 <script src="https?://…">  |  外链 URL https?://（放行 www.w3.org）
 ```
 
-> 与历史版本的差异：新增 `WebSocket`、通用外链 URL 拦截；**放行 `window.parent.postMessage`**——这是 Coder 上报分数的唯一允许的父页面访问（计分契约 `{type:"playforge:score", points, name}`），与提示词约束一致。
+> 与历史版本的差异：新增 `WebSocket`、通用外链 URL 拦截；**放行 `window.parent.postMessage`**——这是 Coder 上报分数的唯一允许的父页面访问（计分契约 `{type:"gameweave:score", points, name}`），与提示词约束一致。
 
 ### 6.12 RepairCodeNode (`repair_code`)
 
@@ -542,7 +542,7 @@ QA 硬失败且仍有次数时，调**更安全的数值**（`_repair_balance`�
   "schema_version": "game-manifest/v1",
   "game_id": "…", "version_id": "…", "title": "…",
   "runtime": "iframe-html", "entry": "index.html",
-  "entry_url": "http://localhost:9000/playforge/games/…/v1/index.html",
+  "entry_url": "http://localhost:9000/gameweave/games/…/v1/index.html",
   "files": [{ "path": "index.html", "url": "…", "sha256": "…" }, …],
   "assets": [],
   "permissions": { "network": false, "storage": false, "cookies": false }

@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 
-export const metadata: Metadata = { title: "Terms of Service - PlayForge AI" };
+export const metadata: Metadata = { title: "Terms of Service - GameWeave AI" };
 
 export default function TermsPage() {
   return (
@@ -9,7 +9,7 @@ export default function TermsPage() {
         <h1>Terms of Service</h1>
         <p className="pf-legal-updated">Last updated June 2026</p>
         <div className="pf-legal-content">
-          <p>This is a demonstration project. By using PlayForge AI, you agree to the following terms.</p>
+          <p>This is a demonstration project. By using GameWeave AI, you agree to the following terms.</p>
           <h2>Acceptable use</h2>
           <ul>
             <li>Do not submit prompts or assets that are illegal, harmful, or infringing.</li>

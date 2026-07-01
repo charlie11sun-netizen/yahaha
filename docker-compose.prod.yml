@@ -1,4 +1,4 @@
-# Production / deployable PlayForge stack.
+# Production / deployable GameWeave stack.
 #
 # Differences vs the dev docker-compose.yml:
 #   - production builds (frontend `next start`, api uvicorn without --reload, no source bind-mounts)
@@ -11,20 +11,20 @@
 # To move to a NEW host, run deploy/migrate-export.sh here and deploy/migrate-import.sh there first.
 #
 # Run:  docker compose -f docker-compose.prod.yml up -d --build
-name: playforge
+name: gameweave
 
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-playforge}
+      POSTGRES_USER: ${POSTGRES_USER:-gameweave}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a strong POSTGRES_PASSWORD in .env}
-      POSTGRES_DB: ${POSTGRES_DB:-playforge}
+      POSTGRES_DB: ${POSTGRES_DB:-gameweave}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-playforge}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gameweave}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -60,8 +60,8 @@ services:
     entrypoint: >
       /bin/sh -c "
       until mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin}; do echo 'waiting for minio...'; sleep 2; done;
-      mc mb --ignore-existing local/${S3_BUCKET:-playforge};
-      mc anonymous set download local/${S3_BUCKET:-playforge};
+      mc mb --ignore-existing local/${S3_BUCKET:-gameweave};
+      mc anonymous set download local/${S3_BUCKET:-gameweave};
       echo 'bucket ready';
       exit 0;
       "
@@ -71,7 +71,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-playforge}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-playforge}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-gameweave}
       REDIS_URL: redis://redis:6379/0
       S3_ENDPOINT: http://minio:9000
       # Public address browsers use to fetch game bundles. MUST be reachable from
@@ -98,7 +98,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-playforge}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-playforge}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-gameweave}
       REDIS_URL: redis://redis:6379/0
       S3_ENDPOINT: http://minio:9000
       S3_PUBLIC_ENDPOINT: ${PUBLIC_S3_URL}

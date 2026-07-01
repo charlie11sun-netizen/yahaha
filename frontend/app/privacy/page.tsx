@@ -1,13 +1,13 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
-export const metadata: Metadata = { title: "Privacy Policy - PlayForge AI" };
+export const metadata: Metadata = { title: "Privacy Policy - GameWeave AI" };
 
 export default function PrivacyPage() {
   return (
     <LegalShell title="Privacy Policy" updated="June 2026">
       <p>
-        PlayForge AI is a demo platform for AI-generated web games. This page summarizes how the demo handles your data.
+        GameWeave AI is a demo platform for AI-generated web games. This page summarizes how the demo handles your data.
       </p>
       <h2>What we store</h2>
       <ul>

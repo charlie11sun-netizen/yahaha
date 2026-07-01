@@ -378,7 +378,7 @@
     state = "over";
     best = Math.max(best, score); el("best").textContent = best;
     showVeil("Game Over", "", "Click or press Space to play again", false, score);
-    try { window.parent.postMessage({ type: "playforge:score", points: score, name: "Prism Break" }, "*"); } catch (e) {}
+    try { window.parent.postMessage({ type: "gameweave:score", points: score, name: "Prism Break" }, "*"); } catch (e) {}
   }
 
   // ── Overlay ─────────────────────────────────────────────────────────

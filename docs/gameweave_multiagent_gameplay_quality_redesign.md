@@ -1,4 +1,4 @@
-# PlayForge Multi-Agent Gameplay Quality Redesign
+# GameWeave Multi-Agent Gameplay Quality Redesign
 
 > **状态：历史 RFC（已落地并被超越）。** 本文记录从“生成可运行游戏”升级到“生成可玩 + 可验证 + 可修复”的设计思路，其核心（ArchetypeRouter / Balance / GameplayQA / GameplayRepair / ConstrainedReplan + 两个 bounded ReAct 循环）均已实现。但实现之后又进一步演进，与本文有两点出入：
 > 1. **新增 3 个规划节点**：`brief_expansion` / `mechanic_planner` / `content_plan`（本文未列）。
