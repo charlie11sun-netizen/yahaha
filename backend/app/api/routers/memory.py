@@ -3,8 +3,14 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, rate_limit
 from app.db.session import get_db
-from app.schemas import MemoryCreateIn, MemorySettingsIn, MemoryUpdateIn
+from app.schemas import (
+    MemoryCreateIn,
+    MemoryProfileUpdateIn,
+    MemorySettingsIn,
+    MemoryUpdateIn,
+)
 from app.services import memory as memory_service
+from app.services import memory_profiles as profile_service
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 
@@ -72,9 +78,59 @@ def create_memory(body: MemoryCreateIn, user=Depends(get_current_user), db: Sess
         importance=body.importance,
         pinned=body.pinned,
     )
+    profile_service.reconcile_memory_item(db, item)
     db.commit()
     db.refresh(item)
     return memory_service.memory_out(item)
+
+
+@router.get("/profiles")
+def list_memory_profiles(
+    status: str | None = Query(default=None),
+    scope_type: str | None = None,
+    scope_id: str | None = None,
+    limit: int = Query(default=100, ge=1, le=200),
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    profiles = profile_service.list_profiles(
+        db,
+        user.id,
+        status=status,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        limit=limit,
+    )
+    db.commit()  # also persists one-time profile backfill for pre-upgrade memories
+    return {"items": [profile_service.profile_out(profile) for profile in profiles]}
+
+
+@router.get("/profiles/{profile_id}/history")
+def get_memory_profile_history(
+    profile_id: str,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    profile = profile_service.get_owned_profile(db, user.id, profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Memory profile not found")
+    return {"items": [profile_service.version_out(item) for item in profile_service.profile_history(db, profile.id)]}
+
+
+@router.patch("/profiles/{profile_id}")
+def update_memory_profile(
+    profile_id: str,
+    body: MemoryProfileUpdateIn,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    profile = profile_service.get_owned_profile(db, user.id, profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Memory profile not found")
+    profile_service.correct_profile(db, profile, **body.model_dump(exclude_unset=True))
+    db.commit()
+    db.refresh(profile)
+    return profile_service.profile_out(profile)
 
 
 @router.patch("/{memory_id}")
@@ -87,7 +143,15 @@ def update_memory(
     item = memory_service.get_owned_memory(db, user.id, memory_id)
     if not item:
         raise HTTPException(status_code=404, detail="Memory not found")
-    memory_service.update_memory(item, **body.model_dump(exclude_unset=True))
+    patch = body.model_dump(exclude_unset=True)
+    profile_fields_changed = bool({"raw_text", "extracted_text", "category", "status"} & patch.keys())
+    if profile_fields_changed:
+        profile_service.retire_profiles_for_memory(
+            db, item.id, reason="Source memory was edited or changed status by the user."
+        )
+    memory_service.update_memory(item, **patch)
+    if profile_fields_changed and item.status == "active":
+        profile_service.reconcile_memory_item(db, item)
     db.commit()
     db.refresh(item)
     return memory_service.memory_out(item)
@@ -98,6 +162,7 @@ def delete_memory(memory_id: str, user=Depends(get_current_user), db: Session = 
     item = memory_service.get_owned_memory(db, user.id, memory_id)
     if not item:
         raise HTTPException(status_code=404, detail="Memory not found")
+    profile_service.retire_profiles_for_memory(db, item.id, reason="Source memory was deleted by the user.")
     memory_service.soft_delete_memory(item)
     db.commit()
     return {"ok": True}

@@ -130,8 +130,8 @@ ContentPlanAgent     = Plan  —— 设计 → 关卡内容（教学 / 波次 / 
 BalanceAgent         = Plan  —— 设计 → 数值（时长 / 目标分 / 生命 / 刷新 / QA 阈值）
 GameCodeAgent        = Execute —— 产出 index.html / style.css / game.js
 PublishArtifactAgent = Execute —— 上传产物 + 写库（确定性，不调模型）
-MemoryRetrievalAgent = Context —— 通过 BM25 + embedding + RRF 检索用户长期偏好和当前游戏项目记忆（embedding 不可用时退化为 BM25）
-MemoryUpdateAgent    = Context —— Preview / Revision 成功后写入候选记忆（确定性，不调模型）
+MemoryRetrievalAgent = Context —— 先读取 active Memory Profiles，再通过 BM25 + embedding + RRF 检索原始证据（embedding 不可用时退化为 BM25）
+MemoryUpdateAgent    = Context —— Preview / Revision 成功后写入原始证据；真实模型启用时建议结构化 claim，确定性状态机完成 candidate/active/supersede 和效用反馈
 ```
 
 Plan-and-Execute 只用于局部游戏生成，不控制系统级流程。Planner 可以决定“这是一个 2D 躲避类游戏、玩家是飞船、胜利条件是存活”，但**不能**决定“是否跳过安全检查 / 构建校验 / 玩法 QA / 直接发布 / 访问后端密钥”。
@@ -259,7 +259,7 @@ flowchart TD
 | `gameplay_qa`        | GameplayQAAgent             | 玩法冒烟 + V8 运行时冒烟         |
 | `gameplay_repair`    | GameplayRepairAgent         | 玩法不达标时调安全数值并重生成（≤2）     |
 | `publish_artifact`   | PublishArtifactAgent        | 上传产物，生成 manifest，写库     |
-| `memory_update`      | MemoryUpdateAgent           | 成功后写入候选记忆 |
+| `memory_update`      | MemoryUpdateAgent           | 保存原始证据，验证 LLM claim，自动强化/晋升/取代 Profile，记录构建与玩法效用并写历史 |
 | `failed` / `done`    | FailureHandler / DoneHandler | 记录失败原因 / 标记成功           |
 
 ### 4.2 工作流图

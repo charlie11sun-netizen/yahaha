@@ -245,7 +245,7 @@ def _skip_candidate(text: str) -> bool:
     return bool(_SECRET_RE.search(text))
 
 
-def _dedup_exists(
+def _find_duplicate(
     db: Session,
     *,
     user_id: str,
@@ -253,9 +253,9 @@ def _dedup_exists(
     scope_id: str | None,
     category: str,
     raw_text: str,
-) -> bool:
+) -> MemoryItem | None:
     return (
-        db.query(MemoryItem.id)
+        db.query(MemoryItem)
         .filter(
             MemoryItem.user_id == user_id,
             MemoryItem.scope_type == scope_type,
@@ -265,7 +265,6 @@ def _dedup_exists(
             MemoryItem.status == MemoryStatus.ACTIVE,
         )
         .first()
-        is not None
     )
 
 
@@ -505,34 +504,38 @@ def capture_success_memories(db: Session, *, task_id: str, state: dict) -> list[
                 "confidence": 0.75,
             })
 
+    from app.services.memory_profiles import reconcile_memory_item
+
     for candidate in candidates:
         raw_text = candidate["raw_text"]
         if not game_id and candidate["scope_type"] == MemoryScope.GAME:
             continue
-        if _dedup_exists(
+        duplicate = _find_duplicate(
             db,
             user_id=task.user_id,
             scope_type=candidate["scope_type"],
             scope_id=candidate["scope_id"],
             category=candidate["category"],
             raw_text=raw_text,
-        ):
-            continue
-        created.append(
-            create_memory(
-                db,
-                task.user_id,
-                scope_type=candidate["scope_type"],
-                scope_id=candidate["scope_id"],
-                category=candidate["category"],
-                raw_text=raw_text,
-                extracted_text=candidate.get("extracted_text"),
-                source_type=candidate["source_type"],
-                source_task_id=task.id,
-                source_game_id=game_id,
-                source_version=version,
-                importance=candidate["importance"],
-                confidence=candidate["confidence"],
-            )
         )
+        if duplicate:
+            reconcile_memory_item(db, duplicate, game_id=game_id, task_id=task.id)
+            continue
+        item = create_memory(
+            db,
+            task.user_id,
+            scope_type=candidate["scope_type"],
+            scope_id=candidate["scope_id"],
+            category=candidate["category"],
+            raw_text=raw_text,
+            extracted_text=candidate.get("extracted_text"),
+            source_type=candidate["source_type"],
+            source_task_id=task.id,
+            source_game_id=game_id,
+            source_version=version,
+            importance=candidate["importance"],
+            confidence=candidate["confidence"],
+        )
+        created.append(item)
+        reconcile_memory_item(db, item, game_id=game_id, task_id=task.id)
     return created

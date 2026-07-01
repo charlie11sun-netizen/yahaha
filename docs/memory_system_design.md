@@ -1,7 +1,8 @@
 # Memory System 设计
 
-> 状态：MVP 已实现（PostgreSQL 表 + BM25/向量混合检索 + RRF 融合 + LangGraph 节点 + Studio 管理页）。
+> 状态：Memory Profile / 自动冲突处理升级设计已确定；采用 Evidence、Profile、History 三层，并以后台 candidate、重复证据和执行结果完成无确认更新。
 > 参考方向：借鉴 MemPalace 的“原文保存、增量写入、分层检索、范围过滤”思想，但适配当前项目的 PostgreSQL + FastAPI + LangGraph 架构，不直接引入 ChromaDB 或外部记忆服务。
+> 产品原则：借鉴 ChatGPT 公开的“原始来源 + 持续更新的记忆总结 + 项目隔离 + 用户可修正 + 版本历史”行为，但不假设其未公开的内部存储或检索实现。
 
 ---
 
@@ -352,7 +353,7 @@ RRF 只依赖名次，不直接相加 BM25 与余弦相似度这两种不同量�
 后续可选：
 
 - 记忆规模超过当前候选上限后，将 JSON embedding 迁移到 `pgvector` 并增加 ANN 索引。
-- 增加用户确认候选记忆的 review queue。
+- 增加 candidate 审计与自动衰减视图，只用于调试候选记忆的来源、支持次数和过期原因，不作为用户确认队列。
 - 增加更细粒度的 game-level memory 编辑界面。
 
 ---
@@ -370,3 +371,142 @@ RRF 只依赖名次，不直接相加 BM25 与余弦相似度这两种不同量�
 - 关闭 `memory_settings.enabled` 后，生成流程不检索、不写入记忆。
 - embedding 服务不可用时退化为 BM25，且任务不失败。
 - BM25 和语义两路都命中的条目获得更高 RRF 分数。
+
+---
+
+## 12. Memory Profile 与冲突处理
+
+### 12.1 三层数据模型
+
+记忆不再等同于一组可检索文本，而是拆成三层：
+
+```text
+memory_items             原始证据层：用户原话、来源、版本，不因总结变化而覆盖
+        ↓
+memory_profiles          当前状态层：当前生效或后台观察中的偏好/约束
+        ↓
+memory_profile_versions  历史层：每次创建、强化、取代、修正和拒绝的快照
+```
+
+RRF 只负责从 `memory_items` 中找到相关证据，不能决定哪条记忆是真实或当前有效。冲突决策发生在 Profile 更新阶段。
+
+### 12.2 `memory_profiles`
+
+| 字段 | 说明 |
+| --- | --- |
+| `user_id` | 用户隔离边界 |
+| `scope_type / scope_id` | `user` / `game` / `task` 及对应对象 |
+| `profile_key` | 同一范围内用于判断冲突的稳定属性键，如 `visual_style`、`jump_height` |
+| `category` | style / controls / difficulty / constraints 等 |
+| `value_text` | 当前归一化后的偏好值；不能替代证据原文 |
+| `summary_text` | 提供给模型的简洁、可读状态 |
+| `evidence_span` | 支持该判断的原文片段，必须能在 `raw_text` 中定位 |
+| `confidence` | 内容可信度；由证据有效性、明确程度、重复支持和来源计算，不直接使用模型自评分 |
+| `scope_confidence` | 作用范围可信度 |
+| `explicitness` | `manual` / `explicit` / `inferred` |
+| `status` | `active` / `candidate` / `superseded` / `deleted` |
+| `source_memory_id` | 当前状态的主要证据 |
+| `conflicts_with_id` | candidate 所观察的冲突对象 |
+| `support_count` | 独立证据的支持次数；重复写入同一证据不重复计数 |
+| `utility_score` | Profile 参与后续任务后的效用 EWMA，只表示使用效果，不等同于事实真值 |
+| `utility_observation_count` | 已记录的执行结果次数 |
+| `last_supported_at` | 最近一次获得一致证据的时间 |
+| `expires_at` | candidate 的观察截止时间；active 不自动过期 |
+| `version` | 当前版本号 |
+
+同一个 `profile_key` 只有在 **相同用户、相同 scope_type、相同 scope_id** 下才互相冲突。用户级偏好与游戏级例外可以同时存在。
+
+### 12.3 作用范围判断
+
+范围采取“只允许有证据的提升”原则：
+
+| 表达或来源 | Profile 范围 | 处理 |
+| --- | --- | --- |
+| “这次 / 本次 / 临时 / 先试试” | task | 不提升到游戏或用户 |
+| Preview 修改且没有全局措辞 | game | 当前游戏默认范围 |
+| “这个游戏 / 本项目 / 这一关” | game | 明确游戏范围 |
+| “以后 / 默认 / 所有游戏 / 我通常” | user | 只有这些明确措辞才允许全局提升 |
+| 用户在 Studio 手动创建 | 用户选择的范围 | `explicitness=manual`，最高范围可信度 |
+| 初始 idea | game | 只描述当前项目，不推断长期偏好 |
+
+一段输入可以拆出多个不同范围的 claim，例如“以后默认写实，但这个项目保留像素风”同时生成一个 user Profile 和一个 game Profile。
+
+### 12.4 提取与准确性判断
+
+自动提取采用“LLM 建议、程序裁决”，而不是让 LLM 直接修改 Profile：
+
+1. 规则层先保留用户原文并识别明确的范围词、否定词和边界。
+2. 启用真实模型时，LLM 输出 claim、attribute、value、category、suggested_scope、evidence_span；模型不可用时使用确定性规则兜底。
+3. 程序要求 `evidence_span` 必须是 `raw_text` 的原文子串，并重新验证 scope，禁止 LLM 将 game/task 信息擅自提升为 user。
+4. 只有状态机可以执行 active、candidate、supersede、expire；LLM 没有数据库状态转换权限。
+
+`confidence` 由可审计证据计算：
+
+- 手动编辑高于自动提取；明确陈述高于试探性问题。
+- `evidence_span` 必须来自原文，摘要不得发明数值或实现细节。
+- “可能、试试、能不能”等弱表达降低置信度。
+- 重复一致证据执行 `reinforce`，增加 `support_count`、版本和最近支持时间。
+- 相似但不是同一条原始证据的支持才计入自动晋升，避免重试任务刷高置信度。
+- 后续任务的构建与玩法结果更新 `utility_score`，但不能单独把错误事实变成正确事实。
+- 模型生成的摘要只作为辅助；原文始终是最终证据。
+
+### 12.5 冲突状态机
+
+```text
+新 claim
+   ├─ 没有同 key Profile + 明确/手动 ───→ active
+   ├─ 没有同 key Profile + 推断性 ──────→ candidate
+   ├─ 与 active 值一致 ─────────────────→ reinforce active
+   ├─ 值不同 + 内容/范围均明确 ─────────→ 新 active，旧 superseded
+   └─ 值不同 + 存在歧义 ───────────────→ candidate，旧 active 继续生效
+
+candidate
+   ├─ 独立支持次数达到阈值且置信度合格 ─→ 自动 active；冲突旧值 superseded
+   ├─ 获得明确新陈述 ───────────────────→ 立即 active
+   └─ 到期仍不足 ───────────────────────→ deleted/expired
+```
+
+默认策略参考 RecMem 的 recurrence-based consolidation，但针对用户明确反馈降低等待成本：明确陈述立即生效；只有推断性记忆要求至少 3 条独立支持证据。candidate 默认观察 90 天，不出现在生成 Prompt，也不要求用户处理。
+
+取代操作必须在同一事务中：
+
+1. 将旧 Profile 标记为 `superseded`。
+2. 如果旧 Profile 的主要 `memory_item` 不再支持其他 active Profile，则将其标记为 `superseded`，避免继续被 RRF 注入。
+3. 激活新 Profile。
+4. 为新旧 Profile 写入版本快照。
+
+### 12.6 检索和 Prompt 组装
+
+```text
+本次用户输入
+> 当前 game/task active Profiles
+> user active Profiles
+> RRF 检索出的原始 evidence
+> 平台默认策略
+```
+
+- `candidate`、`superseded`、`deleted` 不进入模型上下文。
+- Profile 作为当前状态注入；evidence 用于解释和补充，不得反向覆盖 Profile。
+- 每条注入内容包含范围、属性键和来源，便于日志审计。
+- 成功完成 `build_validation` 和 `gameplay_qa` 后，对本次检索到的 active Profile 写入低权重正向效用观察；发生多次 repair/replan 时按次数折减。该反馈只影响同分排序和淘汰审计，不覆盖用户的明确陈述。
+
+### 12.7 用户控制
+
+新增内部/用户 API：
+
+| Method | Path | 用途 |
+| --- | --- | --- |
+| GET | `/memory/profiles` | 查看 active Profile；诊断调用可按 status 查看 candidate |
+| GET | `/memory/profiles/{id}/history` | 查看版本历史 |
+| PATCH | `/memory/profiles/{id}` | 用户修正 summary/value，生成新版本 |
+
+Studio Memory 页面只把 active Profile 作为“当前生效偏好”；candidate 是内部自动观察状态，不显示 Accept/Reject。页面仍展示原始记忆和手动 Correct/Delete，避免用户把摘要误认为完整来源，也保留最终控制权。
+
+### 12.8 自动更新验收指标
+
+- Presence：当前有效偏好在需要时被正确注入。
+- Forgetting absence：被 supersede/deleted 的值不得重新进入 Prompt；测试方式参考 Memora 的 FAMA 思路。
+- Mutation：连续多次修改同一 `profile_key` 后只能有一个同 scope active 值。
+- Grounding：每个自动 claim 都能定位原文 `evidence_span`。
+- Promotion precision：candidate 必须由不同 `source_memory_id` 的支持晋升。
+- Utility：记录 Profile 被检索后的构建/玩法结果，但不得把 utility 当作事实置信度。

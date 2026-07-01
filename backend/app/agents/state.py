@@ -44,6 +44,7 @@ class GenerationState(TypedDict, total=False):
     normalized_prompt: str
     source_feedback: str
     feedback_brief: str
+    retrieved_memory_profiles: list
     retrieved_memories: list
     memory_context: str
     base_game_id: str

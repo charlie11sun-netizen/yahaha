@@ -29,7 +29,7 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { fmt } from "@/lib/format";
 import { useToast } from "@/lib/toast";
-import type { Game, MemoryItem, MemorySettings, Task } from "@/lib/types";
+import type { Game, MemoryItem, MemoryProfile, MemorySettings, Task } from "@/lib/types";
 
 type Section = "overview" | "games" | "tasks" | "drafts" | "favorites" | "memory" | "settings";
 
@@ -72,6 +72,7 @@ function StudioPage() {
   const [savingMemory, setSavingMemory] = useState(false);
   const [deletingMemoryId, setDeletingMemoryId] = useState<string | null>(null);
   const [savingMemorySettings, setSavingMemorySettings] = useState(false);
+  const [profileActionId, setProfileActionId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!loading && !user) router.replace("/login");
@@ -93,12 +94,14 @@ function StudioPage() {
   const favQ = useQuery({ queryKey: ["me-favorites"], queryFn: api.myFavorites, enabled: !!user });
   const tasksQ = useQuery({ queryKey: ["tasks"], queryFn: api.tasks, enabled: !!user, refetchInterval: 3500 });
   const memoryQ = useQuery({ queryKey: ["memory"], queryFn: () => api.memories(), enabled: !!user });
+  const memoryProfilesQ = useQuery({ queryKey: ["memory-profiles"], queryFn: () => api.memoryProfiles(), enabled: !!user });
   const memorySettingsQ = useQuery({ queryKey: ["memory-settings"], queryFn: api.memorySettings, enabled: !!user });
 
   const games = gamesQ.data?.items ?? [];
   const favorites = favQ.data?.items ?? [];
   const tasks = tasksQ.data?.items ?? [];
   const memories = memoryQ.data?.items ?? [];
+  const memoryProfiles = memoryProfilesQ.data?.items ?? [];
   const memorySettings = memorySettingsQ.data;
   const published = useMemo(() => games.filter((game) => game.status === "published"), [games]);
   const drafts = useMemo(() => games.filter((game) => game.status !== "published"), [games]);
@@ -265,7 +268,10 @@ function StudioPage() {
         pinned: true,
       });
       setNewMemoryText("");
-      await queryClient.invalidateQueries({ queryKey: ["memory"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["memory"] }),
+        queryClient.invalidateQueries({ queryKey: ["memory-profiles"] }),
+      ]);
       flash("Memory saved");
     } catch (err) {
       flash(err instanceof Error ? err.message : "Could not save memory");
@@ -278,7 +284,10 @@ function StudioPage() {
     try {
       setDeletingMemoryId(item.id);
       await api.deleteMemory(item.id);
-      await queryClient.invalidateQueries({ queryKey: ["memory"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["memory"] }),
+        queryClient.invalidateQueries({ queryKey: ["memory-profiles"] }),
+      ]);
       flash("Memory deleted");
     } catch (err) {
       flash(err instanceof Error ? err.message : "Could not delete memory");
@@ -297,6 +306,24 @@ function StudioPage() {
       flash(err instanceof Error ? err.message : "Could not update memory settings");
     } finally {
       setSavingMemorySettings(false);
+    }
+  };
+
+  const editMemoryProfile = async (profile: MemoryProfile) => {
+    const summary = window.prompt("Correct this active memory", profile.summary_text)?.trim();
+    if (!summary || summary === profile.summary_text) return;
+    try {
+      setProfileActionId(profile.id);
+      await api.updateMemoryProfile(profile.id, { summary_text: summary });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["memory"] }),
+        queryClient.invalidateQueries({ queryKey: ["memory-profiles"] }),
+      ]);
+      flash("Memory profile corrected");
+    } catch (err) {
+      flash(err instanceof Error ? err.message : "Could not correct memory profile");
+    } finally {
+      setProfileActionId(null);
     }
   };
 
@@ -436,15 +463,18 @@ function StudioPage() {
               <MemorySection
                 deletingId={deletingMemoryId}
                 items={memories}
-                loading={memoryQ.isLoading || memorySettingsQ.isLoading}
+                loading={memoryQ.isLoading || memoryProfilesQ.isLoading || memorySettingsQ.isLoading}
                 newMemoryText={newMemoryText}
                 onAdd={addMemory}
                 onDelete={removeMemory}
+                onEditProfile={editMemoryProfile}
                 onTextChange={setNewMemoryText}
                 onUpdateSettings={updateMemorySettings}
                 saving={savingMemory}
                 savingSettings={savingMemorySettings}
                 settings={memorySettings}
+                profileActionId={profileActionId}
+                profiles={memoryProfiles}
               />
             )}
 
@@ -763,11 +793,14 @@ function MemorySection({
   newMemoryText,
   onAdd,
   onDelete,
+  onEditProfile,
   onTextChange,
   onUpdateSettings,
   saving,
   savingSettings,
   settings,
+  profileActionId,
+  profiles,
 }: {
   deletingId: string | null;
   items: MemoryItem[];
@@ -775,12 +808,16 @@ function MemorySection({
   newMemoryText: string;
   onAdd: () => void;
   onDelete: (item: MemoryItem) => void;
+  onEditProfile: (profile: MemoryProfile) => void;
   onTextChange: (value: string) => void;
   onUpdateSettings: (patch: Partial<MemorySettings>) => void;
   saving: boolean;
   savingSettings: boolean;
   settings?: MemorySettings;
+  profileActionId: string | null;
+  profiles: MemoryProfile[];
 }) {
+  const visibleProfiles = profiles.filter((profile) => profile.status === "active");
   return (
     <div className="pf-memory-layout">
       <Panel title="Memory controls">
@@ -834,6 +871,43 @@ function MemorySection({
             {saving ? "Saving..." : "Save memory"}
           </button>
         </div>
+      </Panel>
+
+      <Panel title="Current memory profile">
+        <div className="pf-memory-copy">
+          This is the current synthesized state used by generation. Candidate memories are observed silently and only become active after repeated support.
+        </div>
+        {loading ? (
+          <div className="pf-studio-empty">Loading memory profile...</div>
+        ) : visibleProfiles.length === 0 ? (
+          <div className="pf-studio-empty">No active profile yet</div>
+        ) : (
+          <div className="pf-memory-profile-list">
+            {visibleProfiles.map((profile) => (
+              <article className={`pf-memory-profile is-${profile.status}`} key={profile.id}>
+                <div className="pf-memory-profile-copy">
+                  <span>{profileScopeLabel(profile)} · {profile.profile_key}</span>
+                  <strong>{profile.summary_text}</strong>
+                  <small>
+                    support {profile.support_count} · utility {Math.round(profile.utility_score * 100)}%
+                  </small>
+                  <small>
+                    {profile.status} · {profile.explicitness} · confidence {Math.round(profile.confidence * 100)}% · v{profile.version}
+                  </small>
+                </div>
+                <div className="pf-memory-profile-actions">
+                  <button
+                    disabled={profileActionId === profile.id}
+                    onClick={() => onEditProfile(profile)}
+                    type="button"
+                  >
+                    Correct
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
       </Panel>
 
       <Panel title="Stored memories">
@@ -930,6 +1004,12 @@ function memoryScopeLabel(item: MemoryItem) {
   if (item.scope_type === "game") return `Game ${item.source_version || ""}`.trim();
   if (item.scope_type === "task") return "Task";
   return item.pinned ? "User preference · pinned" : "User preference";
+}
+
+function profileScopeLabel(profile: MemoryProfile) {
+  if (profile.scope_type === "game") return "Current game";
+  if (profile.scope_type === "task") return "One task";
+  return "All games";
 }
 
 function memoryDate(value?: string | null) {

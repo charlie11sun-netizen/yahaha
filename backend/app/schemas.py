@@ -81,3 +81,8 @@ class MemorySettingsIn(BaseModel):
     allow_cross_game_memory: bool | None = None
     allow_memory_extraction: bool | None = None
     retention_days: int | None = Field(default=None, ge=1, le=3650)
+
+
+class MemoryProfileUpdateIn(BaseModel):
+    value_text: str | None = Field(default=None, min_length=1, max_length=500)
+    summary_text: str | None = Field(default=None, min_length=1, max_length=1000)

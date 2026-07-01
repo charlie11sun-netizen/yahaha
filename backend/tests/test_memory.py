@@ -337,3 +337,220 @@ def test_hybrid_retrieval_falls_back_to_lexical(db_session_factory, monkeypatch)
     assert items[0]["retrieval"]["strategy"] == "lexical_fallback"
     assert items[0]["retrieval"]["semantic_rank"] is None
     db.close()
+
+
+def test_profile_extraction_splits_global_and_game_scope(db_session_factory, monkeypatch):
+    from app.models import Game, User
+    from app.models.common import GameSource, GameStatus
+    from app.models.memory import MemoryCategory, MemoryScope, MemorySource
+    from app.services import memory_embeddings
+    from app.services.memory import create_memory
+    from app.services.memory_profiles import reconcile_memory_item
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    db = db_session_factory()
+    user = User(email="scope@test.com", password_hash="x", display_name="Scope", avatar_initial="S")
+    db.add(user)
+    db.flush()
+    game = Game(
+        author_id=user.id,
+        title="Scope Game",
+        summary="",
+        genre="ARCADE",
+        cover="",
+        source=GameSource.CREATE,
+        status=GameStatus.PREVIEW,
+        current_version="v1",
+    )
+    db.add(game)
+    db.flush()
+    item = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.GAME,
+        scope_id=game.id,
+        category=MemoryCategory.STYLE,
+        raw_text="以后默认写实风，但这个项目继续用像素风",
+        source_type=MemorySource.FEEDBACK,
+        source_game_id=game.id,
+    )
+
+    profiles = reconcile_memory_item(db, item, game_id=game.id)
+
+    assert len(profiles) == 2
+    assert {(profile.scope_type, profile.value_text) for profile in profiles} == {
+        (MemoryScope.USER, "realistic"),
+        (MemoryScope.GAME, "pixel"),
+    }
+    assert all(profile.status == "active" for profile in profiles)
+    db.close()
+
+
+def test_profile_explicit_conflict_supersedes_in_same_scope(db_session_factory, monkeypatch):
+    from app.models import User
+    from app.models.memory import MemoryCategory, MemoryScope, MemoryStatus
+    from app.services import memory_embeddings
+    from app.services.memory import create_memory
+    from app.services.memory_profiles import profile_history, reconcile_memory_item
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    db = db_session_factory()
+    user = User(email="conflict@test.com", password_hash="x", display_name="Conflict", avatar_initial="C")
+    db.add(user)
+    db.flush()
+    old_item = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.USER,
+        scope_id=None,
+        category=MemoryCategory.STYLE,
+        raw_text="以后默认使用像素风",
+    )
+    old_profile = reconcile_memory_item(db, old_item)[0]
+    new_item = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.USER,
+        scope_id=None,
+        category=MemoryCategory.STYLE,
+        raw_text="以后默认不要像素风，改成写实风",
+    )
+    new_profile = reconcile_memory_item(db, new_item)[0]
+    db.flush()
+
+    assert old_profile.status == "superseded"
+    assert old_item.status == MemoryStatus.SUPERSEDED
+    assert new_profile.status == "active"
+    assert new_profile.value_text == "realistic"
+    assert new_item.supersedes_id == old_item.id
+    assert {version.operation for version in profile_history(db, old_profile.id)} == {"created", "superseded"}
+    db.close()
+
+
+def test_ambiguous_profile_conflict_auto_promotes_after_repeated_support(db_session_factory, monkeypatch):
+    from app.models import Game, User
+    from app.models.common import GameSource, GameStatus
+    from app.models.memory import MemoryCategory, MemoryScope, MemorySource
+    from app.services import memory_embeddings
+    from app.services.memory import create_memory
+    from app.services.memory_profiles import profile_history, reconcile_memory_item, retrieve_profiles
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    db = db_session_factory()
+    user = User(email="pending@test.com", password_hash="x", display_name="Pending", avatar_initial="P")
+    db.add(user)
+    db.flush()
+    game = Game(
+        author_id=user.id,
+        title="Pending Game",
+        summary="",
+        genre="ARCADE",
+        cover="",
+        source=GameSource.CREATE,
+        status=GameStatus.PREVIEW,
+        current_version="v1",
+    )
+    db.add(game)
+    db.flush()
+    old_item = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.GAME,
+        scope_id=game.id,
+        category=MemoryCategory.STYLE,
+        raw_text="这个游戏使用像素风",
+        source_type=MemorySource.FEEDBACK,
+        source_game_id=game.id,
+    )
+    old_profile = reconcile_memory_item(db, old_item, game_id=game.id)[0]
+    candidate_item = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.GAME,
+        scope_id=game.id,
+        category=MemoryCategory.STYLE,
+        raw_text="这个游戏能不能试试写实风",
+        source_type=MemorySource.FEEDBACK,
+        source_game_id=game.id,
+    )
+    candidate = reconcile_memory_item(db, candidate_item, game_id=game.id)[0]
+    db.flush()
+
+    assert candidate.status == "candidate"
+    assert candidate.conflicts_with_id == old_profile.id
+    assert [item["id"] for item in retrieve_profiles(db, user_id=user.id, game_id=game.id)] == [old_profile.id]
+
+    candidate_item_2 = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.GAME,
+        scope_id=game.id,
+        category=MemoryCategory.STYLE,
+        raw_text="Could we use realistic visual style for this game?",
+        source_type=MemorySource.FEEDBACK,
+        source_game_id=game.id,
+    )
+    candidate_2 = reconcile_memory_item(db, candidate_item_2, game_id=game.id)[0]
+    assert candidate_2.id == candidate.id
+    assert candidate.status == "candidate"
+    assert candidate.support_count == 2
+
+    candidate_item_3 = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.GAME,
+        scope_id=game.id,
+        category=MemoryCategory.STYLE,
+        raw_text="Maybe a realistic visual style would fit this game.",
+        source_type=MemorySource.FEEDBACK,
+        source_game_id=game.id,
+    )
+    candidate_3 = reconcile_memory_item(db, candidate_item_3, game_id=game.id)[0]
+    db.flush()
+
+    assert candidate_3.id == candidate.id
+    assert candidate.status == "active"
+    assert candidate.explicitness == "inferred"
+    assert candidate.support_count == 3
+    assert old_profile.status == "superseded"
+    assert [item["id"] for item in retrieve_profiles(db, user_id=user.id, game_id=game.id)] == [candidate.id]
+    assert "auto_promoted" in {version.operation for version in profile_history(db, candidate.id)}
+    db.close()
+
+
+def test_memory_profile_api_history_and_user_isolation(client):
+    h1 = _auth(client, "profile-a@test.com")
+    h2 = _auth(client, "profile-b@test.com")
+    created = client.post(
+        "/memory",
+        json={
+            "scope_type": "user",
+            "category": "style",
+            "raw_text": "I prefer pixel art by default.",
+        },
+        headers=h1,
+    )
+    assert created.status_code == 200
+
+    profiles = client.get("/memory/profiles", headers=h1)
+    assert profiles.status_code == 200
+    profile = profiles.json()["items"][0]
+    assert profile["profile_key"] == "visual_style"
+    assert profile["status"] == "active"
+    assert client.get("/memory/profiles", headers=h2).json()["items"] == []
+
+    corrected = client.patch(
+        f"/memory/profiles/{profile['id']}",
+        json={"summary_text": "I prefer restrained pixel art by default."},
+        headers=h1,
+    )
+    assert corrected.status_code == 200
+    assert corrected.json()["explicitness"] == "manual"
+    assert corrected.json()["version"] == 2
+    active_evidence = client.get("/memory", headers=h1).json()["items"]
+    assert [item["raw_text"] for item in active_evidence] == ["I prefer restrained pixel art by default."]
+
+    history = client.get(f"/memory/profiles/{profile['id']}/history", headers=h1)
+    assert history.status_code == 200
+    assert [item["operation"] for item in history.json()["items"]] == ["corrected", "created"]
+    assert client.get(f"/memory/profiles/{profile['id']}/history", headers=h2).status_code == 404

@@ -1,4 +1,14 @@
-import type { Comment, Game, MemoryItem, MemorySettings, Task, UploadedAsset, User } from "./types";
+import type {
+  Comment,
+  Game,
+  MemoryItem,
+  MemoryProfile,
+  MemoryProfileVersion,
+  MemorySettings,
+  Task,
+  UploadedAsset,
+  User,
+} from "./types";
 
 export const BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -156,4 +166,16 @@ export const api = {
   memorySettings: () => req<MemorySettings>("/memory/settings"),
   updateMemorySettings: (patch: Partial<MemorySettings>) =>
     req<MemorySettings>("/memory/settings", { method: "PATCH", json: patch }),
+  memoryProfiles: (params: { status?: string; scope_type?: string; scope_id?: string } = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value) qs.set(key, value);
+    });
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return req<{ items: MemoryProfile[] }>(`/memory/profiles${suffix}`);
+  },
+  memoryProfileHistory: (id: string) =>
+    req<{ items: MemoryProfileVersion[] }>(`/memory/profiles/${id}/history`),
+  updateMemoryProfile: (id: string, patch: { value_text?: string; summary_text?: string }) =>
+    req<MemoryProfile>(`/memory/profiles/${id}`, { method: "PATCH", json: patch }),
 };

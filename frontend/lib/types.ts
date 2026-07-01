@@ -150,3 +150,39 @@ export interface MemorySettings {
   allow_memory_extraction: boolean;
   retention_days?: number | null;
 }
+
+export interface MemoryProfile {
+  id: string;
+  scope_type: "user" | "game" | "task";
+  scope_id?: string | null;
+  profile_key: string;
+  category: MemoryItem["category"];
+  value_text: string;
+  summary_text: string;
+  evidence_span: string;
+  confidence: number;
+  scope_confidence: number;
+  explicitness: "manual" | "explicit" | "inferred";
+  status: "active" | "candidate" | "superseded" | "deleted";
+  source_memory_id: string;
+  conflicts_with_id?: string | null;
+  support_count: number;
+  utility_score: number;
+  utility_observation_count: number;
+  last_supported_at?: string | null;
+  expires_at?: string | null;
+  version: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface MemoryProfileVersion {
+  id: string;
+  profile_id: string;
+  version: number;
+  operation: string;
+  snapshot: Record<string, unknown>;
+  source_memory_id?: string | null;
+  reason?: string | null;
+  created_at?: string | null;
+}

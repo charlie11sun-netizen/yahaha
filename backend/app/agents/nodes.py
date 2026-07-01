@@ -1107,12 +1107,14 @@ def safety_intake_node(state: dict) -> dict:
 def memory_retrieval_node(state: dict) -> dict:
     from app.db.session import SessionLocal
     from app.services import memory as memory_service
+    from app.services import memory_profiles as profile_service
 
     user_id = state.get("user_id")
     query = state.get("source_feedback") or state.get("normalized_prompt") or state.get("prompt") or ""
     game_id = state.get("base_game_id") if state.get("task_kind") == "revision" else None
     if not user_id:
         return {
+            "retrieved_memory_profiles": [],
             "retrieved_memories": [],
             "memory_context": "",
             "_agent": "MemoryRetrievalAgent",
@@ -1125,6 +1127,14 @@ def memory_retrieval_node(state: dict) -> dict:
     )
     db = SessionLocal()
     try:
+        profiles = profile_service.retrieve_profiles(
+            db,
+            user_id=user_id,
+            game_id=game_id,
+            task_id=state.get("task_id"),
+            categories=categories,
+            limit=8,
+        )
         items = memory_service.retrieve_memories(
             db,
             user_id=user_id,
@@ -1133,13 +1143,16 @@ def memory_retrieval_node(state: dict) -> dict:
             categories=categories,
             limit=8,
         )
-        context = memory_service.render_memory_context(items)
+        profile_context = profile_service.render_profile_context(profiles)
+        evidence_context = memory_service.render_memory_context(items)
+        context = "\n\n".join(part for part in (profile_context, evidence_context) if part)
         # Persist lazily generated vectors for memories created before the
         # embedding migration. Retrieval remains fail-open if this commit fails.
         db.commit()
     except Exception as exc:  # noqa: BLE001
-        items, context = [], ""
+        profiles, items, context = [], [], ""
         return {
+            "retrieved_memory_profiles": profiles,
             "retrieved_memories": items,
             "memory_context": context,
             "_agent": "MemoryRetrievalAgent",
@@ -1150,12 +1163,14 @@ def memory_retrieval_node(state: dict) -> dict:
     scope = f"game={game_id}" if game_id else "user"
     strategy = (items[0].get("retrieval") or {}).get("strategy") if items else "none"
     return {
+        "retrieved_memory_profiles": profiles,
         "retrieved_memories": items,
         "memory_context": context,
         "_agent": "MemoryRetrievalAgent",
         "_logs": [
             f"scope: {scope}",
             f"query: {_clip(query, 140)}",
+            f"active profiles: {len(profiles)}",
             f"retrieved memories: {len(items)}",
             f"retrieval strategy: {strategy}",
         ]
@@ -1615,6 +1630,7 @@ def publish_revision_node(state: dict) -> dict:
 def memory_update_node(state: dict) -> dict:
     from app.db.session import SessionLocal
     from app.services import memory as memory_service
+    from app.services import memory_profiles as profile_service
 
     task_id = state.get("task_id")
     if not task_id:
@@ -1625,6 +1641,11 @@ def memory_update_node(state: dict) -> dict:
     db = SessionLocal()
     try:
         created = memory_service.capture_success_memories(db, task_id=task_id, state=state)
+        utility_updates = profile_service.record_generation_profile_utility(
+            db,
+            user_id=state.get("user_id"),
+            state=state,
+        )
         db.commit()
     except Exception as exc:  # noqa: BLE001
         db.rollback()
@@ -1638,6 +1659,7 @@ def memory_update_node(state: dict) -> dict:
         "_agent": "MemoryUpdateAgent",
         "_logs": [
             f"stored memory items: {len(created)}",
+            f"updated active profile utility: {len(utility_updates)}",
             "memory update is non-blocking; generation result already persisted",
         ]
         + [
