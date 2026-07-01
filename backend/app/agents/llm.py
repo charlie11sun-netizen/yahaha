@@ -8,13 +8,26 @@ from openai import OpenAI
 from app.core.config import settings
 
 
-def _client() -> OpenAI:
-    return OpenAI(api_key=settings.OPENAI_API_KEY, base_url=settings.OPENAI_BASE_URL, timeout=settings.OPENAI_TIMEOUT)
+def _client(*, timeout: int | None = None) -> OpenAI:
+    return OpenAI(
+        api_key=settings.OPENAI_API_KEY,
+        base_url=settings.OPENAI_BASE_URL,
+        timeout=timeout or settings.OPENAI_TIMEOUT,
+    )
 
 
-def chat(system: str, user: str, temperature: float | None = None, max_tokens: int | None = None) -> tuple[str, int]:
+def chat(
+    system: str,
+    user: str,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    *,
+    model: str | None = None,
+    timeout: int | None = None,
+    response_format: dict | None = None,
+) -> tuple[str, int]:
     kwargs: dict = {
-        "model": settings.MODEL_NAME,
+        "model": model or settings.MODEL_NAME,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -24,8 +37,10 @@ def chat(system: str, user: str, temperature: float | None = None, max_tokens: i
         kwargs["temperature"] = temperature
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
+    if response_format is not None:
+        kwargs["response_format"] = response_format
 
-    resp = _client().chat.completions.create(**kwargs)
+    resp = _client(timeout=timeout).chat.completions.create(**kwargs)
     text = (resp.choices[0].message.content or "").strip()
     usage = getattr(resp, "usage", None)
     tokens = getattr(usage, "total_tokens", 0) if usage else 0

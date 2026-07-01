@@ -466,7 +466,7 @@ candidate
    └─ 到期仍不足 ───────────────────────→ deleted/expired
 ```
 
-默认策略参考 RecMem 的 recurrence-based consolidation，但针对用户明确反馈降低等待成本：明确陈述立即生效；只有推断性记忆要求至少 3 条独立支持证据。candidate 默认观察 90 天，不出现在生成 Prompt，也不要求用户处理。
+默认策略参考 RecMem 的 recurrence-based consolidation [1]，但针对用户明确反馈降低等待成本：明确陈述立即生效；只有推断性记忆要求至少 3 条独立支持证据。candidate 默认观察 90 天，不出现在生成 Prompt，也不要求用户处理。这里借鉴的是“重复出现后再固化”的原则；3 条证据、90 天观察期以及明确反馈立即生效均为本项目的工程设计，并非 RecMem 的原始实现。
 
 取代操作必须在同一事务中：
 
@@ -505,8 +505,128 @@ Studio Memory 页面只把 active Profile 作为“当前生效偏好”；candi
 ### 12.8 自动更新验收指标
 
 - Presence：当前有效偏好在需要时被正确注入。
-- Forgetting absence：被 supersede/deleted 的值不得重新进入 Prompt；测试方式参考 Memora 的 FAMA 思路。
-- Mutation：连续多次修改同一 `profile_key` 后只能有一个同 scope active 值。
+- Forgetting absence：被 supersede/deleted 的值不得重新进入 Prompt；测试方式参考 Memora 提出的 Forgetting-Aware Memory Accuracy（FAMA）[2]，重点惩罚系统继续使用已失效或被更新的记忆。
+- Mutation：连续多次修改同一 `profile_key` 后只能有一个同 scope active 值；该指标参考 Memora 对长期记忆 consolidation 与 mutation 的评估方向 [2]，具体约束由本项目定义。
 - Grounding：每个自动 claim 都能定位原文 `evidence_span`。
 - Promotion precision：candidate 必须由不同 `source_memory_id` 的支持晋升。
 - Utility：记录 Profile 被检索后的构建/玩法结果，但不得把 utility 当作事实置信度。
+
+---
+
+## 13. 上下文感知的批量记忆提取与实体检索
+
+### 13.1 实施边界
+
+本轮升级借鉴 Mem0 V3 的批量抽取、ADD-only Evidence、实体索引和混合检索思路，但不直接引入 Mem0 作为第二套记忆库。`memory_items`、`memory_profiles`、`memory_profile_versions` 继续作为唯一事实源：
+
+```text
+memory_items             ADD-only 原始证据，不由 LLM 覆盖
+memory_profiles          当前状态，可 active/candidate/superseded
+memory_profile_versions  ADD-only 状态变更历史
+```
+
+### 13.2 固定小模型提取
+
+每个成功的 generation / revision 任务在通过记忆开关、自动提取开关和敏感信息过滤后，固定调用一次独立的小型记忆提取模型，不再通过关键词或规则决定是否调用。模型可以返回空 `claims`，表示本次只有原始 Evidence、没有值得形成 Profile 的长期记忆。
+
+提取上下文固定包含：
+
+1. 与当前 task/game/user 作用域相关的 active Profiles（最多 8 条）。
+2. 当前游戏最近 10 条用户输入，只保留正文、来源版本和时间。
+3. 本批新写入的 ADD-only Evidence。
+
+`system` 消息和 Assistant 回复均不进入记忆提取上下文。当前产品没有稳定的 Assistant 引用确认协议，因此先避免模型回复反向污染用户偏好；后续若增加显式引用 ID，可另行扩展。
+
+### 13.3 成本控制
+
+成本控制只采用以下四项：
+
+1. 最近消息只保留用户消息正文、版本号和时间。
+2. 一次模型调用返回本批全部 Claim，不做多轮 Agent 循环。
+3. 使用结构化 JSON 输出。
+4. 多条 Evidence 批量生成 Embedding 并批量写入。
+
+### 13.4 结构化输出与程序裁决
+
+小模型输出结构：
+
+```json
+{
+  "claims": [
+    {
+      "source_memory_id": "memory uuid",
+      "decision": "active|candidate|evidence_only|skip",
+      "profile_key": "jump_feel",
+      "category": "controls",
+      "value_text": "less_floaty",
+      "summary_text": "跳跃应更加轻快，但保持原有高度",
+      "evidence_span": "跳跃要更轻快，但不要明显跳得更高",
+      "suggested_scope": "game",
+      "explicitness": "explicit",
+      "confidence": 0.88,
+      "entities": [{"type": "control", "name": "跳跃"}]
+    }
+  ]
+}
+```
+
+LLM 只提出 Claim。程序仍必须验证 `source_memory_id` 属于本批、`evidence_span` 是对应 `raw_text` 的原文子串，并通过确定性规则重新计算 scope、scope confidence 和 explicitness 上限。`evidence_only` / `skip` 不创建 Profile；`candidate` 不得被模型直接提升为 active；最终强化、晋升和取代只能由 Profile 状态机执行。
+
+### 13.5 批量写入与失败降级
+
+```text
+收集本批 Evidence
+→ 一次 Embedding 请求
+→ 批量写 memory_items
+→ 构造 active Profiles + 最近 10 条用户消息上下文
+→ 一次小模型结构化抽取
+→ 批量验证 Claim
+→ 对同一用户加一次行锁并批量调和 Profile
+→ 写版本历史和实体关联
+```
+
+Embedding 不可用时 Evidence 仍然写入并退化为 BM25；小模型不可用、超时或 JSON 非法时，退化为现有确定性 Claim 提取。记忆更新始终 fail-open，不得改变已经成功的生成结果。
+
+### 13.6 实体索引
+
+新增：
+
+```text
+memory_entities      用户隔离的规范实体及可选 embedding
+memory_entity_links 实体与原始 Evidence 的多对多关联
+```
+
+实体类型面向当前领域，包括 `game`、`character`、`mechanic`、`control`、`visual_style`、`level`、`enemy`、`boss`、`item`、`asset` 和 `parameter`。实体由同一次小模型调用随 Claim 返回，不增加额外模型调用；程序负责名称归一化、同用户同类型去重和关联写入。
+
+### 13.7 三路 RRF
+
+原始 Evidence 检索从两路升级为三路独立排名：
+
+```text
+BM25 lexical ranking
+Embedding semantic ranking
+Entity ranking
+→ Reciprocal Rank Fusion
+```
+
+实体路只对当前用户且满足 scope/category 过滤的候选 Evidence 加入排名。三路继续按名次融合，不直接相加不同量纲的原始分数；Embedding 或实体路不可用时保留现有降级行为。
+
+### 13.8 验收要求
+
+- 每个成功任务至多触发一次小模型记忆提取调用，并可一次返回多个 Claim。
+- 最近上下文只包含当前游戏的用户正文、版本和时间，不包含 System/Assistant 内容。
+- 一批 Evidence 只发起一次 Embedding 请求。
+- 旧 Profile 和最近消息只能帮助理解新 Evidence，不能脱离本批原文生成 Claim。
+- `evidence_span` 非原文子串、非法 scope/category/entity 类型必须被拒绝或降级。
+- ADD-only Evidence 不被 Profile 取代操作物理覆盖。
+- 实体命中能进入第三路 RRF；实体服务失败不影响 BM25/Embedding 检索。
+- 小模型、Embedding 或实体处理失败不阻断生成任务。
+
+---
+
+## 14. 参考文献
+
+1. Zijie Dai, Shiyuan Deng, Sheng Guan, Yizhou Tian, Xin Yao, Xiao Yan, and James Cheng. **RecMem: Recurrence-based Memory Consolidation for Efficient and Effective Long-Running LLM Agents.** Findings of the Association for Computational Linguistics: ACL 2026, 2026. [ACL Anthology](https://aclanthology.org/2026.findings-acl.1619/)
+2. Md Nayem Uddin, Kumar Shubham, Eduardo Blanco, Chitta Baral, and Gengyu Wang. **From Recall to Forgetting: Benchmarking Long-Term Memory for Personalized Agents.** Findings of the Association for Computational Linguistics: ACL 2026, 2026. [ACL Anthology](https://aclanthology.org/2026.findings-acl.1337/)
+
+上述论文提供的是机制与评估思路。当前系统的 Evidence/Profile/History 三层模型、作用域规则、无需用户确认的状态机、晋升阈值、过期时间和 PostgreSQL 实现均为针对 PlayForge 工作流的适配设计，不代表对论文系统的完整复现。

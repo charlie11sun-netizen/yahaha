@@ -554,3 +554,212 @@ def test_memory_profile_api_history_and_user_isolation(client):
     assert history.status_code == 200
     assert [item["operation"] for item in history.json()["items"]] == ["corrected", "created"]
     assert client.get(f"/memory/profiles/{profile['id']}/history", headers=h2).status_code == 404
+
+
+def test_create_memories_batch_embeds_all_evidence_once(db_session_factory, monkeypatch):
+    from app.models import User
+    from app.models.memory import MemoryCategory, MemoryScope, MemorySource
+    from app.services import memory_embeddings
+    from app.services.memory import create_memories_batch
+
+    calls = []
+
+    def fake_embed(texts):
+        calls.append(list(texts))
+        return [[float(index), 1.0] for index, _ in enumerate(texts)]
+
+    monkeypatch.setattr(memory_embeddings, "embedding_model", lambda: "batch-embedding")
+    monkeypatch.setattr(memory_embeddings, "embed_texts", fake_embed)
+    db = db_session_factory()
+    user = User(email="batch@test.com", password_hash="x", display_name="Batch", avatar_initial="B")
+    db.add(user)
+    db.flush()
+
+    items = create_memories_batch(
+        db,
+        user.id,
+        [
+            {
+                "scope_type": MemoryScope.USER,
+                "category": MemoryCategory.STYLE,
+                "raw_text": "以后默认使用像素风",
+                "source_type": MemorySource.FEEDBACK,
+            },
+            {
+                "scope_type": MemoryScope.USER,
+                "category": MemoryCategory.DIFFICULTY,
+                "raw_text": "以后默认保持中等难度",
+                "source_type": MemorySource.FEEDBACK,
+            },
+        ],
+    )
+
+    assert len(calls) == 1
+    assert len(calls[0]) == 2
+    assert [item.embedding for item in items] == [[0.0, 1.0], [1.0, 1.0]]
+    assert all(item.embedding_model == "batch-embedding" for item in items)
+    db.close()
+
+
+def test_success_memory_batch_uses_small_model_with_profiles_and_user_messages(
+    db_session_factory, monkeypatch
+):
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    from app.agents import llm
+    from app.core.config import settings
+    from app.models import Game, GenerationTask, MemoryEntityLink, MemoryProfile, User
+    from app.models.common import GameSource, GameStatus, TaskStatus
+    from app.models.memory import MemoryCategory, MemoryScope
+    from app.services import memory_embeddings
+    from app.services.memory import capture_success_memories, create_memory
+    from app.services.memory_profiles import reconcile_memory_item
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(settings, "MEMORY_EXTRACTION_MODEL", "small-memory-model")
+    calls = []
+
+    def fake_chat(system, user, **kwargs):
+        payload = json.loads(user)
+        calls.append((system, payload, kwargs))
+        evidence = payload["current_evidence"][0]
+        return json.dumps(
+            {
+                "claims": [
+                    {
+                        "source_memory_id": evidence["source_memory_id"],
+                        "decision": "active",
+                        "profile_key": "jump_feel",
+                        "category": "controls",
+                        "value_text": "lighter",
+                        "summary_text": "跳跃应更轻快但不明显增加高度",
+                        "evidence_span": "跳跃要更轻快，但不要明显跳得更高。",
+                        "suggested_scope": "game",
+                        "explicitness": "explicit",
+                        "confidence": 0.9,
+                        "entities": [{"type": "control", "name": "跳跃"}],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ), 42
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    db = db_session_factory()
+    user = User(email="context@test.com", password_hash="x", display_name="Context", avatar_initial="C")
+    db.add(user)
+    db.flush()
+    game = Game(
+        author_id=user.id,
+        title="Context Game",
+        summary="",
+        genre="ARCADE",
+        cover="",
+        source=GameSource.CREATE,
+        status=GameStatus.PREVIEW,
+        current_version="v2",
+    )
+    db.add(game)
+    db.flush()
+    source = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.GAME,
+        scope_id=game.id,
+        category=MemoryCategory.STYLE,
+        raw_text="这个游戏保持像素风",
+        source_game_id=game.id,
+    )
+    reconcile_memory_item(db, source, game_id=game.id)
+    started = datetime(2026, 7, 1, 8, 0, tzinfo=timezone.utc)
+    prior = GenerationTask(
+        user_id=user.id,
+        idea="arcade",
+        task_kind="revision",
+        base_game_id=game.id,
+        base_version="v1",
+        feedback_text="上一版把角色移动调快一点。",
+        status=TaskStatus.SUCCEEDED,
+        result_game_id=game.id,
+        created_at=started,
+    )
+    current = GenerationTask(
+        user_id=user.id,
+        idea="arcade",
+        task_kind="revision",
+        base_game_id=game.id,
+        base_version="v2",
+        feedback_text="跳跃要更轻快，但不要明显跳得更高。",
+        status=TaskStatus.SUCCEEDED,
+        result_game_id=game.id,
+        created_at=started + timedelta(minutes=1),
+    )
+    db.add_all([prior, current])
+    db.commit()
+
+    created = capture_success_memories(
+        db,
+        task_id=current.id,
+        state={"task_kind": "revision", "game_id": game.id},
+    )
+    db.commit()
+
+    assert len(created) == 1
+    assert len(calls) == 1
+    _, payload, kwargs = calls[0]
+    assert kwargs["model"] == "small-memory-model"
+    assert kwargs["response_format"] == {"type": "json_object"}
+    assert payload["active_profiles"][0]["profile_key"] == "visual_style"
+    assert [message["content"] for message in payload["recent_user_messages"]] == [
+        "上一版把角色移动调快一点。",
+        "跳跃要更轻快，但不要明显跳得更高。",
+    ]
+    assert all(set(message) == {"content", "version", "created_at"} for message in payload["recent_user_messages"])
+    assert "assistant" not in json.dumps(payload, ensure_ascii=False).lower()
+    assert db.query(MemoryProfile).filter(MemoryProfile.profile_key == "jump_feel").count() == 1
+    assert db.query(MemoryEntityLink).filter(MemoryEntityLink.memory_id == created[0].id).count() == 1
+    db.close()
+
+
+def test_entity_ranking_adds_third_rrf_signal(db_session_factory, monkeypatch):
+    from app.models import MemoryEntity, MemoryEntityLink, MemorySettings, User
+    from app.models.memory import MemoryCategory, MemoryScope
+    from app.services import memory_embeddings
+    from app.services.memory import create_memory, retrieve_memories
+
+    monkeypatch.setattr(memory_embeddings, "embedding_model", lambda: "test-embedding")
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
+    db = db_session_factory()
+    user = User(email="entity@test.com", password_hash="x", display_name="Entity", avatar_initial="E")
+    db.add(user)
+    db.flush()
+    db.add(MemorySettings(user_id=user.id))
+    item = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.USER,
+        scope_id=None,
+        category=MemoryCategory.MECHANICS,
+        raw_text="保留通过门户瞬移的核心机制",
+    )
+    entity = MemoryEntity(
+        user_id=user.id,
+        entity_type="mechanic",
+        canonical_name="跃迁门",
+        normalized_name="跃迁门",
+        embedding=[1.0, 0.0],
+        embedding_model="test-embedding",
+    )
+    db.add(entity)
+    db.flush()
+    db.add(MemoryEntityLink(entity_id=entity.id, memory_id=item.id, confidence=1.0, source="claim"))
+    db.commit()
+
+    results = retrieve_memories(db, user_id=user.id, query="跃迁门", limit=1)
+
+    assert results[0]["id"] == item.id
+    assert results[0]["retrieval"]["entity_rank"] == 1
+    assert results[0]["retrieval"]["strategy"] == "rrf_hybrid_entity"
+    db.close()

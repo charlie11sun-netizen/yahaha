@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.common import PkMixin, TimestampMixin, now_utc
@@ -147,3 +147,35 @@ class MemoryProfileVersion(PkMixin, TimestampMixin, Base):
         ForeignKey("memory_items.id", ondelete="SET NULL"), nullable=True, index=True
     )
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class MemoryEntity(PkMixin, TimestampMixin, Base):
+    __tablename__ = "memory_entities"
+    __table_args__ = (
+        UniqueConstraint("user_id", "entity_type", "normalized_name", name="uq_memory_entity_identity"),
+    )
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    entity_type: Mapped[str] = mapped_column(String(40), index=True)
+    canonical_name: Mapped[str] = mapped_column(String(240))
+    normalized_name: Mapped[str] = mapped_column(String(240), index=True)
+    embedding: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
+    embedding_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    embedding_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class MemoryEntityLink(PkMixin, TimestampMixin, Base):
+    __tablename__ = "memory_entity_links"
+    __table_args__ = (
+        UniqueConstraint("entity_id", "memory_id", name="uq_memory_entity_link"),
+    )
+
+    entity_id: Mapped[str] = mapped_column(
+        ForeignKey("memory_entities.id", ondelete="CASCADE"), index=True
+    )
+    memory_id: Mapped[str] = mapped_column(
+        ForeignKey("memory_items.id", ondelete="CASCADE"), index=True
+    )
+    confidence: Mapped[float] = mapped_column(Numeric(4, 3), default=1.0)
+    source: Mapped[str] = mapped_column(String(40), default="claim")

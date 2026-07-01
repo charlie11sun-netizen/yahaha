@@ -10,6 +10,7 @@ from app.schemas import (
     MemoryUpdateIn,
 )
 from app.services import memory as memory_service
+from app.services import memory_entities as entity_service
 from app.services import memory_profiles as profile_service
 
 router = APIRouter(prefix="/memory", tags=["memory"])
@@ -78,7 +79,11 @@ def create_memory(body: MemoryCreateIn, user=Depends(get_current_user), db: Sess
         importance=body.importance,
         pinned=body.pinned,
     )
-    profile_service.reconcile_memory_item(db, item)
+    claims = profile_service.extract_profile_claims(item)
+    profile_service.reconcile_memory_items(db, [item], claims_by_memory_id={item.id: claims})
+    entity_service.upsert_claim_entities(
+        db, user_id=user.id, items=[item], claims_by_memory_id={item.id: claims}
+    )
     db.commit()
     db.refresh(item)
     return memory_service.memory_out(item)
@@ -149,9 +154,14 @@ def update_memory(
         profile_service.retire_profiles_for_memory(
             db, item.id, reason="Source memory was edited or changed status by the user."
         )
+        entity_service.delete_links_for_memory(db, item.id)
     memory_service.update_memory(item, **patch)
     if profile_fields_changed and item.status == "active":
-        profile_service.reconcile_memory_item(db, item)
+        claims = profile_service.extract_profile_claims(item)
+        profile_service.reconcile_memory_items(db, [item], claims_by_memory_id={item.id: claims})
+        entity_service.upsert_claim_entities(
+            db, user_id=user.id, items=[item], claims_by_memory_id={item.id: claims}
+        )
     db.commit()
     db.refresh(item)
     return memory_service.memory_out(item)
@@ -163,6 +173,7 @@ def delete_memory(memory_id: str, user=Depends(get_current_user), db: Session = 
     if not item:
         raise HTTPException(status_code=404, detail="Memory not found")
     profile_service.retire_profiles_for_memory(db, item.id, reason="Source memory was deleted by the user.")
+    entity_service.delete_links_for_memory(db, item.id)
     memory_service.soft_delete_memory(item)
     db.commit()
     return {"ok": True}

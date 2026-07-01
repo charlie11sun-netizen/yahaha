@@ -13,8 +13,8 @@ from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import MemoryItem, MemoryProfile, MemoryProfileVersion, MemorySettings, User
-from app.models.common import now_utc
+from app.models import GenerationTask, MemoryItem, MemoryProfile, MemoryProfileVersion, MemorySettings, User
+from app.models.common import TaskStatus, now_utc
 from app.models.memory import (
     MemoryCategory,
     MemoryExplicitness,
@@ -331,41 +331,154 @@ def _parse_json_object(raw: str) -> dict:
         return {}
 
 
-def _llm_claims(
-    item: MemoryItem,
+def _active_profiles_for_extraction(
+    db: Session,
     *,
+    user_id: str,
     game_id: str | None,
     task_id: str | None,
 ) -> list[dict]:
-    if item.source_type == MemorySource.MANUAL:
+    settings_row = db.get(MemorySettings, user_id)
+    clauses = []
+    if task_id:
+        clauses.append(and_(MemoryProfile.scope_type == MemoryScope.TASK, MemoryProfile.scope_id == task_id))
+    if game_id:
+        clauses.append(and_(MemoryProfile.scope_type == MemoryScope.GAME, MemoryProfile.scope_id == game_id))
+    if not settings_row or settings_row.allow_cross_game_memory:
+        clauses.append(MemoryProfile.scope_type == MemoryScope.USER)
+    if not clauses:
+        clauses.append(MemoryProfile.scope_type == MemoryScope.USER)
+    profiles = (
+        db.query(MemoryProfile)
+        .filter(
+            MemoryProfile.user_id == user_id,
+            MemoryProfile.status == MemoryProfileStatus.ACTIVE,
+            or_(*clauses),
+        )
+        .order_by(MemoryProfile.updated_at.desc())
+        .limit(50)
+        .all()
+    )
+    scope_order = {MemoryScope.TASK: 0, MemoryScope.GAME: 1, MemoryScope.USER: 2}
+    profiles.sort(
+        key=lambda profile: (
+            scope_order.get(profile.scope_type, 9),
+            -_float(profile.confidence),
+            -(_float(profile.utility_score) if profile.utility_score is not None else 0.5),
+            -int(profile.support_count or 1),
+        )
+    )
+    profiles = profiles[:PROFILE_CONTEXT_LIMIT]
+    return [
+        {
+            "id": profile.id,
+            "scope_type": profile.scope_type,
+            "scope_id": profile.scope_id,
+            "profile_key": profile.profile_key,
+            "category": profile.category,
+            "value_text": profile.value_text,
+            "summary_text": profile.summary_text,
+            "support_count": int(profile.support_count or 1),
+        }
+        for profile in profiles
+    ]
+
+
+def _recent_game_user_messages(
+    db: Session,
+    *,
+    user_id: str,
+    game_id: str | None,
+    current_task_id: str | None,
+    limit: int = 10,
+) -> list[dict]:
+    if not game_id:
         return []
-    if not (settings.USE_REAL_MODEL and settings.OPENAI_API_KEY.strip()):
-        return []
+    tasks = (
+        db.query(GenerationTask)
+        .filter(
+            GenerationTask.user_id == user_id,
+            or_(GenerationTask.base_game_id == game_id, GenerationTask.result_game_id == game_id),
+            or_(GenerationTask.status == TaskStatus.SUCCEEDED, GenerationTask.id == current_task_id),
+        )
+        .order_by(GenerationTask.created_at.desc())
+        .limit(max(1, min(limit, 10)))
+        .all()
+    )
+    messages = []
+    for task in reversed(tasks):
+        content = task.feedback_text if task.task_kind == "revision" else task.idea
+        content = _clean(content, 4000)
+        if not content:
+            continue
+        messages.append(
+            {
+                "content": content,
+                "version": task.base_version or ("v1" if task.task_kind == "generation" else None),
+                "created_at": task.created_at.isoformat() if task.created_at else None,
+            }
+        )
+    return messages
+
+
+def _llm_claims_batch(
+    items: list[MemoryItem],
+    *,
+    active_profiles: list[dict],
+    recent_user_messages: list[dict],
+    game_id: str | None,
+    task_id: str | None,
+) -> dict[str, list[dict]] | None:
+    eligible = [item for item in items if item.source_type != MemorySource.MANUAL]
+    if not eligible:
+        return {}
+    model = settings.MEMORY_EXTRACTION_MODEL.strip()
+    api_key = settings.OPENAI_API_KEY.strip()
+    if not api_key or api_key == "sk-your-key-here" or not model:
+        return None
 
     from app.agents import llm
     from app.services.memory import _category_for
 
     system = (
-        "Extract durable game-generation memory claims. Return strict JSON only. "
-        "Each claim must be grounded in an exact evidence_span copied from the source text. "
-        "Do not invent preferences. Ambiguous suggestions should keep explicitness='inferred'."
+        "You are a memory extractor for a game-generation agent. Return one strict JSON object. "
+        "Use active_profiles and recent_user_messages only to resolve context, duplicates, and conflicts. "
+        "Every claim must come from current_evidence and cite an exact evidence_span copied from that "
+        "evidence's raw_text. System and assistant messages are intentionally absent. Do not invent user "
+        "preferences. Return all claims in one response; no follow-up or tool calls. Use decision=skip or "
+        "evidence_only when no durable profile should be created. Scope is advisory and will be revalidated."
     )
     user = json.dumps(
         {
-            "source_text": item.raw_text,
-            "source_type": item.source_type,
+            "active_profiles": active_profiles,
+            "recent_user_messages": recent_user_messages,
+            "current_evidence": [
+                {
+                    "source_memory_id": item.id,
+                    "raw_text": item.raw_text,
+                    "source_type": item.source_type,
+                    "source_version": item.source_version,
+                    "created_at": item.created_at.isoformat() if item.created_at else None,
+                }
+                for item in eligible
+            ],
             "available_categories": sorted(_VALID_CATEGORIES),
             "allowed_scope_types": [MemoryScope.USER, MemoryScope.GAME, MemoryScope.TASK],
+            "allowed_decisions": ["active", "candidate", "evidence_only", "skip"],
             "output_schema": {
                 "claims": [
                     {
-                        "profile_key": "stable attribute key such as visual_style or difficulty",
+                        "source_memory_id": "id from current_evidence",
+                        "decision": "active|candidate|evidence_only|skip",
+                        "profile_key": "stable attribute key",
                         "category": "style|mechanics|controls|difficulty|content|constraints|feedback",
                         "value_text": "canonical concise value",
                         "summary_text": "natural-language summary",
-                        "evidence_span": "exact substring from source_text",
+                        "evidence_span": "exact substring from the matching raw_text",
+                        "suggested_scope": "user|game|task",
                         "explicitness": "explicit|inferred",
                         "confidence": 0.0,
+                        "entities": [{"type": "control", "name": "jump"}],
                     }
                 ]
             },
@@ -373,14 +486,30 @@ def _llm_claims(
         ensure_ascii=False,
     )
     try:
-        raw, _ = llm.chat(system, user, temperature=0, max_tokens=700)
+        raw, _ = llm.chat(
+            system,
+            user,
+            temperature=0,
+            model=model,
+            timeout=settings.MEMORY_EXTRACTION_TIMEOUT,
+            response_format={"type": "json_object"},
+        )
     except Exception:
-        return []
+        return None
 
     payload = _parse_json_object(raw)
-    output: list[dict] = []
+    if not isinstance(payload.get("claims"), list):
+        return None
+    by_id = {item.id: item for item in eligible}
+    output: dict[str, list[dict]] = {item.id: [] for item in eligible}
     for row in payload.get("claims") or []:
         if not isinstance(row, dict):
+            continue
+        item = by_id.get(_clean(row.get("source_memory_id"), 36))
+        decision = _clean(row.get("decision"), 30)
+        if not item or decision not in {"active", "candidate", "evidence_only", "skip"}:
+            continue
+        if decision in {"evidence_only", "skip"}:
             continue
         evidence = _clean(row.get("evidence_span"), 500)
         if not evidence or evidence not in item.raw_text:
@@ -404,22 +533,28 @@ def _llm_claims(
         llm_explicitness = _clean(row.get("explicitness"), 20)
         explicitness = (
             MemoryExplicitness.INFERRED
-            if rule_explicitness == MemoryExplicitness.INFERRED or llm_explicitness == MemoryExplicitness.INFERRED
+            if decision == "candidate"
+            or rule_explicitness == MemoryExplicitness.INFERRED
+            or llm_explicitness == MemoryExplicitness.INFERRED
             else rule_explicitness
         )
-        output.append({
-            "scope_type": scope_type,
-            "scope_id": scope_id,
-            "profile_key": profile_key,
-            "category": category,
-            "value_text": _clean(row.get("value_text"), 500) or _value_for(profile_key, evidence),
-            "summary_text": _clean(row.get("summary_text"), 1000) or evidence,
-            "evidence_span": evidence,
-            "confidence": confidence,
-            "scope_confidence": scope_confidence,
-            "explicitness": explicitness,
-            "scope_explicitness": scope_explicitness,
-        })
+        output[item.id].append(
+            {
+                "decision": decision,
+                "scope_type": scope_type,
+                "scope_id": scope_id,
+                "profile_key": profile_key,
+                "category": category,
+                "value_text": _clean(row.get("value_text"), 500) or _value_for(profile_key, evidence),
+                "summary_text": _clean(row.get("summary_text"), 1000) or evidence,
+                "evidence_span": evidence,
+                "confidence": confidence,
+                "scope_confidence": scope_confidence,
+                "explicitness": explicitness,
+                "scope_explicitness": scope_explicitness,
+                "entities": row.get("entities") if isinstance(row.get("entities"), list) else [],
+            }
+        )
     return output
 
 
@@ -429,11 +564,42 @@ def extract_profile_claims(
     game_id: str | None = None,
     task_id: str | None = None,
 ) -> list[dict]:
-    # LLM extraction is advisory and fail-open. Deterministic extraction remains
-    # the fallback and source/scope checks still decide whether a claim can apply.
-    return _llm_claims(item, game_id=game_id, task_id=task_id) or _deterministic_claims(
-        item, game_id=game_id, task_id=task_id
+    return _deterministic_claims(item, game_id=game_id, task_id=task_id)
+
+
+def extract_profile_claims_batch(
+    db: Session,
+    items: list[MemoryItem],
+    *,
+    game_id: str | None,
+    task_id: str | None,
+) -> dict[str, list[dict]]:
+    if not items:
+        return {}
+    user_id = items[0].user_id
+    active_profiles = _active_profiles_for_extraction(
+        db, user_id=user_id, game_id=game_id, task_id=task_id
     )
+    recent_messages = _recent_game_user_messages(
+        db,
+        user_id=user_id,
+        game_id=game_id,
+        current_task_id=task_id,
+        limit=10,
+    )
+    extracted = _llm_claims_batch(
+        items,
+        active_profiles=active_profiles,
+        recent_user_messages=recent_messages,
+        game_id=game_id,
+        task_id=task_id,
+    )
+    if extracted is not None:
+        return extracted
+    return {
+        item.id: _deterministic_claims(item, game_id=game_id, task_id=task_id)
+        for item in items
+    }
 
 
 def _same_value(left: str, right: str) -> bool:
@@ -671,19 +837,13 @@ def expire_stale_candidates(db: Session, user_id: str | None = None) -> int:
     return len(expired)
 
 
-def reconcile_memory_item(
+def _reconcile_claims_for_item(
     db: Session,
     item: MemoryItem,
-    *,
-    game_id: str | None = None,
-    task_id: str | None = None,
+    claims: list[dict],
 ) -> list[MemoryProfile]:
-    # PostgreSQL row lock serializes profile updates for one user so two
-    # concurrent generation tasks cannot both create an active value.
-    db.query(User.id).filter(User.id == item.user_id).with_for_update().one()
-    expire_stale_candidates(db, item.user_id)
     results: list[MemoryProfile] = []
-    for claim in extract_profile_claims(item, game_id=game_id, task_id=task_id):
+    for claim in claims:
         existing = _active_conflict(db, item.user_id, claim)
         if existing and _same_value(existing.value_text, claim["value_text"]):
             _reinforce_profile(
@@ -772,6 +932,48 @@ def reconcile_memory_item(
             _retire_source_if_unused(db, existing, item)
         results.append(profile)
     return results
+
+
+def reconcile_memory_items(
+    db: Session,
+    items: list[MemoryItem],
+    *,
+    claims_by_memory_id: dict[str, list[dict]] | None = None,
+    game_id: str | None = None,
+    task_id: str | None = None,
+) -> list[MemoryProfile]:
+    if not items:
+        return []
+    user_id = items[0].user_id
+    if any(item.user_id != user_id for item in items):
+        raise ValueError("A memory reconciliation batch must belong to one user")
+    # One row lock serializes the whole batch so concurrent tasks cannot create
+    # multiple active values for the same user/scope/profile_key.
+    db.query(User.id).filter(User.id == user_id).with_for_update().one()
+    expire_stale_candidates(db, user_id)
+    claims_by_memory_id = claims_by_memory_id or {
+        item.id: extract_profile_claims(item, game_id=game_id, task_id=task_id)
+        for item in items
+    }
+    results: list[MemoryProfile] = []
+    for item in items:
+        results.extend(_reconcile_claims_for_item(db, item, claims_by_memory_id.get(item.id, [])))
+    return results
+
+
+def reconcile_memory_item(
+    db: Session,
+    item: MemoryItem,
+    *,
+    game_id: str | None = None,
+    task_id: str | None = None,
+) -> list[MemoryProfile]:
+    return reconcile_memory_items(
+        db,
+        [item],
+        game_id=game_id,
+        task_id=task_id,
+    )
 
 
 def backfill_missing_profiles(db: Session, user_id: str, *, limit: int = 200) -> int:
@@ -894,6 +1096,22 @@ def correct_profile(
         reason="User manually corrected the profile.",
     )
     _retire_memory_source_if_unused(db, old_source_id, source)
+    from app.services import memory_entities
+
+    memory_entities.upsert_claim_entities(
+        db,
+        user_id=profile.user_id,
+        items=[source],
+        claims_by_memory_id={
+            source.id: [
+                {
+                    "profile_key": profile.profile_key,
+                    "category": profile.category,
+                    "entities": [],
+                }
+            ]
+        },
+    )
     return profile
 
 

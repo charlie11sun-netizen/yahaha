@@ -10,6 +10,8 @@ from app.models.game import (
 from app.models.memory import (
     MemoryCategory,
     MemoryExplicitness,
+    MemoryEntity,
+    MemoryEntityLink,
     MemoryItem,
     MemoryProfile,
     MemoryProfileOperation,
@@ -45,6 +47,8 @@ __all__ = [
     "PlayEvent",
     "MemoryCategory",
     "MemoryExplicitness",
+    "MemoryEntity",
+    "MemoryEntityLink",
     "MemoryItem",
     "MemoryProfile",
     "MemoryProfileOperation",

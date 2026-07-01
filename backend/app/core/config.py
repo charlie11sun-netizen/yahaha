@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     MEMORY_EMBEDDING_API_KEY: str = ""
     MEMORY_EMBEDDING_BASE_URL: str = ""
     MEMORY_EMBEDDING_TIMEOUT: int = 15
+    MEMORY_EXTRACTION_MODEL: str = "gpt-4.1-mini"
+    MEMORY_EXTRACTION_TIMEOUT: int = 30
     MEMORY_RRF_K: int = 60
     MEMORY_SEMANTIC_MIN_SCORE: float = 0.20
     OPENAI_TIMEOUT: int = 600  # 写整个 game.js 耗时长，给足超时
