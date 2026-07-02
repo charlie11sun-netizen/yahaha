@@ -1,6 +1,7 @@
 """Fail-open embedding adapter used by memory hybrid retrieval."""
 
 import logging
+import math
 import time
 
 from openai import OpenAI
@@ -14,6 +15,16 @@ _FAILURE_BACKOFF_SECONDS = 60
 
 def embedding_model() -> str:
     return settings.MEMORY_EMBEDDING_MODEL.strip()
+
+
+def cosine_similarity(left: list[float], right: list[float]) -> float | None:
+    if not left or not right or len(left) != len(right):
+        return None
+    left_norm = math.sqrt(sum(value * value for value in left))
+    right_norm = math.sqrt(sum(value * value for value in right))
+    if not left_norm or not right_norm:
+        return None
+    return sum(a * b for a, b in zip(left, right)) / (left_norm * right_norm)
 
 
 def embed_texts(texts: list[str]) -> list[list[float]] | None:

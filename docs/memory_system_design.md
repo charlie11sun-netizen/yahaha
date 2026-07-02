@@ -425,26 +425,31 @@ RRF 只负责从 `memory_items` 中找到相关证据，不能决定哪条记忆
 | “这次 / 本次 / 临时 / 先试试” | task | 不提升到游戏或用户 |
 | Preview 修改且没有全局措辞 | game | 当前游戏默认范围 |
 | “这个游戏 / 本项目 / 这一关” | game | 明确游戏范围 |
-| “以后 / 默认 / 所有游戏 / 我通常” | user | 只有这些明确措辞才允许全局提升 |
+| “以后 / 默认 / 所有游戏 / 我通常” | user | 只有这些明确措辞才允许**立即**全局生效 |
 | 用户在 Studio 手动创建 | 用户选择的范围 | `explicitness=manual`，最高范围可信度 |
 | 初始 idea | game | 只描述当前项目，不推断长期偏好 |
 
 一段输入可以拆出多个不同范围的 claim，例如“以后默认写实，但这个项目保留像素风”同时生成一个 user Profile 和一个 game Profile。
+
+**跨游戏偏好升级通道（影子 candidate）**：没有任何明确范围措辞、且属于可泛化类别（style / difficulty / controls）、命中偏好措辞（“我喜欢 / 我讨厌”等）或被 LLM 建议为 `suggested_scope=user` 的 game 级 claim，会在照常生成 game Profile 之外，**额外写入一条同 key 同 value 的 user 级 candidate**（`explicitness=inferred`，不进入 Prompt）。该 candidate 只有在**至少 2 个不同游戏**中出现一致证据后才自动晋升为 active——即“全局偏好靠跨游戏广度晋升，而不是靠同一游戏内的重复次数”。措辞中明确限定了 game/task 范围的 claim 不产生影子 candidate。
 
 ### 12.4 提取与准确性判断
 
 自动提取采用“LLM 建议、程序裁决”，而不是让 LLM 直接修改 Profile：
 
 1. 规则层先保留用户原文并识别明确的范围词、否定词和边界。
-2. 启用真实模型时，LLM 输出 claim、attribute、value、category、suggested_scope、evidence_span；模型不可用时使用确定性规则兜底。
-3. 程序要求 `evidence_span` 必须是 `raw_text` 的原文子串，并重新验证 scope，禁止 LLM 将 game/task 信息擅自提升为 user。
+2. 启用真实模型时，LLM 输出 claim、attribute、value、category、suggested_scope、evidence_span；模型不可用时使用确定性规则兜底。提取上下文（`known_profiles`）同时包含 active 和 candidate Profile，并要求模型对同一属性**逐字复用已有 `profile_key`**，避免换一种说法就产生无法聚合的新 key。
+3. 程序要求 `evidence_span` 必须是 `raw_text` 的原文子串，并重新验证 scope。原文中的明确范围措辞永远优先；`suggested_scope=user` 不会直接生效，只会走上述影子 candidate 通道等待跨游戏证据。
 4. 只有状态机可以执行 active、candidate、supersede、expire；LLM 没有数据库状态转换权限。
+
+确定性兜底路径中，词表未命中的 claim 不再直接落到哈希 key：先用向量在该用户已有 Profile（含 candidate）中做**最近邻 key 认领**（相似度 ≥ 0.82 视为同一属性；≥ 0.90 且否定词极性一致时进一步复用其 value，走 reinforce），向量服务不可用时才回退哈希 key，行为与旧版一致。
 
 `confidence` 由可审计证据计算：
 
 - 手动编辑高于自动提取；明确陈述高于试探性问题。
 - `evidence_span` 必须来自原文，摘要不得发明数值或实现细节。
 - “可能、试试、能不能”等弱表达降低置信度。
+- LLM 自评置信度做**非对称钳制**：允许自由下调（低置信 claim 自动进入 candidate 轨道，下限 0.30），上调最多比规则基线高 0.04——防止模型虚高置信度直接生成 active Profile，同时保留“模型说不确定”的能力。
 - 重复一致证据执行 `reinforce`，增加 `support_count`、版本和最近支持时间。
 - 相似但不是同一条原始证据的支持才计入自动晋升，避免重试任务刷高置信度。
 - 后续任务的构建与玩法结果更新 `utility_score`，但不能单独把错误事实变成正确事实。
@@ -460,13 +465,18 @@ RRF 只负责从 `memory_items` 中找到相关证据，不能决定哪条记忆
    ├─ 值不同 + 内容/范围均明确 ─────────→ 新 active，旧 superseded
    └─ 值不同 + 存在歧义 ───────────────→ candidate，旧 active 继续生效
 
-candidate
+candidate（game/task 级）
    ├─ 独立支持次数达到阈值且置信度合格 ─→ 自动 active；冲突旧值 superseded
    ├─ 获得明确新陈述 ───────────────────→ 立即 active
    └─ 到期仍不足 ───────────────────────→ deleted/expired
+
+candidate（user 级，含影子 candidate）
+   ├─ 一致证据来自 ≥2 个不同游戏且置信度合格 ─→ 自动 active；冲突旧值 superseded
+   ├─ 获得明确全局陈述 ─────────────────────→ 立即 active
+   └─ 到期仍不足 ───────────────────────────→ deleted/expired
 ```
 
-默认策略参考 RecMem 的 recurrence-based consolidation [1]，但针对用户明确反馈降低等待成本：明确陈述立即生效；只有推断性记忆要求至少 3 条独立支持证据。candidate 默认观察 90 天，不出现在生成 Prompt，也不要求用户处理。这里借鉴的是“重复出现后再固化”的原则；3 条证据、90 天观察期以及明确反馈立即生效均为本项目的工程设计，并非 RecMem 的原始实现。
+默认策略参考 RecMem 的 recurrence-based consolidation [1]，但针对用户明确反馈降低等待成本：明确陈述立即生效；game/task 级推断性记忆要求至少 3 条独立支持证据；user 级推断性记忆改用**跨游戏广度**作为晋升条件（同一偏好至少出现在 2 个不同游戏），同一游戏内的重复不计入，避免一句话连说三遍就被固化成全局偏好。candidate 默认观察 90 天，不出现在生成 Prompt，也不要求用户处理。这里借鉴的是“重复出现后再固化”的原则；证据阈值、90 天观察期以及明确反馈立即生效均为本项目的工程设计，并非 RecMem 的原始实现。
 
 取代操作必须在同一事务中：
 

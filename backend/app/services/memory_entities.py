@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import re
 from collections import defaultdict
 
@@ -35,16 +34,6 @@ def _clean(value, limit: int = 240) -> str:
 
 def normalize_entity_name(value: str) -> str:
     return _NORMALIZE_RE.sub("", _clean(value).lower())
-
-
-def _cosine(left: list[float], right: list[float]) -> float | None:
-    if not left or not right or len(left) != len(right):
-        return None
-    left_norm = math.sqrt(sum(value * value for value in left))
-    right_norm = math.sqrt(sum(value * value for value in right))
-    if not left_norm or not right_norm:
-        return None
-    return sum(a * b for a, b in zip(left, right)) / (left_norm * right_norm)
 
 
 def _claim_entities(claim: dict) -> list[dict]:
@@ -185,7 +174,7 @@ def rank_candidate_memories_by_entity(
         if entity.normalized_name and query_normalized:
             if entity.normalized_name in query_normalized or query_normalized in entity.normalized_name:
                 lexical = 1.0
-        semantic = _cosine(query_vector or [], entity.embedding or []) or 0.0
+        semantic = memory_embeddings.cosine_similarity(query_vector or [], entity.embedding or []) or 0.0
         score = max(lexical, semantic)
         if score > scores.get(memory_id, 0.0):
             scores[memory_id] = score

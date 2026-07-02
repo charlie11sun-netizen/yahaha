@@ -79,7 +79,7 @@ def create_memory(body: MemoryCreateIn, user=Depends(get_current_user), db: Sess
         importance=body.importance,
         pinned=body.pinned,
     )
-    claims = profile_service.extract_profile_claims(item)
+    claims = profile_service.extract_profile_claims(db, item)
     profile_service.reconcile_memory_items(db, [item], claims_by_memory_id={item.id: claims})
     entity_service.upsert_claim_entities(
         db, user_id=user.id, items=[item], claims_by_memory_id={item.id: claims}
@@ -157,7 +157,7 @@ def update_memory(
         entity_service.delete_links_for_memory(db, item.id)
     memory_service.update_memory(item, **patch)
     if profile_fields_changed and item.status == "active":
-        claims = profile_service.extract_profile_claims(item)
+        claims = profile_service.extract_profile_claims(db, item)
         profile_service.reconcile_memory_items(db, [item], claims_by_memory_id={item.id: claims})
         entity_service.upsert_claim_entities(
             db, user_id=user.id, items=[item], claims_by_memory_id={item.id: claims}

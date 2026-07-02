@@ -63,8 +63,9 @@ GameWeave 已接入面向生成与修改流程的长期记忆系统：
 - **当前状态层**：`memory_profiles` 汇总当前生效偏好或约束，例如画风、难度、操作手感；只有 `active` Profile 会注入生成 Prompt。
 - **历史层**：`memory_profile_versions` 记录创建、强化、自动晋升、取代、修正、删除和效用反馈。
 - **检索策略**：生成前优先注入当前 game/task/user 的 active Profile，再用 BM25 + 向量混合检索和 RRF 从原始记忆中补充相关证据。
-- **自动更新**：成功 preview / revision 后写入新证据；启用真实模型时 LLM 只建议 claim，程序仍验证 `evidence_span`、作用范围和状态机。
-- **冲突处理**：明确新偏好可直接取代旧值；模糊反馈进入后台 `candidate`，不会进入 Prompt，也不显示 Accept/Reject；candidate 只有在重复独立证据支持后才自动晋升为 active。
+- **自动更新**：成功 preview / revision 后写入新证据；启用真实模型时 LLM 只建议 claim，程序仍验证 `evidence_span`、作用范围和状态机；LLM 可下调（不可虚高）置信度，拿不准的 claim 自动进入 candidate 轨道。
+- **偏好聚合**：换一种说法的同一偏好会归并到同一 `profile_key`——LLM 模式下提取上下文携带 active + candidate key 并要求逐字复用；规则模式下用向量最近邻认领已有 key，向量不可用才回退哈希。
+- **冲突处理**：明确新偏好可直接取代旧值；模糊反馈进入后台 `candidate`，不会进入 Prompt，也不显示 Accept/Reject；game 级 candidate 按重复独立证据晋升，user 级（跨游戏偏好）必须在 ≥2 个不同游戏中出现一致证据才晋升，同一游戏内重复不计。
 - **用户控制**：Studio Memory 页展示 active Profile 和原始记忆，用户可手动新增、删除原始记忆，或 Correct 当前 Profile。
 
 完整规则见 [记忆系统设计](docs/memory_system_design.md)。
@@ -100,7 +101,7 @@ GameWeave 已接入面向生成与修改流程的长期记忆系统：
 - **测试 / CI**：`backend/tests` pytest 套件（SQLite 内存库，覆盖 auth / games / tasks / uploads / 限流）+ GitHub Actions（`.github/workflows/ci.yml`：后端 pytest + 前端 tsc）。
 - **加固**：Redis IP 限流、安全响应头、上传大小/类型校验、播放计数防刷、`/health/ready` 就绪检查（DB/Redis/S3）。
 - **生成**：默认 `USE_REAL_MODEL=false` 走 mock 流水线（保留 5-Agent 步骤与日志，从模板产出真实可玩 bundle 并上传 OSS）；置 `true` 走 **LangGraph 真实链路**（planner→designer→coder→sandbox QA，QA 不过自动回 coder 重试），调用 GPT-5.5 生成全新游戏代码、校验后上传 OSS。两条路径共用同一套步骤/日志流式展示。
-- **记忆**：已实现原始证据、Profile 汇总、版本历史、混合检索和自动冲突处理；candidate 记忆后台积累并按重复证据自动晋升，不要求用户确认。
+- **记忆**：已实现原始证据、Profile 汇总、版本历史、混合检索和自动冲突处理；candidate 记忆后台积累并自动晋升（game 级按重复证据、user 级按跨游戏证据），不要求用户确认；自然表达的全局偏好通过「影子 candidate + 跨游戏晋升」通道自动形成，无需特定措辞。
 - **沙箱**：Sandbox QA 的 gVisor 执行在 MVP 为 mock（返回冒烟结果），接口边界已预留。
 - **前端样式**：已迁移到 **Tailwind v4 + shadcn/ui**（设计令牌按品牌调色，组件在 `frontend/components/ui`），核心页优先；早期从设计稿移植的 `pf-*` 内联/CSS 仍共存，逐页替换中。
 

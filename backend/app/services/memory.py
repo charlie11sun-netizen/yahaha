@@ -328,16 +328,6 @@ def _bm25_scores(query: str, documents: list[str], *, k1: float = 1.5, b: float 
     return result
 
 
-def _cosine_similarity(left: list[float], right: list[float]) -> float | None:
-    if not left or not right or len(left) != len(right):
-        return None
-    left_norm = math.sqrt(sum(value * value for value in left))
-    right_norm = math.sqrt(sum(value * value for value in right))
-    if not left_norm or not right_norm:
-        return None
-    return sum(a * b for a, b in zip(left, right)) / (left_norm * right_norm)
-
-
 def _rrf_scores(rankings: list[tuple[str, list[str], float]], *, k: int) -> tuple[dict[str, float], dict[str, dict[str, int]]]:
     """Fuse independent rankings by rank, not by incomparable raw scores."""
     scores: dict[str, float] = {}
@@ -412,7 +402,7 @@ def retrieve_memories(
     semantic_scores: dict[str, float] = {}
     if query_vector:
         for item in candidates:
-            similarity = _cosine_similarity(query_vector, item.embedding or [])
+            similarity = memory_embeddings.cosine_similarity(query_vector, item.embedding or [])
             if similarity is not None and similarity >= app_settings.MEMORY_SEMANTIC_MIN_SCORE:
                 semantic_scores[item.id] = similarity
     semantic_ranking = sorted(

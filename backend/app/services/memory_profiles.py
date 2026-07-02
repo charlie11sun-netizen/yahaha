@@ -24,6 +24,7 @@ from app.models.memory import (
     MemorySource,
     MemoryStatus,
 )
+from app.services import memory_embeddings
 
 PROFILE_CONTEXT_CHARS = 1400
 PROFILE_CONTEXT_LIMIT = 8
@@ -31,6 +32,12 @@ CANDIDATE_SUPPORT_THRESHOLD = 3
 CANDIDATE_CONFIDENCE_THRESHOLD = 0.78
 CANDIDATE_TTL_DAYS = 90
 UTILITY_ALPHA = 0.20
+# Same topic -> reuse the peer's profile_key; nearly identical claim -> also reuse its value.
+PROFILE_KEY_SIMILARITY_THRESHOLD = 0.82
+PROFILE_VALUE_SIMILARITY_THRESHOLD = 0.90
+KEY_ADOPTION_PEER_LIMIT = 200
+# A user-scope candidate only activates once the same preference appeared in this many games.
+USER_PROMOTION_DISTINCT_GAMES = 2
 
 _GLOBAL_SCOPE_RE = re.compile(
     r"以后|今后|默认|所有游戏|每个游戏|我通常|我一直|always|by default|all games|in every game",
@@ -54,6 +61,19 @@ _NEGATED_VALUE_RE = re.compile(
     r"(?:不要|不再|别用|别|取消|避免|not|no longer|without|stop using)\s*$",
     re.IGNORECASE,
 )
+_TASTE_RE = re.compile(
+    r"我(不太?|很|超|特别)?(喜欢|讨厌|偏好|偏爱)|我一向|我向来|我总是|我从来不"
+    r"|I (really )?(don't |do not |)(like|love|prefer|hate|enjoy)|I always|I never",
+    re.IGNORECASE,
+)
+_HASH_KEY_RE = re.compile(r"^[a-z]+:[0-9a-f]{16}$")
+_NEGATION_TOKEN_RE = re.compile(r"不|别|没|勿|avoid|not|never|without|stop", re.IGNORECASE)
+
+_GENERALIZABLE_CATEGORIES = {
+    MemoryCategory.STYLE,
+    MemoryCategory.DIFFICULTY,
+    MemoryCategory.CONTROLS,
+}
 
 _VALID_CATEGORIES = {
     MemoryCategory.STYLE,
@@ -255,6 +275,67 @@ def _value_for(attribute: str, claim: str) -> str:
     return _normalized(claim)[:500] or claim[:500]
 
 
+def _is_hash_key(profile_key: str) -> bool:
+    return bool(_HASH_KEY_RE.match(profile_key or ""))
+
+
+def _negation_parity(text: str) -> bool:
+    return bool(_NEGATION_TOKEN_RE.search(text or ""))
+
+
+def _adopt_similar_key(
+    db: Session,
+    *,
+    user_id: str,
+    claim_text: str,
+) -> tuple[str | None, str | None, list[float] | None]:
+    """Match an out-of-vocabulary claim to an existing profile by embedding.
+
+    Returns (profile_key, value_text, claim_vector). Key adoption means "same
+    topic"; the value is only adopted when the claim is nearly identical and
+    has the same negation parity, so opposite preferences stay in the
+    conflict path instead of silently reinforcing each other.
+    """
+    peers = (
+        db.query(MemoryProfile)
+        .filter(
+            MemoryProfile.user_id == user_id,
+            MemoryProfile.status.in_([MemoryProfileStatus.ACTIVE, MemoryProfileStatus.CANDIDATE]),
+        )
+        .order_by(MemoryProfile.updated_at.desc())
+        .limit(KEY_ADOPTION_PEER_LIMIT)
+        .all()
+    )
+    if not peers:
+        return None, None, None
+    vectors = memory_embeddings.embed_texts([_clean(claim_text, 500)])
+    if not vectors:
+        return None, None, None
+    claim_vector = vectors[0]
+    model = memory_embeddings.embedding_model()
+    stale = [peer for peer in peers if not peer.embedding or peer.embedding_model != model]
+    if stale:
+        refreshed = memory_embeddings.embed_texts([_clean(peer.summary_text, 500) for peer in stale])
+        if refreshed and len(refreshed) == len(stale):
+            now = now_utc()
+            for peer, vector in zip(stale, refreshed):
+                peer.embedding = vector
+                peer.embedding_model = model
+                peer.embedding_updated_at = now
+    best_peer, best_score = None, 0.0
+    for peer in peers:
+        score = memory_embeddings.cosine_similarity(claim_vector, peer.embedding or [])
+        if score is not None and score > best_score:
+            best_peer, best_score = peer, score
+    if not best_peer or best_score < PROFILE_KEY_SIMILARITY_THRESHOLD:
+        return None, None, claim_vector
+    same_value = (
+        best_score >= PROFILE_VALUE_SIMILARITY_THRESHOLD
+        and _negation_parity(claim_text) == _negation_parity(best_peer.summary_text)
+    )
+    return best_peer.profile_key, best_peer.value_text if same_value else None, claim_vector
+
+
 def _scope_for(
     claim: str,
     item: MemoryItem,
@@ -287,6 +368,7 @@ def _base_confidence(item: MemoryItem, evidence: str) -> tuple[float, str]:
 
 
 def _deterministic_claims(
+    db: Session,
     item: MemoryItem,
     *,
     game_id: str | None,
@@ -303,6 +385,15 @@ def _deterministic_claims(
             continue
         fallback_category = item.category or _category_for(evidence)
         attribute = _attribute_for(evidence, fallback_category)
+        value_text = None
+        claim_vector = None
+        if _is_hash_key(attribute):
+            adopted_key, adopted_value, claim_vector = _adopt_similar_key(
+                db, user_id=item.user_id, claim_text=evidence
+            )
+            if adopted_key:
+                attribute = adopted_key
+                value_text = adopted_value
         category = _category_for_attribute(attribute, fallback_category)
         confidence, explicitness = _base_confidence(item, evidence)
         claims.append({
@@ -310,15 +401,52 @@ def _deterministic_claims(
             "scope_id": scope_id,
             "profile_key": attribute,
             "category": category,
-            "value_text": _value_for(attribute, evidence),
+            "value_text": value_text or _value_for(attribute, evidence),
             "summary_text": evidence,
             "evidence_span": evidence,
             "confidence": confidence,
             "scope_confidence": scope_confidence,
             "explicitness": explicitness,
             "scope_explicitness": scope_explicitness,
+            "embedding": claim_vector,
         })
-    return claims
+    return _with_user_shadow_claims(claims, item)
+
+
+def _with_user_shadow_claims(claims: list[dict], item: MemoryItem) -> list[dict]:
+    """Add background user-scope candidates for generalizable game-scope claims.
+
+    The shadow claim is always non-decisive (inferred), so it enters the
+    candidate track and only activates once _promote_candidate_if_ready sees
+    the same preference in multiple distinct games. Claims whose wording
+    explicitly pins a scope ("这个游戏", "只改这次", ...) are respected as-is.
+    """
+    if item.source_type == MemorySource.MANUAL:
+        return claims
+    augmented = list(claims)
+    for claim in claims:
+        suggested_user = bool(claim.pop("suggested_user_scope", False))
+        if claim["scope_type"] != MemoryScope.GAME:
+            continue
+        evidence = claim["evidence_span"]
+        if _GAME_SCOPE_RE.search(evidence) or _TASK_SCOPE_RE.search(evidence):
+            continue
+        generalizable = (
+            claim["category"] in _GENERALIZABLE_CATEGORIES
+            or suggested_user
+            or bool(_TASTE_RE.search(evidence))
+        )
+        if not generalizable:
+            continue
+        augmented.append({
+            **claim,
+            "scope_type": MemoryScope.USER,
+            "scope_id": None,
+            "scope_confidence": 0.90 if suggested_user else 0.82,
+            "explicitness": MemoryExplicitness.INFERRED,
+            "scope_explicitness": MemoryExplicitness.INFERRED,
+        })
+    return augmented
 
 
 def _parse_json_object(raw: str) -> dict:
@@ -331,13 +459,19 @@ def _parse_json_object(raw: str) -> dict:
         return {}
 
 
-def _active_profiles_for_extraction(
+def _profiles_for_extraction_context(
     db: Session,
     *,
     user_id: str,
     game_id: str | None,
     task_id: str | None,
 ) -> list[dict]:
+    """Active and candidate profiles the extractor should reuse keys from.
+
+    Candidates are included so a rephrased preference reinforces the pending
+    candidate instead of spawning a parallel key that can never accumulate
+    support.
+    """
     settings_row = db.get(MemorySettings, user_id)
     clauses = []
     if task_id:
@@ -352,11 +486,11 @@ def _active_profiles_for_extraction(
         db.query(MemoryProfile)
         .filter(
             MemoryProfile.user_id == user_id,
-            MemoryProfile.status == MemoryProfileStatus.ACTIVE,
+            MemoryProfile.status.in_([MemoryProfileStatus.ACTIVE, MemoryProfileStatus.CANDIDATE]),
             or_(*clauses),
         )
         .order_by(MemoryProfile.updated_at.desc())
-        .limit(50)
+        .limit(80)
         .all()
     )
     scope_order = {MemoryScope.TASK: 0, MemoryScope.GAME: 1, MemoryScope.USER: 2}
@@ -368,7 +502,9 @@ def _active_profiles_for_extraction(
             -int(profile.support_count or 1),
         )
     )
-    profiles = profiles[:PROFILE_CONTEXT_LIMIT]
+    active = [profile for profile in profiles if profile.status == MemoryProfileStatus.ACTIVE]
+    candidates = [profile for profile in profiles if profile.status == MemoryProfileStatus.CANDIDATE]
+    profiles = active[:PROFILE_CONTEXT_LIMIT] + candidates[:PROFILE_CONTEXT_LIMIT]
     return [
         {
             "id": profile.id,
@@ -378,6 +514,7 @@ def _active_profiles_for_extraction(
             "category": profile.category,
             "value_text": profile.value_text,
             "summary_text": profile.summary_text,
+            "status": profile.status,
             "support_count": int(profile.support_count or 1),
         }
         for profile in profiles
@@ -424,7 +561,7 @@ def _recent_game_user_messages(
 def _llm_claims_batch(
     items: list[MemoryItem],
     *,
-    active_profiles: list[dict],
+    known_profiles: list[dict],
     recent_user_messages: list[dict],
     game_id: str | None,
     task_id: str | None,
@@ -442,15 +579,21 @@ def _llm_claims_batch(
 
     system = (
         "You are a memory extractor for a game-generation agent. Return one strict JSON object. "
-        "Use active_profiles and recent_user_messages only to resolve context, duplicates, and conflicts. "
+        "Use known_profiles and recent_user_messages only to resolve context, duplicates, and conflicts. "
+        "known_profiles contains active and candidate rows; when a claim expresses the same attribute as "
+        "any of them, reuse that profile_key verbatim instead of inventing a new key. "
         "Every claim must come from current_evidence and cite an exact evidence_span copied from that "
         "evidence's raw_text. System and assistant messages are intentionally absent. Do not invent user "
         "preferences. Return all claims in one response; no follow-up or tool calls. Use decision=skip or "
-        "evidence_only when no durable profile should be created. Scope is advisory and will be revalidated."
+        "evidence_only when no durable profile should be created. Report your real confidence; uncertain "
+        "claims are kept as background candidates instead of being discarded. Set suggested_scope=user only "
+        "for durable cross-game preferences; such claims are stored as background user-scope candidates and "
+        "only activate after independent support from multiple games. Explicit scope wording in the evidence "
+        "always wins over suggested_scope."
     )
     user = json.dumps(
         {
-            "active_profiles": active_profiles,
+            "known_profiles": known_profiles,
             "recent_user_messages": recent_user_messages,
             "current_evidence": [
                 {
@@ -529,7 +672,9 @@ def _llm_claims_batch(
             llm_confidence = _clamp(float(row.get("confidence", base_confidence) or base_confidence))
         except (TypeError, ValueError):
             llm_confidence = base_confidence
-        confidence = min(0.94, max(base_confidence, min(llm_confidence, base_confidence + 0.04)))
+        # Asymmetric clamp: the model may lower its confidence freely (routes the
+        # claim into the candidate track) but can only raise it marginally.
+        confidence = min(0.94, min(max(llm_confidence, 0.30), base_confidence + 0.04))
         llm_explicitness = _clean(row.get("explicitness"), 20)
         explicitness = (
             MemoryExplicitness.INFERRED
@@ -552,19 +697,24 @@ def _llm_claims_batch(
                 "scope_confidence": scope_confidence,
                 "explicitness": explicitness,
                 "scope_explicitness": scope_explicitness,
+                "suggested_user_scope": _clean(row.get("suggested_scope"), 20) == MemoryScope.USER,
                 "entities": row.get("entities") if isinstance(row.get("entities"), list) else [],
             }
         )
-    return output
+    return {
+        memory_id: _with_user_shadow_claims(claims, by_id[memory_id])
+        for memory_id, claims in output.items()
+    }
 
 
 def extract_profile_claims(
+    db: Session,
     item: MemoryItem,
     *,
     game_id: str | None = None,
     task_id: str | None = None,
 ) -> list[dict]:
-    return _deterministic_claims(item, game_id=game_id, task_id=task_id)
+    return _deterministic_claims(db, item, game_id=game_id, task_id=task_id)
 
 
 def extract_profile_claims_batch(
@@ -577,7 +727,7 @@ def extract_profile_claims_batch(
     if not items:
         return {}
     user_id = items[0].user_id
-    active_profiles = _active_profiles_for_extraction(
+    known_profiles = _profiles_for_extraction_context(
         db, user_id=user_id, game_id=game_id, task_id=task_id
     )
     recent_messages = _recent_game_user_messages(
@@ -589,17 +739,22 @@ def extract_profile_claims_batch(
     )
     extracted = _llm_claims_batch(
         items,
-        active_profiles=active_profiles,
+        known_profiles=known_profiles,
         recent_user_messages=recent_messages,
         game_id=game_id,
         task_id=task_id,
     )
-    if extracted is not None:
-        return extracted
-    return {
-        item.id: _deterministic_claims(item, game_id=game_id, task_id=task_id)
-        for item in items
-    }
+    if extracted is None:
+        extracted = {}
+    result: dict[str, list[dict]] = {}
+    for item in items:
+        if item.id in extracted:
+            result[item.id] = extracted[item.id]
+        else:
+            # Items the LLM path never considered (manual sources, or the model
+            # being unavailable) still get deterministic claims.
+            result[item.id] = _deterministic_claims(db, item, game_id=game_id, task_id=task_id)
+    return result
 
 
 def _same_value(left: str, right: str) -> bool:
@@ -719,6 +874,23 @@ def _supersede_profile(
     )
 
 
+def _distinct_supporting_games(db: Session, profile: MemoryProfile) -> int:
+    db.flush()
+    rows = (
+        db.query(MemoryItem.source_game_id, MemoryItem.scope_type, MemoryItem.scope_id)
+        .join(MemoryProfileVersion, MemoryProfileVersion.source_memory_id == MemoryItem.id)
+        .filter(MemoryProfileVersion.profile_id == profile.id)
+        .distinct()
+        .all()
+    )
+    games = {
+        source_game_id or (scope_id if scope_type == MemoryScope.GAME else None)
+        for source_game_id, scope_type, scope_id in rows
+    }
+    games.discard(None)
+    return len(games)
+
+
 def _promote_candidate_if_ready(
     db: Session,
     profile: MemoryProfile,
@@ -729,11 +901,22 @@ def _promote_candidate_if_ready(
 ) -> bool:
     if profile.status != MemoryProfileStatus.CANDIDATE:
         return False
-    ready = (
-        int(profile.support_count or 1) >= CANDIDATE_SUPPORT_THRESHOLD
-        and _float(profile.confidence) >= CANDIDATE_CONFIDENCE_THRESHOLD
-        and _float(profile.scope_confidence) >= 0.80
-    )
+    if profile.scope_type == MemoryScope.USER:
+        # A global preference is promoted by breadth, not by repetition:
+        # the same value must have been expressed in distinct games.
+        ready = (
+            _float(profile.confidence) >= CANDIDATE_CONFIDENCE_THRESHOLD
+            and _float(profile.scope_confidence) >= 0.80
+            and _distinct_supporting_games(db, profile) >= USER_PROMOTION_DISTINCT_GAMES
+        )
+        if ready and not reason:
+            reason = "Candidate preference was independently supported in multiple games."
+    else:
+        ready = (
+            int(profile.support_count or 1) >= CANDIDATE_SUPPORT_THRESHOLD
+            and _float(profile.confidence) >= CANDIDATE_CONFIDENCE_THRESHOLD
+            and _float(profile.scope_confidence) >= 0.80
+        )
     if not (ready or force):
         return False
 
@@ -788,6 +971,10 @@ def _create_profile(
     conflicts_with_id: str | None = None,
 ) -> MemoryProfile:
     now = now_utc()
+    vector = claim.get("embedding")
+    if not vector:
+        embedded = memory_embeddings.embed_texts([_clean(claim["summary_text"], 500)])
+        vector = embedded[0] if embedded else None
     profile = MemoryProfile(
         user_id=item.user_id,
         scope_type=claim["scope_type"],
@@ -808,6 +995,9 @@ def _create_profile(
         utility_observation_count=0,
         last_supported_at=now,
         expires_at=_candidate_expires_at() if status == MemoryProfileStatus.CANDIDATE else None,
+        embedding=vector,
+        embedding_model=memory_embeddings.embedding_model() if vector else None,
+        embedding_updated_at=now if vector else None,
         version=1,
     )
     db.add(profile)
@@ -952,7 +1142,7 @@ def reconcile_memory_items(
     db.query(User.id).filter(User.id == user_id).with_for_update().one()
     expire_stale_candidates(db, user_id)
     claims_by_memory_id = claims_by_memory_id or {
-        item.id: extract_profile_claims(item, game_id=game_id, task_id=task_id)
+        item.id: extract_profile_claims(db, item, game_id=game_id, task_id=task_id)
         for item in items
     }
     results: list[MemoryProfile] = []
@@ -1087,6 +1277,11 @@ def correct_profile(
     profile.support_count = max(1, int(profile.support_count or 1))
     profile.last_supported_at = now_utc()
     profile.expires_at = None
+    # Never retain a vector for text that no longer matches it.
+    refreshed = memory_embeddings.embed_texts([_clean(profile.summary_text, 500)])
+    profile.embedding = refreshed[0] if refreshed else None
+    profile.embedding_model = memory_embeddings.embedding_model() if refreshed else None
+    profile.embedding_updated_at = now_utc() if refreshed else None
     profile.version += 1
     profile.updated_at = now_utc()
     _record_version(

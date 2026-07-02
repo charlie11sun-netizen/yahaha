@@ -711,14 +711,21 @@ def test_success_memory_batch_uses_small_model_with_profiles_and_user_messages(
     _, payload, kwargs = calls[0]
     assert kwargs["model"] == "small-memory-model"
     assert kwargs["response_format"] == {"type": "json_object"}
-    assert payload["active_profiles"][0]["profile_key"] == "visual_style"
+    assert payload["known_profiles"][0]["profile_key"] == "visual_style"
+    assert payload["known_profiles"][0]["status"] == "active"
     assert [message["content"] for message in payload["recent_user_messages"]] == [
         "上一版把角色移动调快一点。",
         "跳跃要更轻快，但不要明显跳得更高。",
     ]
     assert all(set(message) == {"content", "version", "created_at"} for message in payload["recent_user_messages"])
     assert "assistant" not in json.dumps(payload, ensure_ascii=False).lower()
-    assert db.query(MemoryProfile).filter(MemoryProfile.profile_key == "jump_feel").count() == 1
+    jump_profiles = db.query(MemoryProfile).filter(MemoryProfile.profile_key == "jump_feel").all()
+    # The direct claim stays game-scoped; a background user-scope candidate
+    # accumulates cross-game evidence without entering prompts.
+    assert {(profile.scope_type, profile.status) for profile in jump_profiles} == {
+        ("game", "active"),
+        ("user", "candidate"),
+    }
     assert db.query(MemoryEntityLink).filter(MemoryEntityLink.memory_id == created[0].id).count() == 1
     db.close()
 
@@ -762,4 +769,343 @@ def test_entity_ranking_adds_third_rrf_signal(db_session_factory, monkeypatch):
     assert results[0]["id"] == item.id
     assert results[0]["retrieval"]["entity_rank"] == 1
     assert results[0]["retrieval"]["strategy"] == "rrf_hybrid_entity"
+    db.close()
+
+
+def _make_user_and_game(db, email, title="G"):
+    from app.models import Game, User
+    from app.models.common import GameSource, GameStatus
+
+    user = User(email=email, password_hash="x", display_name="U", avatar_initial="U")
+    db.add(user)
+    db.flush()
+    game = Game(
+        author_id=user.id,
+        title=title,
+        summary="",
+        genre="ARCADE",
+        cover="",
+        source=GameSource.CREATE,
+        status=GameStatus.PREVIEW,
+        current_version="v1",
+    )
+    db.add(game)
+    db.flush()
+    return user, game
+
+
+def test_rephrased_free_form_claim_reinforces_existing_profile(db_session_factory, monkeypatch):
+    """词表外偏好换一种说法时，通过向量认领同一个 profile_key 并强化，而不是新建孤立档案。"""
+    from app.models import MemoryProfile
+    from app.models.memory import MemoryCategory, MemoryScope, MemorySource
+    from app.services import memory_embeddings
+    from app.services.memory import create_memory
+    from app.services.memory_profiles import reconcile_memory_item
+
+    monkeypatch.setattr(memory_embeddings, "embedding_model", lambda: "test-embedding")
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
+    db = db_session_factory()
+    user, game = _make_user_and_game(db, "adopt@test.com")
+
+    first = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.GAME,
+        scope_id=game.id,
+        category=MemoryCategory.STYLE,
+        raw_text="多加故障闪烁的特效",
+        source_type=MemorySource.FEEDBACK,
+        source_game_id=game.id,
+    )
+    first_profiles = reconcile_memory_item(db, first, game_id=game.id)
+    game_profile = next(profile for profile in first_profiles if profile.scope_type == "game")
+    assert game_profile.status == "active"
+    assert game_profile.embedding == [1.0, 0.0]
+
+    rephrased = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.GAME,
+        scope_id=game.id,
+        category=MemoryCategory.STYLE,
+        raw_text="画面里要有更多glitch闪烁效果",
+        source_type=MemorySource.FEEDBACK,
+        source_game_id=game.id,
+    )
+    second_profiles = reconcile_memory_item(db, rephrased, game_id=game.id)
+
+    assert game_profile.id in {profile.id for profile in second_profiles}
+    assert game_profile.support_count == 2
+    # Rephrasing must not mint a second key: still one game profile + its user shadow candidate.
+    keys = {profile.profile_key for profile in db.query(MemoryProfile).filter(MemoryProfile.user_id == user.id)}
+    assert keys == {game_profile.profile_key}
+    db.close()
+
+
+def test_rephrased_claim_without_embeddings_keeps_hash_fallback(db_session_factory, monkeypatch):
+    from app.models import MemoryProfile
+    from app.models.memory import MemoryCategory, MemoryScope, MemorySource
+    from app.services import memory_embeddings
+    from app.services.memory import create_memory
+    from app.services.memory_profiles import reconcile_memory_item
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    db = db_session_factory()
+    user, game = _make_user_and_game(db, "hash-fallback@test.com")
+    for raw_text in ("多加故障闪烁的特效", "画面里要有更多glitch闪烁效果"):
+        item = create_memory(
+            db,
+            user.id,
+            scope_type=MemoryScope.GAME,
+            scope_id=game.id,
+            category=MemoryCategory.STYLE,
+            raw_text=raw_text,
+            source_type=MemorySource.FEEDBACK,
+            source_game_id=game.id,
+        )
+        reconcile_memory_item(db, item, game_id=game.id)
+
+    game_keys = [
+        profile.profile_key
+        for profile in db.query(MemoryProfile).filter(
+            MemoryProfile.user_id == user.id, MemoryProfile.scope_type == "game"
+        )
+    ]
+    # Without a vector service the pre-existing behavior is preserved: two separate hash keys.
+    assert len(game_keys) == 2
+    assert len(set(game_keys)) == 2
+    db.close()
+
+
+def test_llm_low_confidence_claim_lands_as_candidate(db_session_factory, monkeypatch):
+    """LLM 可以下调置信度，让拿不准的 claim 走 candidate 轨道而不是被规则抬回 active。"""
+    import json
+
+    from app.agents import llm
+    from app.core.config import settings
+    from app.models import GenerationTask, MemoryProfile
+    from app.models.common import TaskStatus
+    from app.services import memory_embeddings
+    from app.services.memory import capture_success_memories
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(settings, "MEMORY_EXTRACTION_MODEL", "small-memory-model")
+
+    def fake_chat(system, user_payload, **kwargs):
+        payload = json.loads(user_payload)
+        evidence = payload["current_evidence"][0]
+        return json.dumps(
+            {
+                "claims": [
+                    {
+                        "source_memory_id": evidence["source_memory_id"],
+                        "decision": "active",
+                        "profile_key": "art_direction",
+                        "category": "style",
+                        "value_text": "glitch",
+                        "summary_text": "画面往故障艺术方向调整",
+                        "evidence_span": evidence["raw_text"],
+                        "suggested_scope": "game",
+                        "explicitness": "explicit",
+                        "confidence": 0.2,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ), 7
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    db = db_session_factory()
+    user, game = _make_user_and_game(db, "lowconf@test.com")
+    task = GenerationTask(
+        user_id=user.id,
+        idea="arcade",
+        task_kind="revision",
+        base_game_id=game.id,
+        base_version="v1",
+        result_game_id=game.id,
+        feedback_text="画面往故障艺术方向改",
+        status=TaskStatus.SUCCEEDED,
+    )
+    db.add(task)
+    db.commit()
+
+    capture_success_memories(db, task_id=task.id, state={"task_kind": "revision", "game_id": game.id})
+    db.flush()
+
+    profile = (
+        db.query(MemoryProfile)
+        .filter(MemoryProfile.profile_key == "art_direction", MemoryProfile.scope_type == "game")
+        .one()
+    )
+    assert profile.status == "candidate"
+    assert float(profile.confidence) == 0.30
+    db.close()
+
+
+def test_user_shadow_candidate_promotes_across_distinct_games(db_session_factory, monkeypatch):
+    """同一偏好在两个不同游戏中出现后，用户级影子 candidate 自动晋升为 active。"""
+    from app.models.memory import MemoryCategory, MemoryScope, MemorySource
+    from app.services import memory_embeddings
+    from app.services.memory import create_memory
+    from app.services.memory_profiles import reconcile_memory_item, retrieve_profiles
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    db = db_session_factory()
+    user, game_a = _make_user_and_game(db, "cross-game@test.com", title="Game A")
+    from app.models import Game
+    from app.models.common import GameSource, GameStatus
+
+    game_b = Game(
+        author_id=user.id,
+        title="Game B",
+        summary="",
+        genre="ARCADE",
+        cover="",
+        source=GameSource.CREATE,
+        status=GameStatus.PREVIEW,
+        current_version="v1",
+    )
+    db.add(game_b)
+    db.flush()
+
+    item_a = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.GAME,
+        scope_id=game_a.id,
+        category=MemoryCategory.DIFFICULTY,
+        raw_text="太难了，调得简单一点",
+        source_type=MemorySource.FEEDBACK,
+        source_game_id=game_a.id,
+    )
+    profiles_a = reconcile_memory_item(db, item_a, game_id=game_a.id)
+    shadow = next(profile for profile in profiles_a if profile.scope_type == "user")
+    assert shadow.status == "candidate"
+    assert shadow.value_text == "easy"
+
+    item_b = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.GAME,
+        scope_id=game_b.id,
+        category=MemoryCategory.DIFFICULTY,
+        raw_text="太难了，调得简单一点",
+        source_type=MemorySource.FEEDBACK,
+        source_game_id=game_b.id,
+    )
+    reconcile_memory_item(db, item_b, game_id=game_b.id)
+    db.flush()
+
+    assert shadow.status == "active"
+    assert shadow.support_count == 2
+    active_user_profiles = retrieve_profiles(db, user_id=user.id)
+    assert shadow.id in {profile["id"] for profile in active_user_profiles}
+    db.close()
+
+
+def test_user_shadow_candidate_stays_candidate_within_one_game(db_session_factory, monkeypatch):
+    """同一句话在同一个游戏里重复三次不构成跨游戏证据，用户级 candidate 不晋升。"""
+    from app.models import MemoryProfile
+    from app.models.memory import MemoryCategory, MemoryScope, MemorySource
+    from app.services import memory_embeddings
+    from app.services.memory import create_memory
+    from app.services.memory_profiles import reconcile_memory_item
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    db = db_session_factory()
+    user, game = _make_user_and_game(db, "same-game@test.com")
+
+    for _ in range(3):
+        item = create_memory(
+            db,
+            user.id,
+            scope_type=MemoryScope.GAME,
+            scope_id=game.id,
+            category=MemoryCategory.DIFFICULTY,
+            raw_text="太难了，调得简单一点",
+            source_type=MemorySource.FEEDBACK,
+            source_game_id=game.id,
+        )
+        reconcile_memory_item(db, item, game_id=game.id)
+
+    shadow = (
+        db.query(MemoryProfile)
+        .filter(MemoryProfile.user_id == user.id, MemoryProfile.scope_type == "user")
+        .one()
+    )
+    assert shadow.status == "candidate"
+    assert shadow.support_count == 3
+    db.close()
+
+
+def test_explicitly_game_scoped_feedback_creates_no_user_shadow(db_session_factory, monkeypatch):
+    from app.models import MemoryProfile
+    from app.models.memory import MemoryCategory, MemoryScope, MemorySource
+    from app.services import memory_embeddings
+    from app.services.memory import create_memory
+    from app.services.memory_profiles import reconcile_memory_item
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    db = db_session_factory()
+    user, game = _make_user_and_game(db, "pinned-scope@test.com")
+
+    item = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.GAME,
+        scope_id=game.id,
+        category=MemoryCategory.DIFFICULTY,
+        raw_text="这个游戏太难了，调得简单一点",
+        source_type=MemorySource.FEEDBACK,
+        source_game_id=game.id,
+    )
+    reconcile_memory_item(db, item, game_id=game.id)
+
+    user_profiles = (
+        db.query(MemoryProfile)
+        .filter(MemoryProfile.user_id == user.id, MemoryProfile.scope_type == "user")
+        .count()
+    )
+    assert user_profiles == 0
+    db.close()
+
+
+def test_extraction_context_includes_candidate_profiles(db_session_factory, monkeypatch):
+    from app.models.memory import MemoryCategory, MemoryScope, MemorySource
+    from app.services import memory_embeddings
+    from app.services.memory import create_memory
+    from app.services.memory_profiles import _profiles_for_extraction_context, reconcile_memory_item
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    db = db_session_factory()
+    user, game = _make_user_and_game(db, "context-cand@test.com")
+    active_item = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.GAME,
+        scope_id=game.id,
+        category=MemoryCategory.STYLE,
+        raw_text="这个游戏使用像素风",
+        source_type=MemorySource.FEEDBACK,
+        source_game_id=game.id,
+    )
+    reconcile_memory_item(db, active_item, game_id=game.id)
+    hedged_item = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.GAME,
+        scope_id=game.id,
+        category=MemoryCategory.STYLE,
+        raw_text="这个游戏能不能试试写实风",
+        source_type=MemorySource.FEEDBACK,
+        source_game_id=game.id,
+    )
+    reconcile_memory_item(db, hedged_item, game_id=game.id)
+
+    rows = _profiles_for_extraction_context(db, user_id=user.id, game_id=game.id, task_id=None)
+    statuses = {(row["value_text"], row["status"]) for row in rows}
+    assert ("pixel", "active") in statuses
+    assert ("realistic", "candidate") in statuses
     db.close()
