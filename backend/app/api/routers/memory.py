@@ -33,6 +33,7 @@ def update_memory_settings(
     patch = body.model_dump(exclude_unset=True)
     for key, value in patch.items():
         setattr(settings, key, value)
+    memory_service.purge_expired_memories(db, user.id, settings_row=settings)
     db.commit()
     db.refresh(settings)
     return memory_service.settings_out(settings)

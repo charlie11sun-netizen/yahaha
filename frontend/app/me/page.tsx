@@ -852,6 +852,22 @@ function MemorySection({
             />
             Learn from successful previews and revisions
           </label>
+          <label>
+            Retain stored memories
+            <select
+              disabled={savingSettings || !settings}
+              onChange={(event) => onUpdateSettings({
+                retention_days: event.target.value ? Number(event.target.value) : null,
+              })}
+              value={settings?.retention_days ?? ""}
+            >
+              <option value="">Until I delete them</option>
+              <option value="30">30 days</option>
+              <option value="90">90 days</option>
+              <option value="365">1 year</option>
+            </select>
+            <small>Retention limits also apply to pinned memories.</small>
+          </label>
         </div>
       </Panel>
 

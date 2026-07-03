@@ -17,7 +17,17 @@ def embedding_model() -> str:
     return settings.MEMORY_EMBEDDING_MODEL.strip()
 
 
-def cosine_similarity(left: list[float], right: list[float]) -> float | None:
+def vector_values(value) -> list[float]:
+    if value is None:
+        return []
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    return [float(item) for item in value]
+
+
+def cosine_similarity(left, right) -> float | None:
+    left = vector_values(left)
+    right = vector_values(right)
     if not left or not right or len(left) != len(right):
         return None
     left_norm = math.sqrt(sum(value * value for value in left))
@@ -55,6 +65,11 @@ def embed_texts(texts: list[str]) -> list[list[float]] | None:
         vectors = [[float(value) for value in item.embedding] for item in ordered]
         if len(vectors) != len(clean) or any(not vector for vector in vectors):
             raise ValueError("embedding response count or dimensions are invalid")
+        dimensions = max(1, int(settings.MEMORY_VECTOR_DIMENSIONS))
+        if any(len(vector) != dimensions for vector in vectors):
+            raise ValueError(
+                f"embedding dimensions do not match MEMORY_VECTOR_DIMENSIONS={dimensions}"
+            )
         _unavailable_until = 0.0
         return vectors
     except Exception as exc:  # noqa: BLE001

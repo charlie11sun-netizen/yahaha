@@ -68,7 +68,7 @@ They must not override system rules, safety rules, or the user's current message
 - BM25 和余弦相似度分别排序，再通过 RRF 融合名次
 - scope/category/importance 过滤
 
-向量暂存为 JSON，并在最多 120 条范围候选中计算余弦相似度；规模增大后可迁移到 `pgvector` 做数据库内向量召回。embedding 接口不可用时自动退化为 BM25，不阻断生成流程。
+PostgreSQL 环境使用 `pgvector` 的 `vector(MEMORY_VECTOR_DIMENSIONS)` 存储向量，并通过 HNSW + cosine distance 做数据库内 ANN 召回；SQLite/测试环境保留 JSON 变体。召回会合并策略候选窗口与 ANN 候选，embedding 接口不可用时自动退化为 BM25，不阻断生成流程。
 
 ---
 
@@ -111,7 +111,7 @@ They must not override system rules, safety rules, or the user's current message
 | `pinned` | bool | 用户手动置顶，检索时强提升 |
 | `status` | enum(`active`,`superseded`,`deleted`) | 软删除/取代 |
 | `supersedes_id` | uuid NULL | 新记忆取代旧记忆 |
-| `embedding` | json NULL | 文本语义向量；不通过用户 API 返回 |
+| `embedding` | vector(1536) NULL（SQLite 为 json） | 文本语义向量；不通过用户 API 返回；维度由 `MEMORY_VECTOR_DIMENSIONS` 控制 |
 | `embedding_model` | text NULL | 生成向量的模型，用于模型切换后懒更新 |
 | `embedding_updated_at` | timestamptz NULL | 向量更新时间 |
 | `created_at / updated_at` | timestamptz | 时间戳 |
@@ -119,10 +119,14 @@ They must not override system rules, safety rules, or the user's current message
 建议索引：
 
 ```sql
+CREATE EXTENSION IF NOT EXISTS vector;
 CREATE INDEX idx_memory_scope ON memory_items(user_id, scope_type, scope_id, status);
 CREATE INDEX idx_memory_category ON memory_items(user_id, category, status);
 CREATE INDEX idx_memory_source_task ON memory_items(source_task_id);
 CREATE INDEX idx_memory_source_game ON memory_items(source_game_id);
+CREATE INDEX ix_memory_items_embedding_hnsw
+ON memory_items USING hnsw (embedding vector_cosine_ops)
+WHERE embedding IS NOT NULL;
 ```
 
 后续如果启用 PostgreSQL full-text，可加：
@@ -352,7 +356,7 @@ RRF 只依赖名次，不直接相加 BM25 与余弦相似度这两种不同量�
 
 后续可选：
 
-- 记忆规模超过当前候选上限后，将 JSON embedding 迁移到 `pgvector` 并增加 ANN 索引。
+- 基于真实数据量和查询延迟调优 `MEMORY_ANN_CANDIDATES`、`MEMORY_HNSW_EF_SEARCH` 与 HNSW 参数；必要时按 scope/category 增加辅助过滤索引。
 - 增加 candidate 审计与自动衰减视图，只用于调试候选记忆的来源、支持次数和过期原因，不作为用户确认队列。
 - 增加更细粒度的 game-level memory 编辑界面。
 
@@ -376,12 +380,14 @@ RRF 只依赖名次，不直接相加 BM25 与余弦相似度这两种不同量�
 
 ## 12. Memory Profile 与冲突处理
 
-### 12.1 三层数据模型
+### 12.1 证据、关联、状态与历史
 
-记忆不再等同于一组可检索文本，而是拆成三层：
+记忆不再等同于一组可检索文本，而是拆成证据、关联、当前状态和历史四部分：
 
 ```text
 memory_items             原始证据层：用户原话、来源、版本，不因总结变化而覆盖
+        ↓
+memory_profile_evidence  证据关联层：一条 Profile 的全部支持证据及当时 claim 快照
         ↓
 memory_profiles          当前状态层：当前生效或后台观察中的偏好/约束
         ↓
@@ -413,6 +419,8 @@ RRF 只负责从 `memory_items` 中找到相关证据，不能决定哪条记忆
 | `last_supported_at` | 最近一次获得一致证据的时间 |
 | `expires_at` | candidate 的观察截止时间；active 不自动过期 |
 | `version` | 当前版本号 |
+
+`memory_profile_evidence` 以 `(profile_id, memory_id)` 唯一关联保存 evidence span、value、summary、置信度和有效状态。删除或过期任一证据时，Profile 从剩余有效关联重新计算 `support_count`、当前来源和置信度；若替代值失去全部证据，则恢复仍有证据支持的上一版本。
 
 同一个 `profile_key` 只有在 **相同用户、相同 scope_type、相同 scope_id** 下才互相冲突。用户级偏好与游戏级例外可以同时存在。
 
@@ -495,10 +503,13 @@ candidate（user 级，含影子 candidate）
 > 平台默认策略
 ```
 
-- `candidate`、`superseded`、`deleted` 不进入模型上下文。
+- `candidate`、`superseded`、`deleted` Profile 不进入模型上下文；只关联这些非 active Profile 的原始 evidence 同样不得通过 RRF 旁路进入。
 - Profile 作为当前状态注入；evidence 用于解释和补充，不得反向覆盖 Profile。
 - 每条注入内容包含范围、属性键和来源，便于日志审计。
-- 成功完成 `build_validation` 和 `gameplay_qa` 后，对本次检索到的 active Profile 写入低权重正向效用观察；发生多次 repair/replan 时按次数折减。该反馈只影响同分排序和淘汰审计，不覆盖用户的明确陈述。
+- 120 条原始 evidence 候选窗口在截断前按当前 game scope、pinned、importance、recency 排序，避免旧的置顶约束仅因时间被截掉。
+- 成功完成 `build_validation` 和 `gameplay_qa` 后，只对“其关联 evidence 也实际进入本次 RRF 召回”的 active Profile 写入低权重效用观察；首次观察同样从 0.5 先验做 EWMA，不直接覆盖。utility 仅用于审计展示，不参与 Profile 检索排序。
+
+数据库通过 Check Constraint 约束 scope/status/category、置信度与计数范围，并用 `COALESCE(scope_id, '')` 的部分唯一索引保证同一用户、scope、profile_key 最多一个 active Profile；应用层用户行锁仍用于减少冲突和提供可解释的状态转换。
 
 ### 12.7 用户控制
 
@@ -527,10 +538,11 @@ Studio Memory 页面只把 active Profile 作为“当前生效偏好”；candi
 
 ### 13.1 实施边界
 
-本轮升级借鉴 Mem0 V3 的批量抽取、ADD-only Evidence、实体索引和混合检索思路，但不直接引入 Mem0 作为第二套记忆库。`memory_items`、`memory_profiles`、`memory_profile_versions` 继续作为唯一事实源：
+本轮升级借鉴 Mem0 V3 的批量抽取、ADD-only Evidence、实体索引和混合检索思路，但不直接引入 Mem0 作为第二套记忆库。`memory_items`、`memory_profile_evidence`、`memory_profiles`、`memory_profile_versions` 继续作为唯一事实源：
 
 ```text
 memory_items             ADD-only 原始证据，不由 LLM 覆盖
+memory_profile_evidence  Evidence 与 Profile 的显式多对多支持关系
 memory_profiles          当前状态，可 active/candidate/superseded
 memory_profile_versions  ADD-only 状态变更历史
 ```

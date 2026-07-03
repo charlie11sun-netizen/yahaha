@@ -30,12 +30,16 @@ class Settings(BaseSettings):
     USE_REAL_MODEL: bool = False
     MEMORY_VECTOR_ENABLED: bool = True
     MEMORY_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    MEMORY_VECTOR_DIMENSIONS: int = 1536
+    MEMORY_ANN_CANDIDATES: int = 120
+    MEMORY_HNSW_EF_SEARCH: int = 100
     MEMORY_EMBEDDING_API_KEY: str = ""
     MEMORY_EMBEDDING_BASE_URL: str = ""
     MEMORY_EMBEDDING_TIMEOUT: int = 15
     MEMORY_EXTRACTION_MODEL: str = "gpt-4.1-mini"
     MEMORY_EXTRACTION_TIMEOUT: int = 30
     MEMORY_RRF_K: int = 60
+    MEMORY_LEXICAL_MIN_SCORE: float = 0.10
     MEMORY_SEMANTIC_MIN_SCORE: float = 0.20
     OPENAI_TIMEOUT: int = 600  # 写整个 game.js 耗时长，给足超时
 

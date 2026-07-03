@@ -2,7 +2,7 @@ name: gameweave
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:0.8.2-pg16
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-gameweave}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gameweave}
@@ -92,6 +92,21 @@ services:
         condition: service_healthy
       createbuckets:
         condition: service_completed_successfully
+
+  beat:
+    build: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD:-gameweave}@postgres:5432/${POSTGRES_DB:-gameweave}
+      REDIS_URL: redis://redis:6379/0
+    command: celery -A app.tasks.celery_app.celery beat --loglevel=info
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   web:
     build: ./frontend

@@ -1109,3 +1109,548 @@ def test_extraction_context_includes_candidate_profiles(db_session_factory, monk
     assert ("pixel", "active") in statuses
     assert ("realistic", "candidate") in statuses
     db.close()
+
+
+def test_cross_game_opt_out_blocks_all_three_user_scope_fallbacks(db_session_factory, monkeypatch):
+    from app.models import MemorySettings
+    from app.models.memory import MemoryCategory, MemoryScope
+    from app.services import memory_embeddings
+    from app.services.memory import create_memory, retrieve_memories
+    from app.services.memory_profiles import (
+        _profiles_for_extraction_context,
+        reconcile_memory_item,
+        retrieve_profiles,
+    )
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    db = db_session_factory()
+    user, _ = _make_user_and_game(db, "cross-game-off@test.com")
+    db.add(MemorySettings(user_id=user.id, allow_cross_game_memory=False))
+    item = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.USER,
+        scope_id=None,
+        category=MemoryCategory.STYLE,
+        raw_text="I always prefer pixel art",
+    )
+    reconcile_memory_item(db, item)
+    db.flush()
+
+    assert retrieve_memories(db, user_id=user.id, query="pixel art") == []
+    assert retrieve_profiles(db, user_id=user.id) == []
+    assert _profiles_for_extraction_context(
+        db, user_id=user.id, game_id=None, task_id=None
+    ) == []
+    db.close()
+
+
+def test_ephemeral_revision_feedback_is_not_persisted(db_session_factory, monkeypatch):
+    from app.models import GenerationTask, MemoryItem
+    from app.models.common import TaskStatus
+    from app.services import memory_embeddings
+    from app.services.memory import capture_success_memories
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    db = db_session_factory()
+    user, game = _make_user_and_game(db, "ephemeral@test.com")
+    task = GenerationTask(
+        user_id=user.id,
+        idea="arcade",
+        task_kind="revision",
+        base_game_id=game.id,
+        base_version="v1",
+        result_game_id=game.id,
+        feedback_text="这次把 jumpForce 改到 11，先试试。",
+        status=TaskStatus.SUCCEEDED,
+    )
+    db.add(task)
+    db.commit()
+
+    assert capture_success_memories(
+        db, task_id=task.id, state={"task_kind": "revision", "game_id": game.id}
+    ) == []
+    assert db.query(MemoryItem).filter(MemoryItem.user_id == user.id).count() == 0
+    db.close()
+
+
+def test_profile_scope_priority_is_applied_before_limit(db_session_factory, monkeypatch):
+    from app.models import MemorySettings
+    from app.models.memory import MemoryCategory, MemoryScope
+    from app.services import memory_embeddings
+    from app.services.memory import create_memory
+    from app.services.memory_profiles import reconcile_memory_item, retrieve_profiles
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    db = db_session_factory()
+    user, game = _make_user_and_game(db, "profile-priority@test.com")
+    db.add(MemorySettings(user_id=user.id))
+    for index in range(8):
+        item = create_memory(
+            db,
+            user.id,
+            scope_type=MemoryScope.USER,
+            scope_id=None,
+            category=MemoryCategory.STYLE,
+            raw_text=f"global preference number {index}",
+        )
+        reconcile_memory_item(db, item)
+    game_item = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.GAME,
+        scope_id=game.id,
+        category=MemoryCategory.CONSTRAINTS,
+        raw_text="这个游戏必须保留核心玩法",
+    )
+    reconcile_memory_item(db, game_item, game_id=game.id)
+    db.flush()
+
+    profiles = retrieve_profiles(db, user_id=user.id, game_id=game.id, limit=8)
+
+    assert profiles[0]["scope_type"] == MemoryScope.GAME
+    assert any(profile["profile_key"] == "core_mechanic" for profile in profiles)
+    db.close()
+
+
+def test_raw_retrieval_returns_nothing_without_relevance_signal(db_session_factory, monkeypatch):
+    from app.models import MemorySettings
+    from app.models.memory import MemoryCategory, MemoryScope
+    from app.services import memory_embeddings
+    from app.services.memory import create_memory, retrieve_memories
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    db = db_session_factory()
+    user, _ = _make_user_and_game(db, "irrelevant@test.com")
+    db.add(MemorySettings(user_id=user.id))
+    create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.USER,
+        scope_id=None,
+        category=MemoryCategory.STYLE,
+        raw_text="I prefer bright pixel art",
+    )
+    db.commit()
+
+    assert retrieve_memories(db, user_id=user.id, query="database transaction schema") == []
+    db.close()
+
+
+def test_retention_days_physically_purges_expired_evidence_and_profiles(
+    db_session_factory, monkeypatch
+):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import MemoryItem, MemoryProfile, MemorySettings
+    from app.models.memory import MemoryCategory, MemoryScope
+    from app.services import memory_embeddings
+    from app.services.memory import create_memory, purge_expired_memories
+    from app.services.memory_profiles import reconcile_memory_item
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    db = db_session_factory()
+    user, _ = _make_user_and_game(db, "retention@test.com")
+    settings = MemorySettings(user_id=user.id, retention_days=30)
+    db.add(settings)
+    expired = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.USER,
+        scope_id=None,
+        category=MemoryCategory.STYLE,
+        raw_text="I always prefer pixel art",
+        pinned=True,
+    )
+    reconcile_memory_item(db, expired)
+    retained = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.USER,
+        scope_id=None,
+        category=MemoryCategory.DIFFICULTY,
+        raw_text="I always prefer medium difficulty",
+    )
+    reconcile_memory_item(db, retained)
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    expired.created_at = now - timedelta(days=31)
+    retained.created_at = now - timedelta(days=29)
+    expired_id, retained_id = expired.id, retained.id
+    db.commit()
+
+    assert purge_expired_memories(db, user.id, settings_row=settings, now=now) == 1
+    db.commit()
+    db.expire_all()
+
+    assert db.get(MemoryItem, expired_id) is None
+    assert db.get(MemoryItem, retained_id) is not None
+    assert db.query(MemoryProfile).filter(MemoryProfile.source_memory_id == expired_id).count() == 0
+    db.close()
+
+
+def test_profile_evidence_links_track_each_supporting_memory(db_session_factory, monkeypatch):
+    from app.models import MemoryProfileEvidence
+    from app.models.memory import MemoryCategory, MemoryScope
+    from app.services import memory_embeddings
+    from app.services.memory import create_memory
+    from app.services.memory_profiles import reconcile_memory_item
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    db = db_session_factory()
+    user, game = _make_user_and_game(db, "evidence-links@test.com")
+    items = []
+    profile = None
+    for _ in range(2):
+        item = create_memory(
+            db,
+            user.id,
+            scope_type=MemoryScope.GAME,
+            scope_id=game.id,
+            category=MemoryCategory.STYLE,
+            raw_text="这个游戏使用像素风",
+        )
+        items.append(item)
+        profile = reconcile_memory_item(db, item, game_id=game.id)[0]
+    db.flush()
+
+    links = db.query(MemoryProfileEvidence).filter(
+        MemoryProfileEvidence.profile_id == profile.id,
+        MemoryProfileEvidence.is_active.is_(True),
+    ).all()
+    assert {link.memory_id for link in links} == {item.id for item in items}
+    assert profile.support_count == 2
+    db.close()
+
+
+def test_candidate_only_raw_evidence_is_not_retrieved(db_session_factory, monkeypatch):
+    from app.models import MemorySettings
+    from app.models.memory import MemoryCategory, MemoryScope, MemorySource
+    from app.services import memory_embeddings
+    from app.services.memory import create_memory, retrieve_memories
+    from app.services.memory_profiles import reconcile_memory_item
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    db = db_session_factory()
+    user, game = _make_user_and_game(db, "candidate-isolation@test.com")
+    db.add(MemorySettings(user_id=user.id))
+    item = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.GAME,
+        scope_id=game.id,
+        category=MemoryCategory.STYLE,
+        raw_text="这个游戏能不能试试写实风",
+        source_type=MemorySource.FEEDBACK,
+        source_game_id=game.id,
+    )
+    profiles = reconcile_memory_item(db, item, game_id=game.id)
+    db.flush()
+
+    assert all(profile.status == "candidate" for profile in profiles)
+    assert retrieve_memories(
+        db, user_id=user.id, game_id=game.id, query="试试写实风"
+    ) == []
+    db.close()
+
+
+def test_removing_old_evidence_recalculates_profile_support(db_session_factory, monkeypatch):
+    from app.models import MemoryProfileEvidence
+    from app.models.memory import MemoryCategory, MemoryScope
+    from app.services import memory_embeddings
+    from app.services.memory import create_memory, soft_delete_memory
+    from app.services.memory_profiles import (
+        reconcile_memory_item,
+        retire_profiles_for_memory,
+    )
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    db = db_session_factory()
+    user, game = _make_user_and_game(db, "evidence-remove@test.com")
+    first = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.GAME,
+        scope_id=game.id,
+        category=MemoryCategory.STYLE,
+        raw_text="这个游戏使用像素风",
+    )
+    profile = reconcile_memory_item(db, first, game_id=game.id)[0]
+    second = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.GAME,
+        scope_id=game.id,
+        category=MemoryCategory.STYLE,
+        raw_text="这个游戏使用像素风",
+    )
+    reconcile_memory_item(db, second, game_id=game.id)
+
+    retire_profiles_for_memory(db, first.id, reason="test removal")
+    soft_delete_memory(first)
+    db.flush()
+
+    assert profile.status == "active"
+    assert profile.support_count == 1
+    assert profile.source_memory_id == second.id
+    assert db.query(MemoryProfileEvidence).filter(
+        MemoryProfileEvidence.memory_id == first.id
+    ).count() == 0
+    db.close()
+
+
+def test_removing_replacement_evidence_restores_previous_profile(db_session_factory, monkeypatch):
+    from app.models.memory import MemoryCategory, MemoryScope
+    from app.services import memory_embeddings
+    from app.services.memory import create_memory, soft_delete_memory
+    from app.services.memory_profiles import (
+        profile_history,
+        reconcile_memory_item,
+        retire_profiles_for_memory,
+    )
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    db = db_session_factory()
+    user, _ = _make_user_and_game(db, "evidence-restore@test.com")
+    old_item = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.USER,
+        scope_id=None,
+        category=MemoryCategory.STYLE,
+        raw_text="以后默认使用像素风",
+    )
+    old_profile = reconcile_memory_item(db, old_item)[0]
+    replacement = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.USER,
+        scope_id=None,
+        category=MemoryCategory.STYLE,
+        raw_text="以后默认使用写实风",
+    )
+    replacement_profile = reconcile_memory_item(db, replacement)[0]
+    assert old_profile.status == "superseded"
+
+    retire_profiles_for_memory(db, replacement.id, reason="test replacement removal")
+    soft_delete_memory(replacement)
+    db.flush()
+
+    assert replacement_profile.status == "deleted"
+    assert old_profile.status == "active"
+    assert old_profile.source_memory_id == old_item.id
+    assert old_item.status == "active"
+    assert "restored" in {version.operation for version in profile_history(db, old_profile.id)}
+    db.close()
+
+
+def test_generation_utility_is_attributed_only_to_profiles_with_retrieved_evidence(
+    db_session_factory, monkeypatch
+):
+    from app.models.memory import MemoryCategory, MemoryScope
+    from app.services import memory_embeddings
+    from app.services.memory import create_memory, memory_out
+    from app.services.memory_profiles import (
+        profile_out,
+        reconcile_memory_item,
+        record_generation_profile_utility,
+    )
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    db = db_session_factory()
+    user, _ = _make_user_and_game(db, "utility-attribution@test.com")
+    relevant_item = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.USER,
+        scope_id=None,
+        category=MemoryCategory.STYLE,
+        raw_text="以后默认使用像素风",
+    )
+    relevant_profile = reconcile_memory_item(db, relevant_item)[0]
+    unrelated_item = create_memory(
+        db,
+        user.id,
+        scope_type=MemoryScope.USER,
+        scope_id=None,
+        category=MemoryCategory.DIFFICULTY,
+        raw_text="以后默认使用中等难度",
+    )
+    unrelated_profile = reconcile_memory_item(db, unrelated_item)[0]
+    db.flush()
+
+    updated = record_generation_profile_utility(
+        db,
+        user_id=user.id,
+        state={
+            "retrieved_memory_profiles": [
+                profile_out(relevant_profile),
+                profile_out(unrelated_profile),
+            ],
+            "retrieved_memories": [memory_out(relevant_item)],
+            "validation_result": {"valid": True},
+            "gameplay_qa_result": {"passed": True},
+        },
+    )
+
+    assert [profile.id for profile in updated] == [relevant_profile.id]
+    assert float(relevant_profile.utility_score) == 0.6
+    assert relevant_profile.utility_observation_count == 1
+    assert float(unrelated_profile.utility_score) == 0.5
+    assert unrelated_profile.utility_observation_count == 0
+    db.close()
+
+
+def test_candidate_window_keeps_old_pinned_memory(db_session_factory, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import MemoryItem, MemorySettings
+    from app.models.memory import MemoryCategory, MemoryScope, MemorySource, MemoryStatus
+    from app.services import memory_embeddings
+    from app.services.memory import retrieve_memories
+
+    monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
+    db = db_session_factory()
+    user, _ = _make_user_and_game(db, "candidate-window@test.com")
+    db.add(MemorySettings(user_id=user.id))
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    for index in range(120):
+        db.add(
+            MemoryItem(
+                user_id=user.id,
+                scope_type=MemoryScope.USER,
+                scope_id=None,
+                category=MemoryCategory.STYLE,
+                raw_text=f"recent unrelated memory {index}",
+                source_type=MemorySource.MANUAL,
+                status=MemoryStatus.ACTIVE,
+                importance=1,
+                confidence=1,
+                pinned=False,
+                created_at=now - timedelta(minutes=index),
+            )
+        )
+    pinned = MemoryItem(
+        user_id=user.id,
+        scope_type=MemoryScope.USER,
+        scope_id=None,
+        category=MemoryCategory.MECHANICS,
+        raw_text="preserve the critical dragon mechanic",
+        source_type=MemorySource.MANUAL,
+        status=MemoryStatus.ACTIVE,
+        importance=5,
+        confidence=1,
+        pinned=True,
+        created_at=now - timedelta(days=365),
+    )
+    db.add(pinned)
+    db.commit()
+
+    results = retrieve_memories(
+        db,
+        user_id=user.id,
+        query="critical dragon mechanic",
+        categories=[MemoryCategory.STYLE, MemoryCategory.MECHANICS],
+    )
+
+    assert results[0]["id"] == pinned.id
+    db.close()
+
+
+def test_database_rejects_duplicate_active_profile_and_invalid_scope(db_session_factory):
+    import pytest
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models import MemoryItem, MemoryProfile, User
+    from app.models.memory import MemoryCategory, MemoryScope, MemorySource, MemoryStatus
+
+    db = db_session_factory()
+    user = User(email="constraints@test.com", password_hash="x", display_name="C", avatar_initial="C")
+    db.add(user)
+    db.flush()
+    source = MemoryItem(
+        user_id=user.id,
+        scope_type=MemoryScope.USER,
+        scope_id=None,
+        category=MemoryCategory.STYLE,
+        raw_text="pixel",
+        source_type=MemorySource.MANUAL,
+        status=MemoryStatus.ACTIVE,
+        importance=3,
+        confidence=1,
+        pinned=False,
+    )
+    db.add(source)
+    db.flush()
+    profile_fields = {
+        "user_id": user.id,
+        "scope_type": MemoryScope.USER,
+        "scope_id": None,
+        "profile_key": "visual_style",
+        "category": MemoryCategory.STYLE,
+        "value_text": "pixel",
+        "summary_text": "pixel",
+        "evidence_span": "pixel",
+        "confidence": 1,
+        "scope_confidence": 1,
+        "explicitness": "manual",
+        "status": "active",
+        "source_memory_id": source.id,
+        "support_count": 1,
+        "utility_score": 0.5,
+        "utility_observation_count": 0,
+        "version": 1,
+    }
+    db.add(MemoryProfile(**profile_fields))
+    db.commit()
+
+    db.add(MemoryProfile(**profile_fields))
+    with pytest.raises(IntegrityError):
+        db.flush()
+    db.rollback()
+
+    invalid = MemoryItem(
+        user_id=user.id,
+        scope_type=MemoryScope.USER,
+        scope_id="not-allowed",
+        category=MemoryCategory.STYLE,
+        raw_text="invalid scope",
+        source_type=MemorySource.MANUAL,
+        status=MemoryStatus.ACTIVE,
+        importance=3,
+        confidence=1,
+        pinned=False,
+    )
+    db.add(invalid)
+    with pytest.raises(IntegrityError):
+        db.flush()
+    db.rollback()
+    db.close()
+
+
+def test_pgvector_columns_and_hnsw_query_compile_for_postgres():
+    from sqlalchemy import select
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateIndex
+
+    from app.models import MemoryEntity, MemoryItem, MemoryProfile
+
+    dialect = postgresql.dialect()
+    for model, index_name in (
+        (MemoryItem, "ix_memory_items_embedding_hnsw"),
+        (MemoryProfile, "ix_memory_profiles_embedding_hnsw"),
+        (MemoryEntity, "ix_memory_entities_embedding_hnsw"),
+    ):
+        assert model.__table__.c.embedding.type.compile(dialect=dialect) == "VECTOR(1536)"
+        index = next(index for index in model.__table__.indexes if index.name == index_name)
+        ddl = str(CreateIndex(index).compile(dialect=dialect))
+        assert "USING hnsw" in ddl
+        assert "vector_cosine_ops" in ddl
+        assert "WHERE embedding IS NOT NULL" in ddl
+
+    statement = (
+        select(MemoryItem.id)
+        .where(MemoryItem.embedding.isnot(None))
+        .order_by(MemoryItem.embedding.cosine_distance([0.0] * 1536))
+        .limit(10)
+    )
+    assert "<=>" in str(statement.compile(dialect=dialect))

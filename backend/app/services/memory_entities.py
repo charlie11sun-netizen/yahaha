@@ -174,7 +174,7 @@ def rank_candidate_memories_by_entity(
         if entity.normalized_name and query_normalized:
             if entity.normalized_name in query_normalized or query_normalized in entity.normalized_name:
                 lexical = 1.0
-        semantic = memory_embeddings.cosine_similarity(query_vector or [], entity.embedding or []) or 0.0
+        semantic = memory_embeddings.cosine_similarity(query_vector, entity.embedding) or 0.0
         score = max(lexical, semantic)
         if score > scores.get(memory_id, 0.0):
             scores[memory_id] = score
