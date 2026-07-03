@@ -56,14 +56,31 @@ async function req<T>(
   if (!res.ok) {
     let detail = "";
     try {
-      detail = (await res.json()).detail;
+      const d = (await res.json()).detail;
+      if (typeof d === "string") detail = d;
+      // FastAPI 422 的 detail 是数组 —— 拼成可读文案而不是 "[object Object]"
+      else if (Array.isArray(d)) detail = d.map((it) => it?.msg).filter(Boolean).join("; ");
     } catch {
       /* ignore */
     }
+    handleSessionExpiry(res.status, path);
     throw new ApiError(res.status, detail || res.statusText);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
+}
+
+// 会话失效的全局出口：带着 token 却收到 401（过期/被吊销）→ 清 token 并跳登录，
+// 登录后回跳原页面。/auth/* 不在此列：登录/注册的 401 是密码错误，挂载时的
+// /auth/me 探测在公开页也会跑（由 AuthProvider 自己清 token，不该强制跳转）。
+function handleSessionExpiry(status: number, path: string) {
+  if (status !== 401 || typeof window === "undefined") return;
+  if (path.startsWith("/auth/")) return;
+  if (!localStorage.getItem("pf_token")) return;
+  localStorage.removeItem("pf_token");
+  if (!window.location.pathname.startsWith("/login")) {
+    window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname)}`);
+  }
 }
 
 export const api = {

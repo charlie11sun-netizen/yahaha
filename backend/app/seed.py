@@ -20,6 +20,7 @@ from datetime import timedelta
 
 import app.models  # noqa: F401 - registers SQLAlchemy models
 from app.agents import bundles
+from app.core.config import settings
 from app.core.security import hash_password
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
@@ -161,7 +162,8 @@ def _prune_retired(db) -> int:
 
 
 def run() -> None:
-    Base.metadata.create_all(bind=engine)
+    if settings.AUTO_CREATE_ALL:
+        Base.metadata.create_all(bind=engine)
     ensure_bucket()
     db = SessionLocal()
     try:

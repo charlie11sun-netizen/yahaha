@@ -58,6 +58,9 @@ def get_current_user(
     user = _user_from_creds(creds, db)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    # "禁用"必须对持旧 JWT 的会话全局生效，而不只在密码登录那一刻检查
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
     return user
 
 
@@ -65,4 +68,5 @@ def get_optional_user(
     creds: HTTPAuthorizationCredentials | None = Depends(bearer),
     db: Session = Depends(get_db),
 ) -> User | None:
-    return _user_from_creds(creds, db)
+    user = _user_from_creds(creds, db)
+    return user if user and user.is_active else None

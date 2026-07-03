@@ -8,7 +8,7 @@ export default function NotFound() {
         <h1>Page not found</h1>
         <p>The page you are looking for does not exist or may have been moved.</p>
         <div className="pf-status-actions">
-          <Link href="/">Back to arcade</Link>
+          <Link href="/explore">Back to arcade</Link>
         </div>
       </section>
     </main>

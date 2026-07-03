@@ -25,6 +25,33 @@ def test_login_wrong_password(client):
     assert r.status_code == 401
 
 
+def test_long_passwords_do_not_collide_after_bcrypt_limit(client):
+    password = "a" * 72 + "first"
+    _register(client, password=password)
+    assert client.post(
+        "/auth/login", json={"email": "a@b.com", "password": "a" * 72 + "second"}
+    ).status_code == 401
+    assert client.post(
+        "/auth/login", json={"email": "a@b.com", "password": password}
+    ).status_code == 200
+
+
+def test_oauth_demo_is_disabled_by_default(client, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ENABLE_OAUTH_DEMO", False)
+    assert client.post("/auth/oauth/google/demo").status_code == 404
+
+
+def test_oauth_demo_requires_explicit_opt_in(client, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ENABLE_OAUTH_DEMO", True)
+    response = client.post("/auth/oauth/google/demo")
+    assert response.status_code == 200
+    assert response.json()["mock"] is True
+
+
 def test_protected_requires_auth(client):
     assert client.get("/auth/me").status_code == 401
 

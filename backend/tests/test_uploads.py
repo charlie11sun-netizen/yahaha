@@ -24,3 +24,24 @@ def test_upload_too_large(client):
     big = b"x" * (10 * 1024 * 1024 + 1)
     r = client.post("/uploads", files=[("files", ("big.png", big, "image/png"))], headers=h)
     assert r.status_code == 413
+
+
+def test_upload_rejects_too_many_files_before_storage(client, monkeypatch):
+    from app.storage import s3
+
+    h = _auth(client)
+    writes = []
+    monkeypatch.setattr(s3, "put_object", lambda *args: writes.append(args))
+    files = [("files", (f"{i}.txt", b"x", "text/plain")) for i in range(7)]
+    r = client.post("/uploads", files=files, headers=h)
+    assert r.status_code == 413
+    assert writes == []
+
+
+def test_upload_strips_path_from_client_filename(client):
+    h = _auth(client)
+    r = client.post(
+        "/uploads", files=[("files", ("../unsafe.txt", b"safe", "text/plain"))], headers=h
+    )
+    assert r.status_code == 200
+    assert r.json()["assets"][0]["name"] == "unsafe.txt"

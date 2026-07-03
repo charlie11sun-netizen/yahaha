@@ -24,10 +24,15 @@ function LoginInner() {
   const flash = useToast();
 
   const intent = params.get("intent");
+  const rawNext = params.get("next");
+  // 只接受站内绝对路径，防开放重定向（"//evil.com" 也会被拒）
+  const next = rawNext && rawNext.startsWith("/") && !rawNext.startsWith("//") ? rawNext : null;
+  const postLoginTarget = next || (intent === "create" ? "/create" : "/explore");
   const [mode, setMode] = useState<"login" | "signup">(params.get("mode") === "signup" ? "signup" : "login");
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
   const [name, setName] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState("");
   const [providers, setProviders] = useState<Record<string, boolean>>({});
   const isSignup = mode === "signup";
@@ -39,19 +44,30 @@ function LoginInner() {
   const done = (token: string, user: { name: string }) => {
     setSession(token, user as never);
     flash(`Signed in as ${user.name}`);
-    router.push(intent === "create" ? "/create" : "/");
+    router.push(postLoginTarget);
   };
 
   useEffect(() => {
-    const token = params.get("token");
+    const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    const token = fragment.get("token") || params.get("token");
     if (!token) return;
+    if (fragment.has("token")) {
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    } else {
+      // token 走了 ?token= 查询参数：同样立刻从地址栏抹掉，
+      // 否则会留在浏览器历史，且可能进服务端访问日志
+      const rest = new URLSearchParams(window.location.search);
+      rest.delete("token");
+      const qs = rest.toString();
+      window.history.replaceState(null, "", window.location.pathname + (qs ? `?${qs}` : ""));
+    }
     localStorage.setItem("pf_token", token);
     api
       .me()
       .then((user) => {
         setSession(token, user);
         flash(`Signed in as ${user.name}`);
-        router.replace(intent === "create" ? "/create" : "/");
+        router.replace(postLoginTarget);
       })
       .catch(() => {
         localStorage.removeItem("pf_token");
@@ -61,21 +77,29 @@ function LoginInner() {
   }, []);
 
   const submit = async () => {
+    if (submitting) return;
     setErr("");
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setErr("Enter a valid email address.");
     if (pass.length < 6) return setErr("Password must be at least 6 characters.");
     if (isSignup && !name.trim()) return setErr("Pick a display name.");
+    setSubmitting(true);
     try {
       const result = isSignup ? await api.register(email, pass, name.trim()) : await api.login(email, pass);
       done(result.token, result.user);
     } catch (error) {
       setErr(error instanceof ApiError ? error.message : "Something went wrong");
+    } finally {
+      setSubmitting(false);
     }
   };
 
   const oauth = async (provider: string) => {
     if (providers[provider]) {
       window.location.href = api.oauthStartUrl(provider);
+      return;
+    }
+    if (!providers._demo) {
+      setErr(`${provider === "google" ? "Google" : "GitHub"} sign-in is not configured.`);
       return;
     }
     try {
@@ -148,8 +172,8 @@ function LoginInner() {
 
         {err ? <div className="pf-auth-error">{err}</div> : null}
 
-        <button className="pf-auth-submit" onClick={submit} type="button">
-          {isSignup ? "Create account" : "Log in"}
+        <button className="pf-auth-submit" disabled={submitting} onClick={submit} type="button">
+          {submitting ? "Please wait..." : isSignup ? "Create account" : "Log in"}
         </button>
 
         <div className="pf-auth-switch">

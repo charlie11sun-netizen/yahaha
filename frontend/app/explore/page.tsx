@@ -182,70 +182,6 @@ const keywordArtMap: Array<{ keywords: string[]; art: BoundArt }> = [
   { keywords: ["echo", "color", "palette", "颜色"], art: ART.color },
 ];
 
-const fallbackGames: HomeGame[] = [
-  {
-    title: "Neon Alley Cat",
-    author: "PixelPioneer",
-    authorInit: "P",
-    summary:
-      "A fast-paced arcade game where a street-smart cat dodges drones, hacks terminals, and outruns the city enforcers in a neon-soaked future.",
-    genre: "Action Arcade",
-    image: "/gameweave/neon-featured.jpg",
-    thumb: "/gameweave/neon-trending.jpg",
-    tags: ["Action", "Arcade", "Cyberpunk", "Cat", "AI Generated"],
-    date: "May 8, 2024",
-    plays: "12.4K",
-    playsLabel: "12.4K Plays",
-    playsNumber: 12400,
-    ai: true,
-  },
-  {
-    title: "Pixel Drifter",
-    author: "RetroKnight",
-    authorInit: "R",
-    summary: "Drift through endless pixel roads, collect boosters, run your best.",
-    genre: "Arcade",
-    image: "/gameweave/pixel-drifter.jpg",
-    thumb: "/gameweave/thumb-pixel.jpg",
-    tags: ["Arcade", "Racing", "Pixel"],
-    date: "Apr 28, 2024",
-    plays: "3.1K",
-    playsLabel: "3.1K Plays",
-    playsNumber: 3100,
-    ai: true,
-  },
-  {
-    title: "Skybound Chronicles",
-    author: "StoryWeaver",
-    authorInit: "S",
-    summary: "A story-rich adventure across floating islands and ancient ruins.",
-    genre: "RPG Adventure",
-    image: "/gameweave/skybound-chronicles.jpg",
-    thumb: "/gameweave/thumb-skybound.jpg",
-    tags: ["RPG", "Adventure", "Fantasy"],
-    date: "May 6, 2024",
-    plays: "15.8K",
-    playsLabel: "15.8K Plays",
-    playsNumber: 15800,
-    ai: true,
-  },
-  {
-    title: "Circuit Breakers",
-    author: "CodeStorm",
-    authorInit: "C",
-    summary: "Solve logic puzzles by restoring power and lighting the grid.",
-    genre: "Puzzle",
-    image: "/gameweave/circuit-breakers.jpg",
-    thumb: "/gameweave/thumb-circuit.jpg",
-    tags: ["Puzzle", "Logic", "Grid"],
-    date: "May 4, 2024",
-    plays: "9.3K",
-    playsLabel: "9.3K Plays",
-    playsNumber: 9300,
-    ai: false,
-  },
-];
-
 const flowSteps: Step[] = [
   { title: "Describe", detail: "Enter your game idea in plain language.", icon: MessageCircle, tint: "from-violet-500 to-purple-500" },
   { title: "Upload", detail: "Add images, videos, or other assets.", icon: UploadCloud, tint: "from-blue-500 to-sky-500" },
@@ -289,25 +225,21 @@ export default function HomePage() {
   });
   const tagsQ = useQuery({ queryKey: ["tags"], queryFn: api.tags });
 
+  // 加载中/失败一律不用假数据顶替：骨架屏 + 明确错误态（假卡会侵蚀用户信任）
   const allGames = useMemo(() => {
     const live = allGamesQ.data?.items;
-    return live ? live.map(toHomeGame) : fallbackGames;
+    return live ? live.map(toHomeGame) : [];
   }, [allGamesQ.data?.items]);
 
   const visibleGames = useMemo(() => {
     const live = gamesQ.data?.items;
-    const mapped = live ? live.map(toHomeGame) : fallbackGames;
-    return mapped.filter((game) => {
-      if (activeFilter === "AI Generated" && !game.ai) return false;
-      if (activeFilter !== "All" && activeFilter !== "AI Generated" && !game.tags.includes(activeFilter)) return false;
-      const q = query.trim().toLowerCase();
-      if (!q) return true;
-      return `${game.title} ${game.author} ${game.summary} ${game.tags.join(" ")}`.toLowerCase().includes(q);
-    });
-  }, [activeFilter, gamesQ.data?.items, query]);
+    const mapped = live ? live.map(toHomeGame) : [];
+    // 搜索/标签已在服务端过滤；客户端只保留服务端没有的 "AI Generated" 维度
+    return activeFilter === "AI Generated" ? mapped.filter((game) => game.ai) : mapped;
+  }, [activeFilter, gamesQ.data?.items]);
 
   const rankedGames = useMemo(() => [...allGames].sort((a, b) => b.playsNumber - a.playsNumber), [allGames]);
-  const featured = rankedGames[0] ?? fallbackGames[0];
+  const featured: HomeGame | undefined = rankedGames[0];
   const trending = rankedGames.slice(0, 4);
 
   const filterTabs = useMemo(() => {
@@ -386,13 +318,19 @@ export default function HomePage() {
           </div>
         </div>
 
-        <ShowcaseCard featured={featured} trending={trending} onOpen={goDetail} onPlay={goPlay} />
+        {featured ? (
+          <ShowcaseCard featured={featured} trending={trending} onOpen={goDetail} onPlay={goPlay} />
+        ) : (
+          <div aria-hidden className="h-[420px] animate-pulse rounded-3xl border border-slate-200 bg-white/60" />
+        )}
       </section>
 
       {/* ─── Featured spotlight ───────────────────────────────── */}
-      <section className={cn(SHELL, "pb-4")}>
-        <FeaturedSpotlight game={featured} onPlay={goPlay} />
-      </section>
+      {featured && (
+        <section className={cn(SHELL, "pb-4")}>
+          <FeaturedSpotlight game={featured} onPlay={goPlay} />
+        </section>
+      )}
 
       {/* ─── Explore ──────────────────────────────────────────── */}
       <section id="explore" className={cn(SHELL, "scroll-mt-20 pt-12 pb-6")}>
@@ -400,7 +338,7 @@ export default function HomePage() {
           <div>
             <h2 className="font-display text-2xl font-bold tracking-tight text-slate-900">Explore Published Games</h2>
             {gamesQ.isError ? (
-              <p className="mt-1 text-xs font-medium text-slate-400">Live games unavailable — showing local preview content.</p>
+              <p className="mt-1 text-xs font-medium text-rose-500">Could not load games — the backend may be unreachable.</p>
             ) : (
               <p className="mt-1 text-sm text-slate-500">Fresh drops from the community, generated and published with AI.</p>
             )}
@@ -456,17 +394,24 @@ export default function HomePage() {
         </div>
 
         <div className="mt-7 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-          {gamesQ.isLoading
-            ? Array.from({ length: 6 }).map((_, i) => <GameCardSkeleton key={i} />)
-            : visibleGames.length === 0
-              ? (
-                <div className="col-span-full rounded-2xl border border-dashed border-slate-200 bg-white/60 p-12 text-center text-sm text-slate-500">
-                  No published games match this search.
-                </div>
-              )
-              : visibleGames.map((game) => (
-                  <GameCard key={game.id ?? game.title} game={game} onOpen={() => goDetail(game.id)} onPlay={() => goPlay(game.id)} />
-                ))}
+          {gamesQ.isLoading ? (
+            Array.from({ length: 6 }).map((_, i) => <GameCardSkeleton key={i} />)
+          ) : gamesQ.isError ? (
+            <div className="col-span-full rounded-2xl border border-dashed border-rose-200 bg-rose-50/60 p-12 text-center text-sm text-rose-600">
+              <p>Could not load games. Check your connection or try again.</p>
+              <Button className="mt-4 rounded-full" variant="outline" onClick={() => gamesQ.refetch()}>
+                Retry
+              </Button>
+            </div>
+          ) : visibleGames.length === 0 ? (
+            <div className="col-span-full rounded-2xl border border-dashed border-slate-200 bg-white/60 p-12 text-center text-sm text-slate-500">
+              No published games match this search.
+            </div>
+          ) : (
+            visibleGames.map((game) => (
+              <GameCard key={game.id ?? game.title} game={game} onOpen={() => goDetail(game.id)} onPlay={() => goPlay(game.id)} />
+            ))
+          )}
         </div>
 
         {gamesQ.data?.has_more && !gamesQ.isLoading ? (

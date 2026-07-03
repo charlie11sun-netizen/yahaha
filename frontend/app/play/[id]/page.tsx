@@ -34,7 +34,7 @@ export default function PlayPage() {
   const { id } = useParams() as { id: string };
   const router = useRouter();
   const stageRef = useRef<HTMLDivElement>(null);
-  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const frameRef = useRef<HTMLIFrameElement>(null);
   const played = useRef(false);
   const qc = useQueryClient();
   const { data: game, error, isLoading, refetch } = useQuery({
@@ -51,11 +51,6 @@ export default function PlayPage() {
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [isTheater, setIsTheater] = useState(false);
 
-  const clearTimers = () => {
-    timers.current.forEach(clearTimeout);
-    timers.current = [];
-  };
-
   const patchRuntime = (key: RuntimeKey, status: RuntimeStatus) => {
     setRuntime((current) => ({ ...current, [key]: status }));
   };
@@ -65,7 +60,6 @@ export default function PlayPage() {
   };
 
   const runLoad = async (nextGame: Game) => {
-    clearTimers();
     setPhase("loading");
     setRuntime({ manifest: "running", sandbox: "pending", bundle: "pending" });
     setActivity(["Fetching manifest from object storage…"]);
@@ -85,31 +79,30 @@ export default function PlayPage() {
       return;
     }
 
-    patchRuntime("sandbox", "running");
-    addActivity("Preparing isolated browser runtime");
-    const T = timers.current;
-    T.push(setTimeout(() => {
-      patchRuntime("sandbox", "ready");
-      patchRuntime("bundle", "running");
-      addActivity("Sandbox ready. Mounting generated bundle");
-    }, 400));
-    T.push(setTimeout(() => {
-      if (!nextGame.bundle_url) {
-        patchRuntime("bundle", "failed");
-        addActivity("Bundle URL is missing");
-        setPhase("error");
-        return;
-      }
-      patchRuntime("bundle", "ready");
-      addActivity("Bundle mounted. Starting preview");
-      setIframeKey((key) => key + 1);
-      setPhase("ready");
-    }, 850));
+    // 舞台状态绑定真实事件：bundle 状态由 iframe onLoad 翻转，
+    // 不再用 setTimeout 表演"已挂载"（真 404 时旧 UI 已显示 Bundle mounted）。
+    if (!nextGame.bundle_url) {
+      patchRuntime("sandbox", "failed");
+      patchRuntime("bundle", "failed");
+      addActivity("Bundle URL is missing");
+      setPhase("error");
+      return;
+    }
+    patchRuntime("sandbox", "ready");
+    addActivity("Sandboxed iframe prepared (scripts only, no same-origin)");
+    patchRuntime("bundle", "running");
+    addActivity("Mounting bundle from object storage…");
+    setIframeKey((key) => key + 1);
+    setPhase("ready");
+  };
+
+  const onBundleLoaded = () => {
+    patchRuntime("bundle", "ready");
+    recordPlay();
   };
 
   useEffect(() => {
     if (game) runLoad(game);
-    return clearTimers;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [game?.id, game?.bundle_url]);
 
@@ -140,6 +133,8 @@ export default function PlayPage() {
   // iframe 游戏可回传分数：window.parent.postMessage({type:"gameweave:score", points, name})
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
+      // 只信任游戏 iframe 本身发来的消息，其他窗口引用（opener、嵌入内容）不得刷榜
+      if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
       const d = event.data;
       if (d && typeof d === "object" && d.type === "gameweave:score" && typeof d.points === "number") {
         api
@@ -154,7 +149,7 @@ export default function PlayPage() {
 
   const restart = () => {
     if (!game) return;
-    played.current = false;
+    // played 不重置：plays 统计的是"一次游玩会话"，点 Restart 不该 +1
     runLoad(game);
   };
 
@@ -288,7 +283,8 @@ export default function PlayPage() {
               <iframe
                 allow="fullscreen"
                 key={iframeKey}
-                onLoad={recordPlay}
+                onLoad={onBundleLoaded}
+                ref={frameRef}
                 sandbox="allow-scripts allow-pointer-lock"
                 src={game.bundle_url}
                 title={game.title}

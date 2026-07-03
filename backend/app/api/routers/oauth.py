@@ -4,11 +4,14 @@
 流程：/start 跳转授权页 → /callback 用 code 换 token、取 profile、
 upsert User + OAuthAccount、签发本站 JWT，最后重定向回前端 /login?token=...
 """
+import datetime as dt
+import hmac
+import secrets
 from urllib.parse import urlencode
 
 import httpx
 import jwt
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -18,6 +21,8 @@ from app.db.session import get_db
 from app.models import OAuthAccount, User
 
 router = APIRouter(prefix="/auth", tags=["oauth"])
+_STATE_COOKIE = "gameweave_oauth_state"
+_STATE_TTL_SECONDS = 600
 
 _PROVIDERS = {
     "google": {
@@ -59,7 +64,7 @@ def _redirect_uri(provider: str) -> str:
 @router.get("/oauth/providers")
 def oauth_providers():
     """前端据此决定按钮走真实流程还是 demo。"""
-    return {p: _enabled(p) for p in _PROVIDERS}
+    return {**{p: _enabled(p) for p in _PROVIDERS}, "_demo": settings.ENABLE_OAUTH_DEMO}
 
 
 @router.get("/oauth/{provider}/start")
@@ -69,7 +74,18 @@ def oauth_start(provider: str):
     if not _enabled(provider):
         raise HTTPException(status_code=404, detail="Provider not configured")
     cid, _ = _creds(provider)
-    state = jwt.encode({"p": provider}, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+    nonce = secrets.token_urlsafe(32)
+    now = dt.datetime.now(dt.timezone.utc)
+    state = jwt.encode(
+        {
+            "p": provider,
+            "n": nonce,
+            "iat": now,
+            "exp": now + dt.timedelta(seconds=_STATE_TTL_SECONDS),
+        },
+        settings.JWT_SECRET,
+        algorithm=settings.JWT_ALGORITHM,
+    )
     params = {
         "client_id": cid,
         "redirect_uri": _redirect_uri(provider),
@@ -77,7 +93,17 @@ def oauth_start(provider: str):
         "scope": _PROVIDERS[provider]["scope"],
         "state": state,
     }
-    return RedirectResponse(f"{_PROVIDERS[provider]['authorize']}?{urlencode(params)}")
+    response = RedirectResponse(f"{_PROVIDERS[provider]['authorize']}?{urlencode(params)}")
+    response.set_cookie(
+        _STATE_COOKIE,
+        nonce,
+        max_age=_STATE_TTL_SECONDS,
+        httponly=True,
+        secure=_redirect_uri(provider).startswith("https://"),
+        samesite="lax",
+        path="/auth/oauth/",
+    )
+    return response
 
 
 def _fetch_profile(provider: str, access_token: str) -> tuple[str, str | None, str]:
@@ -85,25 +111,39 @@ def _fetch_profile(provider: str, access_token: str) -> tuple[str, str | None, s
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
     prof = httpx.get(cfg["userinfo"], headers=headers, timeout=15).json()
     if provider == "google":
-        return str(prof.get("sub") or ""), prof.get("email"), prof.get("name") or "Google User"
+        email = prof.get("email") if prof.get("email_verified") is True else None
+        return str(prof.get("sub") or ""), email, prof.get("name") or "Google User"
     account_id = str(prof.get("id") or "")
-    email = prof.get("email")
     name = prof.get("name") or prof.get("login") or "GitHub User"
-    if not email:
-        emails = httpx.get("https://api.github.com/user/emails", headers=headers, timeout=15).json()
-        if isinstance(emails, list) and emails:
-            primary = next((e for e in emails if e.get("primary")), emails[0])
-            email = primary.get("email")
+    emails = httpx.get("https://api.github.com/user/emails", headers=headers, timeout=15).json()
+    verified = [e for e in emails if e.get("verified") and e.get("email")] if isinstance(emails, list) else []
+    primary = next((e for e in verified if e.get("primary")), verified[0] if verified else None)
+    email = primary.get("email") if primary else None
     return account_id, email, name
 
 
 @router.get("/oauth/{provider}/callback")
-def oauth_callback(provider: str, code: str = "", state: str = "", db: Session = Depends(get_db)):
+def oauth_callback(
+    provider: str,
+    request: Request,
+    code: str = "",
+    state: str = "",
+    db: Session = Depends(get_db),
+):
     if not _enabled(provider):
         raise HTTPException(status_code=404, detail="Provider not configured")
     try:
-        jwt.decode(state, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
-    except jwt.PyJWTError as exc:
+        claims = jwt.decode(
+            state,
+            settings.JWT_SECRET,
+            algorithms=[settings.JWT_ALGORITHM],
+            options={"require": ["exp", "iat"]},
+        )
+        expected_nonce = request.cookies.get(_STATE_COOKIE) or ""
+        actual_nonce = str(claims.get("n") or "")
+        if claims.get("p") != provider or not expected_nonce or not hmac.compare_digest(actual_nonce, expected_nonce):
+            raise ValueError("OAuth state is not bound to this browser")
+    except (jwt.PyJWTError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="Invalid OAuth state") from exc
 
     cid, secret = _creds(provider)
@@ -147,5 +187,13 @@ def oauth_callback(provider: str, code: str = "", state: str = "", db: Session =
         db.commit()
         db.refresh(user)
 
+    if not user.is_active:
+        # 与密码登录同一条规则：禁用账号不得经 OAuth 换取新 token
+        raise HTTPException(status_code=403, detail="Account is disabled")
+
     token = create_access_token(user.id)
-    return RedirectResponse(f"{settings.FRONTEND_BASE_URL}/login?token={token}")
+    # Fragments are not sent in HTTP requests or Referer headers. The front-end
+    # consumes and removes this value immediately.
+    response = RedirectResponse(f"{settings.FRONTEND_BASE_URL}/login#{urlencode({'token': token})}")
+    response.delete_cookie(_STATE_COOKIE, path="/auth/oauth/")
+    return response

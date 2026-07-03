@@ -1,3 +1,5 @@
+import re
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
@@ -34,10 +36,13 @@ async def upload(
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    out = []
+    if len(files) > MAX_FILES:
+        raise HTTPException(status_code=413, detail=f"At most {MAX_FILES} files may be uploaded at once")
+
+    prepared: list[tuple[str, bytes, str]] = []
     total = 0
-    for f in files[:MAX_FILES]:
-        data = await f.read()
+    for f in files:
+        data = await f.read(MAX_FILE_BYTES + 1)
         content_type = f.content_type or "application/octet-stream"
         if not _allowed(content_type):
             raise HTTPException(status_code=415, detail=f"Unsupported file type: {content_type}")
@@ -46,21 +51,38 @@ async def upload(
         total += len(data)
         if total > MAX_TOTAL_BYTES:
             raise HTTPException(status_code=413, detail="Total upload exceeds 40MB limit")
-        asset_id = gen_uuid()
-        key = f"uploads/{user.id}/{asset_id}/{f.filename}"
-        s3.put_object(key, data, content_type)
-        asset = Asset(
-            id=asset_id,
-            owner_id=user.id,
-            filename=f.filename or "file",
-            content_type=content_type,
-            kind=_kind(content_type),
-            size_bytes=len(data),
-            oss_key=key,
-        )
-        db.add(asset)
-        out.append(asset)
-    db.commit()
+        filename = re.split(r"[/\\]", f.filename or "file")[-1].strip()[:255] or "file"
+        prepared.append((filename, data, content_type))
+
+    out = []
+    uploaded_keys: list[str] = []
+    try:
+        for filename, data, content_type in prepared:
+            asset_id = gen_uuid()
+            key = f"uploads/{user.id}/{asset_id}/{filename}"
+            s3.put_object(key, data, content_type)
+            uploaded_keys.append(key)
+            asset = Asset(
+                id=asset_id,
+                owner_id=user.id,
+                filename=filename,
+                content_type=content_type,
+                kind=_kind(content_type),
+                size_bytes=len(data),
+                oss_key=key,
+            )
+            db.add(asset)
+            out.append(asset)
+        db.commit()
+    except Exception:
+        # 第 N 个上传失败时 DB 会整体回滚，但前 N-1 个对象已在 OSS —— 回删防孤儿
+        db.rollback()
+        for key in uploaded_keys:
+            try:
+                s3.delete_prefix(key)
+            except Exception:  # noqa: BLE001
+                pass
+        raise HTTPException(status_code=502, detail="Upload storage failed, please retry")
     return {
         "assets": [
             {
@@ -68,7 +90,7 @@ async def upload(
                 "name": a.filename,
                 "kind": a.kind,
                 "size": a.size_bytes,
-                "url": s3.public_url(a.oss_key),
+                "url": s3.presigned_url(a.oss_key),
             }
             for a in out
         ]

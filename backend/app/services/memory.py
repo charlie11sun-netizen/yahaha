@@ -27,10 +27,12 @@ _SECRET_RE = re.compile(
     r"(api[_-]?key|secret|token|password|bearer\s+[a-z0-9._-]{10,}|sk-[a-z0-9_-]{10,})",
     re.IGNORECASE,
 )
-_EPHEMERAL_RE = re.compile(
-    r"这次|本次|临时|先试试|只改这次|only this time|for now|temporarily|try it",
-    re.IGNORECASE,
-)
+def _has_persistent_claim(raw: str) -> bool:
+    """临时措辞的处理已下沉到 claim 级：整条皆临时（"这次先试试…"）不入长期
+    记忆；混合表达按 claim 拆分后由 _scope_for 分流，持久部分照常入档。"""
+    from app.services.memory_profiles import _TASK_SCOPE_RE, _split_claims
+
+    return any(not _TASK_SCOPE_RE.search(claim) for claim in _split_claims(raw))
 
 DEFAULT_LIMIT = 8
 MAX_CONTEXT_CHARS = 1600
@@ -682,6 +684,20 @@ def capture_success_memories(db: Session, *, task_id: str, state: dict) -> list[
     if not settings.enabled or not settings.allow_memory_extraction:
         return []
 
+    # 幂等：acks_late 重投递会整图重跑本函数。同一任务的自动记忆只落一次，
+    # 否则同一句反馈会作为"独立证据"重复计数，把 candidate 刷过晋升阈值
+    # （违背设计文档"避免重试任务刷高置信度"的承诺）。
+    already = (
+        db.query(MemoryItem.id)
+        .filter(
+            MemoryItem.source_task_id == task.id,
+            MemoryItem.source_type.in_([MemorySource.FEEDBACK, MemorySource.IDEA]),
+        )
+        .first()
+    )
+    if already:
+        return []
+
     game_id = state.get("game_id") or task.result_game_id or task.base_game_id
     version = state.get("base_version")
     if state.get("task_kind") == "revision":
@@ -694,7 +710,7 @@ def capture_success_memories(db: Session, *, task_id: str, state: dict) -> list[
     candidates = []
     if task.task_kind == "revision" and task.feedback_text:
         raw = _clean(task.feedback_text)
-        if not _skip_candidate(raw) and not _EPHEMERAL_RE.search(raw):
+        if not _skip_candidate(raw) and _has_persistent_claim(raw):
             brief = state.get("feedback_brief") or task.feedback_brief
             candidates.append({
                 "scope_type": MemoryScope.GAME,

@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, rate_limit
-from app.core.security import create_access_token, hash_password, verify_password
+from app.core.config import settings
+from app.core.security import create_access_token, hash_password, password_hash_needs_upgrade, verify_password
 from app.db.session import get_db
 from app.models import OAuthAccount, User
 from app.schemas import ChangePasswordIn, LoginIn, ProfileUpdateIn, RegisterIn
@@ -38,6 +39,9 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is disabled")
+    if password_hash_needs_upgrade(user.password_hash):
+        user.password_hash = hash_password(body.password)
+        db.commit()
     return {"token": create_access_token(user.id), "user": user_out(user)}
 
 
@@ -73,8 +77,20 @@ def change_password(body: ChangePasswordIn, user: User = Depends(get_current_use
 
 @router.delete("/me")
 def delete_me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from app.models import Game
+    from app.storage import s3
+
+    # 先记下要清的对象存储前缀（游戏 bundle 公网可读、上传件永久滞留），DB 级联删除后清理
+    game_ids = [gid for (gid,) in db.query(Game.id).filter(Game.author_id == user.id)]
+    uid = user.id
     db.delete(user)
     db.commit()
+    try:
+        for gid in game_ids:
+            s3.delete_prefix(f"games/{gid}/")
+        s3.delete_prefix(f"uploads/{uid}/")
+    except Exception:  # noqa: BLE001  尽力清理，OSS 不可用不阻塞删号
+        pass
     return {"ok": True}
 
 
@@ -86,7 +102,9 @@ def logout(_user: User = Depends(get_current_user)):
 
 @router.post("/oauth/{provider}/demo")
 def oauth_demo(provider: str, db: Session = Depends(get_db)):
-    """Mock OAuth（demo）。真实接入设计见 docs/数据模型与接口.md。"""
+    """Explicitly enabled local-only OAuth demo using shared identities."""
+    if not settings.ENABLE_OAUTH_DEMO:
+        raise HTTPException(status_code=404, detail="OAuth demo is disabled")
     if provider not in ("google", "github"):
         raise HTTPException(status_code=404, detail="Unknown provider")
     name = "Ada Lovelace" if provider == "google" else "octocat"

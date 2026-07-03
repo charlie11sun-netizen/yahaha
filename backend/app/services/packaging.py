@@ -18,6 +18,35 @@ _CONTENT_TYPE = {
     "three.min.js": "application/javascript; charset=utf-8",
 }
 
+# iframe 的 sandbox 属性并不拦网络请求；manifest 承诺的 permissions.network=false
+# 靠这里注入的 CSP 在浏览器层强制：connect-src 'none' 掐断 fetch/XHR/WebSocket/
+# sendBeacon，default-src 'none' 掐断外链脚本等一切非白名单加载；同前缀相对
+# 路径资源（style.css / game.js / three.min.js）经 'self' 放行。
+_CSP_META = (
+    '<meta http-equiv="Content-Security-Policy" content="'
+    "default-src 'none'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; "
+    "media-src 'self' data: blob:; "
+    "font-src 'self' data:; "
+    "connect-src 'none'; "
+    "form-action 'none'; "
+    "base-uri 'none'\">"
+)
+
+
+def inject_csp(html: str) -> str:
+    """幂等地把 CSP <meta> 插到 <head> 开头（无 <head> 时置于文档最前）。"""
+    if 'http-equiv="Content-Security-Policy"' in html:
+        return html
+    head_at = html.lower().find("<head")
+    if head_at != -1:
+        close = html.find(">", head_at)
+        if close != -1:
+            return html[: close + 1] + _CSP_META + html[close + 1:]
+    return _CSP_META + html
+
 # 自托管的 3D 引擎（vendored Three.js UMD）。发布 3D 游戏时随 bundle 同源注入，
 # 用相对路径 <script src="three.min.js"> 引入，绕过外链校验、保持 network=false。
 _THREE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "agents", "vendor", "three.min.js")
@@ -51,6 +80,7 @@ def write_bundle(
     prefix = s3.game_prefix(game_id, version)
     bundle_key = f"{prefix}/index.html"
     manifest_key = f"{prefix}/manifest.json"
+    html = inject_csp(html)
     body = html.encode("utf-8")
     sha = hashlib.sha256(body).hexdigest()
 
@@ -94,6 +124,12 @@ def publish_generated(state: dict) -> tuple[str, str, str]:
 
     db = SessionLocal()
     try:
+        # 幂等：崩溃重投递会整图重跑到这里。该任务已发布过就复用既有产物，
+        # 不再新建第二个 Game / 重传 bundle。
+        existing = db.query(GameVersion).filter_by(source_task_id=state.get("task_id")).first()
+        if existing:
+            return existing.game_id, existing.id, s3.manifest_url(existing.game_id, existing.version)
+
         game = Game(
             author_id=state.get("user_id"), title=title, summary=summary, genre=genre, cover=cover,
             source=GameSource.CREATE, status=GameStatus.PREVIEW, current_version="v1",
@@ -111,12 +147,15 @@ def publish_generated(state: dict) -> tuple[str, str, str]:
 
         prefix = s3.game_prefix(gid, "v1")
         uploaded = []
+        total_bytes = 0
         for f in files:
+            content = inject_csp(f["content"]) if f["path"] == "index.html" else f["content"]
             key = f"{prefix}/{f['path']}"
-            s3.put_object(key, f["content"], _CONTENT_TYPE.get(f["path"], "text/plain; charset=utf-8"))
+            s3.put_object(key, content, _CONTENT_TYPE.get(f["path"], "text/plain; charset=utf-8"))
+            total_bytes += len(content.encode("utf-8"))
             uploaded.append({
                 "path": f["path"], "url": s3.public_url(key),
-                "sha256": hashlib.sha256(f["content"].encode("utf-8")).hexdigest(),
+                "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
             })
 
         # 3D：把自托管引擎放进同一前缀，bundle 内用相对路径加载（不进 validate_files）。
@@ -134,7 +173,7 @@ def publish_generated(state: dict) -> tuple[str, str, str]:
         version = GameVersion(
             game_id=gid, version="v1", manifest_key=f"{prefix}/manifest.json",
             bundle_key=f"{prefix}/index.html", entry="index.html", runtime="iframe-html",
-            sha256=index_sha, size_bytes=sum(len(f["content"].encode("utf-8")) for f in files),
+            sha256=index_sha, size_bytes=total_bytes,
             source_task_id=state.get("task_id"),
         )
         db.add(version)
@@ -169,6 +208,17 @@ def publish_revision(state: dict) -> tuple[str, str, str, str]:
     files = state.get("generated_files") or []
     db = SessionLocal()
     try:
+        # 幂等：同 publish_generated —— 重投递重跑时直接复用该任务已产出的版本
+        # （此时 current_version 已前进，继续往下走会被 stale-base 检查误杀）。
+        existing = db.query(GameVersion).filter_by(source_task_id=state.get("task_id")).first()
+        if existing:
+            return (
+                existing.game_id,
+                existing.id,
+                existing.version,
+                s3.manifest_url(existing.game_id, existing.version),
+            )
+
         game = db.get(Game, game_id)
         if not game or game.author_id != state.get("user_id"):
             raise RuntimeError("revision target is missing or not owned by the user")
@@ -193,6 +243,8 @@ def publish_revision(state: dict) -> tuple[str, str, str, str]:
             content = str(file.get("content") or "")
             if path not in {"index.html", "style.css", "game.js"}:
                 continue
+            if path == "index.html":
+                content = inject_csp(content)
             key = f"{prefix}/{path}"
             encoded = content.encode("utf-8")
             s3.put_object(key, encoded, _CONTENT_TYPE.get(path, "text/plain; charset=utf-8"))

@@ -50,7 +50,7 @@ services:
     volumes:
       - miniodata:/data
 
-  # Create the bucket and make the games prefix anonymously readable so the
+  # Create the bucket and make only the games prefix anonymously readable so the
   # sandboxed <iframe> can load bundles cross-origin (the site gate covers the
   # app + API; raw bundle URLs in object storage are UUID-obscured but public).
   createbuckets:
@@ -61,10 +61,22 @@ services:
       /bin/sh -c "
       until mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin}; do echo 'waiting for minio...'; sleep 2; done;
       mc mb --ignore-existing local/${S3_BUCKET:-gameweave};
-      mc anonymous set download local/${S3_BUCKET:-gameweave};
+      mc anonymous set none local/${S3_BUCKET:-gameweave};
+      mc anonymous set download local/${S3_BUCKET:-gameweave}/games;
       echo 'bucket ready';
       exit 0;
       "
+
+  migrate:
+    build: ./backend
+    restart: "no"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-gameweave}
+    command: alembic upgrade head
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   api:
     build: ./backend
@@ -72,6 +84,9 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-gameweave}
+      # Schema is owned by the migrate service (alembic upgrade head); the dev
+      # create_all fallback must stay off so missing migrations fail loudly.
+      AUTO_CREATE_ALL: "false"
       REDIS_URL: redis://redis:6379/0
       S3_ENDPOINT: http://minio:9000
       # Public address browsers use to fetch game bundles. MUST be reachable from
@@ -80,6 +95,7 @@ services:
       CORS_ORIGINS: ${PUBLIC_WEB_URL:?set PUBLIC_WEB_URL in .env}
       FRONTEND_BASE_URL: ${PUBLIC_WEB_URL}
       OAUTH_REDIRECT_BASE: ${PUBLIC_API_URL:?set PUBLIC_API_URL in .env}
+      ENABLE_OAUTH_DEMO: "false"
       # SITE_PASSWORD comes from .env (env_file). Backend requires X-Gate-Token when set.
       SITE_PASSWORD: ${SITE_PASSWORD:?set SITE_PASSWORD in .env — site must not be public}
     command: sh -c "python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"
@@ -92,6 +108,8 @@ services:
         condition: service_healthy
       createbuckets:
         condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
 
   worker:
     build: ./backend
@@ -99,6 +117,7 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-gameweave}
+      AUTO_CREATE_ALL: "false"
       REDIS_URL: redis://redis:6379/0
       S3_ENDPOINT: http://minio:9000
       S3_PUBLIC_ENDPOINT: ${PUBLIC_S3_URL}
@@ -109,6 +128,8 @@ services:
       redis:
         condition: service_healthy
       createbuckets:
+        condition: service_completed_successfully
+      migrate:
         condition: service_completed_successfully
 
   beat:
@@ -124,6 +145,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   web:
     build:

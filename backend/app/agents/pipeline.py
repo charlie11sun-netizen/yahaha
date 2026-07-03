@@ -32,6 +32,28 @@ def _load_revision_files(game_id: str, version: str) -> list[dict]:
     return files
 
 
+def _cleanup_cancelled_artifacts(db, task, final: dict | None) -> None:
+    """取消恰好落在 publish 节点执行中时，图内已经建出 Game + bundle，
+    而收尾不会回填 result_game_id —— 删掉这个游离的 preview 游戏和它的对象存储产物。
+    revision 任务的 game_id 是用户已有的游戏，绝不能删，只保留新版本原样。
+    """
+    if not final or not final.get("game_id"):
+        return
+    if (task.task_kind or "generation") == "revision":
+        return
+    from app.models import Game
+    from app.storage import s3
+
+    game = db.get(Game, final["game_id"])
+    if game and game.id != task.result_game_id:
+        db.delete(game)
+        db.commit()
+        try:
+            s3.delete_prefix(f"games/{final['game_id']}/")
+        except Exception:  # noqa: BLE001  尽力清理，OSS 失败不影响取消语义
+            pass
+
+
 def run_generation(task_id: str) -> None:
     # 1) 置 running + 读取入参
     db = SessionLocal()
@@ -41,6 +63,15 @@ def run_generation(task_id: str) -> None:
             return
         if task.status == TaskStatus.CANCELLED:
             return
+        # acks_late + broker 重投递：终态任务的旧消息直接丢弃，不得重跑
+        # （否则会重复建 Game/bundle，并让 memory 证据重复计数）。
+        if task.status in (TaskStatus.SUCCEEDED, TaskStatus.FAILED):
+            return
+        if task.status == TaskStatus.RUNNING:
+            # worker 崩溃后的重投递：上一轮的步骤流已经作废，清掉再从头跑，
+            # 避免同一任务出现两套同名步骤。
+            for step in list(task.steps):
+                db.delete(step)
         task.status = TaskStatus.RUNNING
         task.started_at = now_utc()
         task.current_step = 0
@@ -69,6 +100,7 @@ def run_generation(task_id: str) -> None:
     err = ""
     try:
         from app.agents.graph import build_graph
+        from app.agents.tracing import TaskCancelledError
 
         use_real = settings.USE_REAL_MODEL and bool(settings.OPENAI_API_KEY.strip())
         graph = build_graph()
@@ -92,6 +124,9 @@ def run_generation(task_id: str) -> None:
                 "game_design": design,
             })
         final = graph.invoke(initial)
+    except TaskCancelledError:
+        # 用户取消：begin_step 在节点边界抛出。不算失败，收尾只做孤儿清理。
+        final = None
     except Exception as exc:  # noqa: BLE001
         err = str(exc)[:500]
 
@@ -102,6 +137,7 @@ def run_generation(task_id: str) -> None:
         if not task:
             return
         if task.status == TaskStatus.CANCELLED:
+            _cleanup_cancelled_artifacts(db, task, final)
             return
         if final is None:
             task.status = TaskStatus.FAILED

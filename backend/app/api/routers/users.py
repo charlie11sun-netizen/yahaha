@@ -1,6 +1,7 @@
 """公开作者主页 + 关注。"""
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_optional_user
@@ -58,7 +59,10 @@ def follow(user_id: str, user=Depends(get_current_user), db: Session = Depends(g
         raise HTTPException(status_code=404, detail="User not found")
     if not db.get(Follow, {"follower_id": user.id, "following_id": user_id}):
         db.add(Follow(follower_id=user.id, following_id=user_id))
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()  # 并发双击：复合主键兜底，当作已关注
     return {"following": True}
 
 

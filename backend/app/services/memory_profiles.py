@@ -63,7 +63,13 @@ _HEDGE_RE = re.compile(
     r"可能|也许|或许|试试|能不能|可不可以|感觉.*不错|maybe|perhaps|could we|can we try|might",
     re.IGNORECASE,
 )
-_CLAIM_SPLIT_RE = re.compile(r"[。！？!?;；\n]+|(?=\bbut\b)|(?=但是)|(?=但)|(?=同时)|(?=另外)", re.IGNORECASE)
+# 除句读外，还在作用域信号词（这次/以后/…）前切分：混合表达
+# "以后默认像素风，这次先调跳跃" 必须拆成两个不同作用域的 claim。
+_CLAIM_SPLIT_RE = re.compile(
+    r"[。！？!?;；\n]+|(?=\bbut\b)|(?=但是)|(?=但)|(?=同时)|(?=另外)"
+    r"|(?=这次)|(?=本次)|(?=以后)|(?=今后)|(?=\bfor now\b)|(?=\bthis time\b)|(?=\bfrom now on\b)",
+    re.IGNORECASE,
+)
 _NORMALIZE_RE = re.compile(r"[^a-z0-9\u4e00-\u9fff]+", re.IGNORECASE)
 _NEGATED_VALUE_RE = re.compile(
     r"(?:不要|不再|别用|别|取消|避免|not|no longer|without|stop using)\s*$",
@@ -289,7 +295,7 @@ def _link_profile_evidence(
 
 
 def _split_claims(text: str) -> list[str]:
-    parts = [_clean(part, 500).strip("；; ") for part in _CLAIM_SPLIT_RE.split(text)]
+    parts = [_clean(part, 500).strip("；;，, ") for part in _CLAIM_SPLIT_RE.split(text)]
     return [part for part in parts if len(part) >= 4] or [_clean(text, 500)]
 
 
@@ -331,6 +337,40 @@ def _is_hash_key(profile_key: str) -> bool:
 
 def _negation_parity(text: str) -> bool:
     return bool(_NEGATION_TOKEN_RE.search(text or ""))
+
+
+# 反义方向词对：一字之差的反向偏好（"不要太高" vs "不要太低"）embedding 相似度
+# 极高、否定奇偶性又相同，仅靠这两者会被错并成"强化"。方向冲突时禁止复用 value，
+# 让它走冲突状态机。
+_DIRECTION_PAIRS = [
+    ("高", "低"), ("快", "慢"), ("大", "小"), ("多", "少"), ("难", "易"),
+    ("难", "简单"), ("强", "弱"), ("亮", "暗"), ("重", "轻"), ("长", "短"),
+    ("high", "low"), ("fast", "slow"), ("big", "small"), ("large", "small"),
+    ("more", "less"), ("hard", "easy"), ("strong", "weak"), ("bright", "dark"),
+    ("long", "short"), ("loud", "quiet"),
+]
+
+
+def _direction_conflict(a: str, b: str) -> bool:
+    la, lb = (a or "").lower(), (b or "").lower()
+    for pos, neg in _DIRECTION_PAIRS:
+        a_pos, a_neg = pos in la, neg in la
+        b_pos, b_neg = pos in lb, neg in lb
+        if (a_pos and not a_neg and b_neg and not b_pos) or (a_neg and not a_pos and b_pos and not b_neg):
+            return True
+    return False
+
+
+def _refresh_embedding_for_summary(profile: MemoryProfile, previous_summary: str | None) -> None:
+    """summary 变更后向量必须跟随（correct_profile 的既有原则：Never retain a
+    vector for text that no longer matches it）。embedding 服务不可用时置空 ——
+    陈旧向量会让 _adopt_similar_key 的同义认领随强化次数漂移。"""
+    if _clean(previous_summary or "") == _clean(profile.summary_text or ""):
+        return
+    refreshed = memory_embeddings.embed_texts([_clean(profile.summary_text, 500)])
+    profile.embedding = refreshed[0] if refreshed else None
+    profile.embedding_model = memory_embeddings.embedding_model() if refreshed else None
+    profile.embedding_updated_at = now_utc() if refreshed else None
 
 
 def _backfill_profile_embeddings(peers: list[MemoryProfile]) -> None:
@@ -431,6 +471,7 @@ def _adopt_similar_key(
     same_value = (
         best_score >= PROFILE_VALUE_SIMILARITY_THRESHOLD
         and _negation_parity(claim_text) == _negation_parity(best_peer.summary_text)
+        and not _direction_conflict(claim_text, best_peer.summary_text)
     )
     return best_peer.profile_key, best_peer.value_text if same_value else None, claim_vector
 
@@ -938,12 +979,14 @@ def _reinforce_profile(
 ) -> MemoryProfile:
     if profile.source_memory_id != item.id:
         profile.support_count = max(1, int(profile.support_count or 1)) + 1
+    previous_summary = profile.summary_text
     profile.confidence = _support_adjusted_confidence(profile, claim["confidence"])
     profile.scope_confidence = max(_float(profile.scope_confidence), claim["scope_confidence"])
     profile.summary_text = claim["summary_text"]
     profile.evidence_span = claim["evidence_span"]
     profile.source_memory_id = item.id
     profile.last_supported_at = now_utc()
+    _refresh_embedding_for_summary(profile, previous_summary)
     if profile.status == MemoryProfileStatus.CANDIDATE:
         profile.expires_at = _candidate_expires_at()
     profile.version += 1
@@ -1468,6 +1511,7 @@ def _active_evidence_rows(db: Session, profile_id: str):
 
 def _apply_evidence_state(profile: MemoryProfile, rows) -> None:
     latest, latest_item = rows[0]
+    previous_summary = profile.summary_text
     profile.source_memory_id = latest.memory_id
     profile.value_text = latest.value_text
     profile.summary_text = latest.summary_text
@@ -1481,6 +1525,7 @@ def _apply_evidence_state(profile: MemoryProfile, rows) -> None:
     )
     profile.last_supported_at = latest_item.created_at
     profile.updated_at = now_utc()
+    _refresh_embedding_for_summary(profile, previous_summary)
 
 
 def _restore_previous_profile(db: Session, removed_profile: MemoryProfile, *, reason: str) -> None:

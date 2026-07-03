@@ -9,7 +9,11 @@ import time
 from app.agents.state import STEP_META
 from app.db.session import SessionLocal
 from app.models import AgentLog, AgentStep, GenerationTask
-from app.models.common import StepStatus, now_utc
+from app.models.common import StepStatus, TaskStatus, now_utc
+
+
+class TaskCancelledError(Exception):
+    """用户已取消任务：在下一个节点边界中止整张图（pipeline 捕获后静默收尾）。"""
 
 _START_HINTS = {
     "Safety Intake": "checking prompt length, uploaded asset ids, and blocked patterns",
@@ -35,6 +39,10 @@ def begin_step(task_id: str, agent: str, display: str) -> str | None:
         task = db.get(GenerationTask, task_id)
         if not task:
             return None
+        # 每个节点开始前都会经过这里 —— 取消检查放在这个天然的 DB 往返上，
+        # 运行中的任务最多再跑完当前节点就停，不再烧后续的 LLM 调用。
+        if task.status == TaskStatus.CANCELLED:
+            raise TaskCancelledError(task_id)
         seq = (task.current_step or 0) + 1
         step = AgentStep(task_id=task_id, seq=seq, agent=agent, name=display,
                          status=StepStatus.RUNNING, started_at=now_utc())

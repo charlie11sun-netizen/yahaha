@@ -59,6 +59,10 @@ USE_REAL_MODEL=true
 
 > 能一条命令搞定,是因为 compose 在**一台机器**上把 6 个容器 + 私有网络 + 持久卷一次拉起,服务间用服务名互连。
 
+> **迁移基线已 squash(一次性)**:迁移链已压缩为单一固化基线 `0001_baseline`(全新库直接 `alembic upgrade head` 即可)。
+> 如果你的 Postgres 卷是在 squash **之前**建的(alembic_version 还停在旧的 `0011_memory_pgvector`),升级代码后在 api 容器里执行一次:
+> `alembic stamp head --purge` —— 只对齐版本号,不动数据。之后一切照常。
+
 ---
 
 ## 三、方式 B — Zeabur(托管,多服务)
@@ -75,17 +79,18 @@ Zeabur 默认部署默认分支。确保要部署的代码在 `main`(或在服�
 | 1 | postgres | 数据库 → PostgreSQL | — | — | — | ❌ 不暴露 |
 | 2 | redis | 数据库 → Redis | — | — | — | ❌ 不暴露 |
 | 3 | minio | Docker 镜像 `minio/minio` | — | `server /data --console-address ":9001"` | 9000(挂卷到 `/data`) | ✅ 绑 9000 |
-| 4 | api | Git 仓库 | `backend` | `sh -c "python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"` | 8000 | ✅ 绑 8000 |
+| 4 | api | Git 仓库 | `backend` | `sh -c "alembic upgrade head && python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"` | 8000 | ✅ 绑 8000 |
 | 5 | worker | Git 仓库(同上) | `backend` | `celery -A app.tasks.celery_app.celery worker --loglevel=info` | — | ❌ 不绑(后台进程) |
 | 6 | web | Git 仓库 | `frontend` | 默认 Dockerfile(dev 即可跑;生产用 `Dockerfile.prod`) | 3000 | ✅ 绑 3000 |
 
 ### 2. MinIO 额外两步(compose 里自动,Zeabur 要手动)
-绑好 9000 公网域名后,在 **MinIO 容器终端**里建桶 + 放开匿名只读:
+绑好 9000 公网域名后，在 **MinIO 容器终端**里建桶，并且只放开游戏产物前缀；`uploads/` 保持私有：
 
 ```sh
 mc alias set local http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
 mc mb --ignore-existing local/gameweave
-mc anonymous set download local/gameweave
+mc anonymous set none local/gameweave
+mc anonymous set download local/gameweave/games
 ```
 
 ### 3. 各服务环境变量(粘进「编辑原始环境变量」)
@@ -105,6 +110,7 @@ OPENAI_API_KEY=<模型 key>
 OPENAI_BASE_URL=<模型地址>
 MODEL_NAME=<模型名>
 USE_REAL_MODEL=true
+ENABLE_OAUTH_DEMO=false
 OPENAI_TIMEOUT=600
 SITE_PASSWORD=<访问密码>
 CORS_ORIGINS=https://<WEB_DOMAIN>     # 仅 api 需要;等 web 有域名后回填

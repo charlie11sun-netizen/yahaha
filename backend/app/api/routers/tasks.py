@@ -45,7 +45,8 @@ def list_tasks(user=Depends(get_current_user), db: Session = Depends(get_db)):
         .order_by(GenerationTask.created_at.desc())
         .all()
     )
-    return {"items": [task_out(t) for t in tasks]}
+    # 列表只出轻量 summary（无 logs/steps/design/assets）；详情走 GET /tasks/{id}
+    return {"items": [task_out(t, include_details=False) for t in tasks]}
 
 
 @router.get("/{task_id}")

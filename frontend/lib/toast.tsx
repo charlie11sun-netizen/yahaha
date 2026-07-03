@@ -1,14 +1,18 @@
 "use client";
 import { createContext, useCallback, useContext, useRef, useState } from "react";
 
-const Ctx = createContext<(msg: string) => void>(() => {});
+type ToastOpts = { error?: boolean };
+
+const Ctx = createContext<(msg: string, opts?: ToastOpts) => void>(() => {});
 
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [msg, setMsg] = useState<string | null>(null);
+  const [isError, setIsError] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const flash = useCallback((m: string) => {
+  const flash = useCallback((m: string, opts?: ToastOpts) => {
     setMsg(m);
+    setIsError(Boolean(opts?.error));
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => setMsg(null), 2600);
   }, []);
@@ -37,7 +41,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
             animation: "pfrise .25s ease",
           }}
         >
-          <span style={{ color: "#39ff88" }}>✓</span> {msg}
+          <span style={{ color: isError ? "#ff6b6b" : "#39ff88" }}>{isError ? "✕" : "✓"}</span> {msg}
         </div>
       )}
     </Ctx.Provider>

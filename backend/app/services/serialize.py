@@ -145,15 +145,16 @@ def _iso(dt):
     return dt.isoformat() if dt else None
 
 
-def _latest_task_event_at(t):
+def _latest_task_event_at(t, scan_logs: bool = True):
     latest = t.created_at
     for step in t.steps:
         for dt in (step.started_at, step.finished_at, step.created_at):
             if dt and (latest is None or dt > latest):
                 latest = dt
-        for log in step.logs:
-            if log.created_at and (latest is None or log.created_at > latest):
-                latest = log.created_at
+        if scan_logs:
+            for log in step.logs:
+                if log.created_at and (latest is None or log.created_at > latest):
+                    latest = log.created_at
     if t.finished_at and (latest is None or t.finished_at > latest):
         latest = t.finished_at
     return latest
@@ -190,10 +191,13 @@ def _design_preview(spec: dict, design: dict):
     return {"title": spec.get("title") or "", "fields": fields} if fields else None
 
 
-def task_out(t) -> dict:
+def task_out(t, include_details: bool = True) -> dict:
+    """完整任务 DTO。include_details=False 产出列表用的轻量 summary：
+    跳过 logs / steps / design / assets 与逐步日志行 —— 任务列表按 3.5s 轮询，
+    全量 payload 会随任务积累线性爆炸。"""
     spec, design = _parse(t.spec_json), _parse(t.design_json)
     steps_by_agent = {s.agent: s for s in t.steps}
-    latest_event_at = _latest_task_event_at(t)
+    latest_event_at = _latest_task_event_at(t, scan_logs=include_details)
 
     step_summaries = []
     progress = 0
@@ -201,7 +205,7 @@ def task_out(t) -> dict:
     for agent, key, title in stages:
         s = steps_by_agent.get(agent)
         status = _ST.get(s.status, "pending") if s else "pending"
-        summary = (s.logs[-1].line if (s and s.logs) else None)
+        summary = (s.logs[-1].line if (include_details and s and s.logs) else None)
         if status == "completed":
             progress = max(progress, _PROGRESS[key])
         elif status == "running":
@@ -217,22 +221,7 @@ def task_out(t) -> dict:
     preview_url = f"/play/{game.id}" if game else None
     game_title = (game.title if game else None) or spec.get("title") or ""
 
-    assets = [
-        {"name": a.filename, "type": "uploaded", "status": "已上传",
-         "kind": a.kind, "url": s3.public_url(a.oss_key)}
-        for a in t.assets
-    ]
-
-    logs = [
-        {"agent_name": s.agent, "step": s.name,
-         "message": (s.logs[-1].line if s.logs else ""),
-         "created_at": _iso(s.logs[-1].created_at if s.logs else s.created_at),
-         "duration": _dur(s), "status": _ST.get(s.status, "pending"),
-         "lines": [log.line for log in s.logs]}
-        for s in t.steps
-    ]
-
-    return {
+    out = {
         "id": t.id, "status": t.status, "current_step": t.current_step, "current_agent": t.current_agent,
         "task_kind": getattr(t, "task_kind", "generation") or "generation",
         "base_game_id": getattr(t, "base_game_id", None),
@@ -248,13 +237,28 @@ def task_out(t) -> dict:
         "progress": progress, "game_title": game_title,
         "manifest_url": manifest_url, "preview_url": preview_url,
         "step_summaries": step_summaries,
-        "design": _design_preview(spec, design),
-        "assets": assets,
-        "logs": logs,
-        "steps": [
-            {"seq": s.seq, "agent": s.agent, "name": s.name, "status": s.status,
-             "logs": [log.line for log in s.logs]}
-            for s in t.steps
-        ],
         "game": game_detail(game) if game else None,
     }
+    if not include_details:
+        return out
+
+    out["design"] = _design_preview(spec, design)
+    out["assets"] = [
+        {"name": a.filename, "type": "uploaded", "status": "已上传",
+         "kind": a.kind, "url": s3.presigned_url(a.oss_key)}
+        for a in t.assets
+    ]
+    out["logs"] = [
+        {"agent_name": s.agent, "step": s.name,
+         "message": (s.logs[-1].line if s.logs else ""),
+         "created_at": _iso(s.logs[-1].created_at if s.logs else s.created_at),
+         "duration": _dur(s), "status": _ST.get(s.status, "pending"),
+         "lines": [log.line for log in s.logs]}
+        for s in t.steps
+    ]
+    out["steps"] = [
+        {"seq": s.seq, "agent": s.agent, "name": s.name, "status": s.status,
+         "logs": [log.line for log in s.logs]}
+        for s in t.steps
+    ]
+    return out

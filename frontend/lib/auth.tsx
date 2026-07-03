@@ -1,7 +1,7 @@
 "use client";
 import { createContext, useContext, useEffect, useState } from "react";
 
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import type { User } from "./types";
 
 interface AuthCtx {
@@ -31,7 +31,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     api
       .me()
       .then(setUser)
-      .catch(() => localStorage.removeItem("pf_token"))
+      .catch((err) => {
+        // 只有 401/403（token 失效/账号禁用）才清 token；
+        // 网络抖动或后端重启不应把用户静默登出。
+        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+          localStorage.removeItem("pf_token");
+        }
+      })
       .finally(() => setLoading(false));
   }, []);
 

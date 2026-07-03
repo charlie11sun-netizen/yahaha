@@ -17,6 +17,9 @@ FORBIDDEN_PATTERNS = [
     (r"fetch\s*\(", "fetch()"),
     (r"XMLHttpRequest", "XMLHttpRequest"),
     (r"\bWebSocket\b", "WebSocket"),
+    (r"\bimport\s*\(", "dynamic import()"),
+    (r"\bnavigator\.sendBeacon\b", "sendBeacon"),
+    (r"\bEventSource\b", "EventSource"),
     (r"<script[^>]+src=[\"']https?://", "external script"),
     (r"https?://(?!www\.w3\.org)", "external URL"),
 ]

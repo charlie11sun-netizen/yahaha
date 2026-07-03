@@ -13,7 +13,9 @@ alembic>=1.13                # 数据库迁移
 pgvector>=0.3                # PostgreSQL vector 类型与 SQLAlchemy ANN 查询
 
 # 鉴权（MVP 脚手架用最小 JWT 实现；生产换 fastapi-users，见 README）
-bcrypt>=4.0
+# bcrypt 必须 >=5：security.py 把原始 sha256 digest 字节喂给 bcrypt，digest 含
+# \x00 的概率约 12%，bcrypt 4.x 对含 NUL 的输入直接 ValueError（注册 500）
+bcrypt>=5.0
 pyjwt>=2.9
 
 # 异步任务

@@ -6,6 +6,9 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str = "postgresql+psycopg://gameweave:gameweave@localhost:5432/gameweave"
+    # 开发兜底建表（create_all 只能补缺表、不能补缺列）。生产 compose 置 false，
+    # schema 只走 Alembic，避免掩盖迁移缺口。
+    AUTO_CREATE_ALL: bool = True
 
     # Redis / Celery
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -50,6 +53,11 @@ class Settings(BaseSettings):
     GITHUB_CLIENT_SECRET: str = ""
     OAUTH_REDIRECT_BASE: str = "http://localhost:8000"
     FRONTEND_BASE_URL: str = "http://localhost:3000"
+    # Fixed shared demo identities are unsafe outside an explicit local demo.
+    ENABLE_OAUTH_DEMO: bool = False
+    # 演示故障注入（prompt 含 force-repair/force-replan 时故意注入违禁 API 触发
+    # 修复回环）。仅限本地演示显式开启。
+    DEMO_FAULT_INJECTION: bool = False
 
     # Site access gate (front-door password). Empty = disabled (open). When set,
     # every API request must carry a matching X-Gate-Token; shared with the web

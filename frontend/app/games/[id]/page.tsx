@@ -120,7 +120,7 @@ export default function DetailPage() {
   return (
     <div className="pf-detail-page">
       <div className="pf-detail-shell">
-        <button className="pf-back-link" onClick={() => router.push("/")} type="button">
+        <button className="pf-back-link" onClick={() => router.push("/explore")} type="button">
           <ArrowLeft size={16} />
           Back to arcade
         </button>

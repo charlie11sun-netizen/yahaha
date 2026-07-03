@@ -75,7 +75,7 @@ function StudioPage() {
   const [profileActionId, setProfileActionId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!loading && !user) router.replace("/login");
+    if (!loading && !user) router.replace("/login?next=/me");
   }, [loading, user, router]);
 
   useEffect(() => {
@@ -92,7 +92,14 @@ function StudioPage() {
 
   const gamesQ = useQuery({ queryKey: ["me-games"], queryFn: api.myGames, enabled: !!user });
   const favQ = useQuery({ queryKey: ["me-favorites"], queryFn: api.myFavorites, enabled: !!user });
-  const tasksQ = useQuery({ queryKey: ["tasks"], queryFn: api.tasks, enabled: !!user, refetchInterval: 3500 });
+  const tasksQ = useQuery({
+    queryKey: ["tasks"],
+    queryFn: api.tasks,
+    enabled: !!user,
+    // 只在存在活跃任务时轮询；零任务时不再持续打后端
+    refetchInterval: (query) =>
+      query.state.data?.items?.some((t) => t.status === "pending" || t.status === "running") ? 3500 : false,
+  });
   const memoryQ = useQuery({ queryKey: ["memory"], queryFn: () => api.memories(), enabled: !!user });
   const memoryProfilesQ = useQuery({ queryKey: ["memory-profiles"], queryFn: () => api.memoryProfiles(), enabled: !!user });
   const memorySettingsQ = useQuery({ queryKey: ["memory-settings"], queryFn: api.memorySettings, enabled: !!user });
@@ -385,7 +392,7 @@ function StudioPage() {
               <>
                 <Panel title="Recent Games" actionLabel="View all games" onAction={() => switchSection("games")}>
                   <GameGrid
-                    emptyLabel={gamesQ.isLoading ? "Loading games..." : "No games yet"}
+                    emptyLabel={gamesQ.isLoading ? "Loading games..." : gamesQ.isError ? "Could not load games — try refreshing" : "No games yet"}
                     games={games.slice(0, 3)}
                     onDelete={removeGame}
                     onPublish={publishGame}
@@ -398,7 +405,7 @@ function StudioPage() {
                 <Panel title="Recent Generation Tasks" actionLabel="View all tasks" onAction={() => switchSection("tasks")}>
                   <TaskTable
                     deletingId={deletingTaskId}
-                    emptyLabel={tasksQ.isLoading ? "Loading tasks..." : "No generation tasks yet"}
+                    emptyLabel={tasksQ.isLoading ? "Loading tasks..." : tasksQ.isError ? "Could not load tasks — try refreshing" : "No generation tasks yet"}
                     onDelete={removeTask}
                     onOpen={openTask}
                     tasks={tasks.slice(0, 4)}
@@ -410,7 +417,7 @@ function StudioPage() {
             {section === "games" && (
               <Panel title="My Games" actionLabel="Create game" onAction={() => router.push("/create")}>
                 <GameGrid
-                  emptyLabel={gamesQ.isLoading ? "Loading games..." : "No games yet"}
+                  emptyLabel={gamesQ.isLoading ? "Loading games..." : gamesQ.isError ? "Could not load games — try refreshing" : "No games yet"}
                   games={games}
                   onDelete={removeGame}
                   onPublish={publishGame}
@@ -424,7 +431,7 @@ function StudioPage() {
             {section === "drafts" && (
               <Panel title="Draft Games" actionLabel="Create game" onAction={() => router.push("/create")}>
                 <GameGrid
-                  emptyLabel={gamesQ.isLoading ? "Loading drafts..." : "No draft games yet"}
+                  emptyLabel={gamesQ.isLoading ? "Loading drafts..." : gamesQ.isError ? "Could not load games — try refreshing" : "No draft games yet"}
                   games={drafts}
                   onDelete={removeGame}
                   onPublish={publishGame}
@@ -436,9 +443,9 @@ function StudioPage() {
             )}
 
             {section === "favorites" && (
-              <Panel title="Favorites" actionLabel="Explore games" onAction={() => router.push("/")}>
+              <Panel title="Favorites" actionLabel="Explore games" onAction={() => router.push("/explore")}>
                 <GameGrid
-                  emptyLabel={favQ.isLoading ? "Loading favorites..." : "No favorites yet"}
+                  emptyLabel={favQ.isLoading ? "Loading favorites..." : favQ.isError ? "Could not load favorites — try refreshing" : "No favorites yet"}
                   games={favorites}
                   onPublish={publishGame}
                   publishingId={publishingId}
@@ -451,7 +458,7 @@ function StudioPage() {
               <Panel title="Generation Tasks" actionLabel="Create game" onAction={() => router.push("/create")}>
                 <TaskTable
                   deletingId={deletingTaskId}
-                  emptyLabel={tasksQ.isLoading ? "Loading tasks..." : "No generation tasks yet"}
+                  emptyLabel={tasksQ.isLoading ? "Loading tasks..." : tasksQ.isError ? "Could not load tasks — try refreshing" : "No generation tasks yet"}
                   onDelete={removeTask}
                   onOpen={openTask}
                   tasks={tasks}

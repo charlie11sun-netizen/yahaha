@@ -91,7 +91,7 @@ ReAct 的典型模式是 `Thought → Action → Observation → …`，适合�
 
 ### 2.2 顶层采用固定 LangGraph Workflow
 
-顶层主干固定为（18 个功能节点，见 [`graph.py`](../backend/app/agents/graph.py)）：
+顶层主干固定为（22 个功能节点 + failed/done，含 revision 分支与 memory 节点，见 [`graph.py`](../backend/app/agents/graph.py)）：
 
 ```text
 safety_intake
@@ -498,7 +498,7 @@ localStorage  |  sessionStorage  |  fetch(  |  XMLHttpRequest  |  WebSocket
 
 ### 6.13 GameplayQAAgent (`gameplay_qa`)
 
-**新增的玩法闸**（`_gameplay_qa`），模型优先、只硬卡“这不是一个真游戏”，质量缺口降级为 warning（绝不把产物退化成模板）。
+**新增的玩法闸**（`_gameplay_qa`）：纯确定性检查（静态启发式 + V8 加载期冒烟），不调用模型、不模拟任何一帧运行；只硬卡“这不是一个真游戏”，质量缺口降级为 warning（绝不把产物退化成模板）。第一帧之后才出现的运行时错误不在本闸门覆盖范围内。
 
 硬失败（`issues` → 触发 gameplay_repair / replan）：
 
@@ -784,8 +784,9 @@ game_versions(id, game_id, version, manifest_key, bundle_key, entry,
 | `POST /tasks` | 创建任务，body `{idea, asset_ids[], dimension}`，限流 20/h，返回 `{task_id}`，并 `generate_game.delay` |
 | `GET /tasks` | 当前用户任务列表（`task_out`） |
 | `GET /tasks/{id}` | 任务详情（含 `step_summaries / progress / logs / steps / design / game`） |
+| `POST /tasks/{id}/revise` | 基于成功 preview 发起修订：body `{feedback}`，限流 20/h；校验 base 为当前版本且无进行中修订（409），新任务 `task_kind=revision` |
 | `POST /tasks/{id}/retry` | 仅 failed 可重试：清步骤、置 pending、重新入队 |
-| `POST /tasks/{id}/cancel` | 仅 pending/running 可取消 |
+| `POST /tasks/{id}/cancel` | 仅 pending/running 可取消；worker 在下一个节点边界感知并中止（tracing.begin_step 检查），publish 竞态产生的孤儿产物由收尾清理 |
 | `DELETE /tasks/{id}` | 删除（需先取消活跃任务） |
 
 > 历史文档的独立 `GET /tasks/:id/logs` 未实现——日志已折叠进 `task_out` 的 `logs` / `steps` 字段。
@@ -882,7 +883,7 @@ iframe sandbox（仅 `allow-scripts`，3D 加 `allow-pointer-lock`），`network
 ```text
 backend/app/
   agents/
-    graph.py            # 固定 LangGraph 图（16 节点 + failed/done）
+    graph.py            # 固定 LangGraph 图（22 功能节点 + failed/done）
     state.py            # GenerationState + STEP_META + 上限常量
     nodes.py            # 全部节点 + 条件边 + 启发式/3D 路由/QA
     prompts.py          # real 模式系统提示词（2D + 3D）
@@ -908,7 +909,7 @@ backend/app/
 本系统的 Multi-Agent 设计基于 Python + LangGraph，整体是一个工程化 Hybrid Workflow：
 
 ```text
-固定 LangGraph 主干（16 节点）
+固定 LangGraph 主干（22 功能节点）
 + 多段局部 Plan-and-Execute（intent→brief→mechanic→archetype→design→content→balance→code）
 + 两个 bounded ReAct repair loop（build repair ≤2 / gameplay repair ≤2）
 + 一次 constrained replan（≤1，回 balance_plan）

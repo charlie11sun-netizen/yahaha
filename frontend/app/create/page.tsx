@@ -29,7 +29,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/lib/toast";
 import type { AgentLogItem, StepSummary, Task, UploadedAsset } from "@/lib/types";
@@ -87,6 +87,7 @@ function CreatePageInner() {
   const [files, setFiles] = useState<UploadedAsset[]>([]);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [revising, setRevising] = useState(false);
   const [revisionFeedback, setRevisionFeedback] = useState("");
@@ -125,6 +126,12 @@ function CreatePageInner() {
     setTaskId(null);
   }, [resumeLast, taskParam]);
 
+  // 输入页顶部的"继续上次任务"横幅：站内导航离开再回来时，进行中的任务不再凭空消失
+  const [lastTaskId, setLastTaskId] = useState<string | null>(null);
+  useEffect(() => {
+    setLastTaskId(taskId ? null : localStorage.getItem(LAST_TASK_KEY));
+  }, [taskId]);
+
   const saveDraft = useCallback(() => {
     if (!idea.trim() && files.length === 0) {
       flash("Nothing to save yet");
@@ -148,8 +155,23 @@ function CreatePageInner() {
     queryKey: ["task", taskId],
     queryFn: () => api.task(taskId as string),
     enabled: !!taskId,
-    refetchInterval: (query) => (isActiveTask(query.state.data?.status) ? 1000 : false),
+    retry: (failureCount, error) =>
+      !(error instanceof ApiError && (error.status === 404 || error.status === 403)) && failureCount < 3,
+    refetchInterval: (query) => {
+      const err = query.state.error;
+      // 任务已删除/无权限：停止轮询，改渲染明确的 not-found 空态
+      if (err instanceof ApiError && (err.status === 404 || err.status === 403)) return false;
+      // 瞬时故障（网络抖动/后端重启）：3s 退避继续轮询 —— "Reconnecting" 必须是真的。
+      // 首拉即失败时 data 为 undefined，绝不能据此停轮（否则一次故障就永久卡死）。
+      if (err) return 3000;
+      const status = query.state.data?.status;
+      if (!status) return 1000;
+      return isActiveTask(status) ? 1000 : false;
+    },
   });
+  const taskMissing =
+    taskQuery.error instanceof ApiError &&
+    (taskQuery.error.status === 404 || taskQuery.error.status === 403);
 
   const tasksQuery = useQuery({
     queryKey: ["tasks"],
@@ -160,14 +182,30 @@ function CreatePageInner() {
 
   const task = taskQuery.data;
 
+  const MAX_ASSETS = 6; // 与后端 uploads.MAX_FILES 对齐
+
   const pickFiles = async (picked: FileList | File[] | null) => {
-    if (!picked || picked.length === 0) return;
+    if (!picked || picked.length === 0 || uploading) return;
+    const room = MAX_ASSETS - files.length;
+    if (room <= 0) {
+      flash(`At most ${MAX_ASSETS} assets per task`, { error: true });
+      return;
+    }
+    const selected = Array.from(picked);
+    setUploading(true);
     try {
-      const result = await api.upload(picked);
-      setFiles((current) => [...current, ...result.assets].slice(0, 5));
-      flash(`${result.assets.length} asset${result.assets.length === 1 ? "" : "s"} uploaded`);
-    } catch {
-      flash("Upload failed");
+      const result = await api.upload(selected.slice(0, room));
+      setFiles((current) => [...current, ...result.assets].slice(0, MAX_ASSETS));
+      const dropped = selected.length - Math.min(selected.length, room);
+      flash(
+        `${result.assets.length} asset${result.assets.length === 1 ? "" : "s"} uploaded` +
+          (dropped > 0 ? ` (${dropped} skipped — max ${MAX_ASSETS})` : ""),
+      );
+    } catch (error) {
+      // 把后端 413/415 的具体原因透传给用户，而不是笼统的 "Upload failed"
+      flash(error instanceof ApiError ? `Upload failed: ${error.message}` : "Upload failed", { error: true });
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -185,7 +223,7 @@ function CreatePageInner() {
       router.replace(`/create?task=${encodeURIComponent(result.task_id)}`);
       flash("Generation task started");
     } catch {
-      flash("Could not start generation");
+      flash("Could not start generation", { error: true });
     } finally {
       setBusy(false);
     }
@@ -202,7 +240,7 @@ function CreatePageInner() {
       await queryClient.invalidateQueries({ queryKey: ["tasks"] });
       flash("Retry started");
     } catch {
-      flash("Retry failed");
+      flash("Retry failed", { error: true });
     }
   };
 
@@ -214,7 +252,7 @@ function CreatePageInner() {
       await queryClient.invalidateQueries({ queryKey: ["tasks"] });
       flash("Task cancelled");
     } catch {
-      flash("Could not cancel task");
+      flash("Could not cancel task", { error: true });
     }
   };
 
@@ -226,9 +264,9 @@ function CreatePageInner() {
       await queryClient.invalidateQueries({ queryKey: ["games"] });
       await queryClient.invalidateQueries({ queryKey: ["stats"] });
       flash(`${task.game.title} published`);
-      router.push("/");
+      router.push("/explore"); // 游戏列表在 /explore，首页是营销落地页
     } catch {
-      flash("Publish failed");
+      flash("Publish failed", { error: true });
     } finally {
       setPublishing(false);
     }
@@ -246,7 +284,7 @@ function CreatePageInner() {
       await queryClient.invalidateQueries({ queryKey: ["tasks"] });
       flash("Revision task started from the current preview");
     } catch {
-      flash("Could not start revision");
+      flash("Could not start revision", { error: true });
     } finally {
       setRevising(false);
     }
@@ -281,7 +319,9 @@ function CreatePageInner() {
           <p>Describe your idea, upload references, and generate a playable web game.</p>
         </header>
 
-        {taskId ? (
+        {taskId && taskMissing ? (
+          <TaskMissingCard onBack={editBrief} />
+        ) : taskId ? (
           <CreateWorkspace
             connectionStatus={taskQuery.isError ? "Reconnecting" : "Connected"}
             files={files}
@@ -310,8 +350,10 @@ function CreatePageInner() {
             onOpenActivity={() => setActivityOpen(true)}
             onPickFiles={pickFiles}
             onRemoveFile={(id) => setFiles((current) => current.filter((file) => file.id !== id))}
+            onResumeLast={lastTaskId ? () => resumeTask(lastTaskId) : undefined}
             onSetDimension={setDimension}
             onSetIdea={setIdea}
+            uploading={uploading}
           />
         )}
       </section>
@@ -331,6 +373,21 @@ function CreatePageInner() {
   );
 }
 
+function TaskMissingCard({ onBack }: { onBack: () => void }) {
+  return (
+    <article className="pf-create-card pf-action-card">
+      <AlertCircle size={20} />
+      <h2>Task not found</h2>
+      <p className="pf-action-note">
+        This generation task no longer exists — it may have been deleted, or the link is stale.
+      </p>
+      <button className="pf-primary-wide" onClick={onBack} type="button">
+        Start a new game
+      </button>
+    </article>
+  );
+}
+
 function CreateInput({
   busy,
   dimension,
@@ -341,8 +398,10 @@ function CreateInput({
   onOpenActivity,
   onPickFiles,
   onRemoveFile,
+  onResumeLast,
   onSetDimension,
   onSetIdea,
+  uploading,
 }: {
   busy: boolean;
   dimension: "2d" | "3d";
@@ -353,15 +412,24 @@ function CreateInput({
   onOpenActivity: () => void;
   onPickFiles: (files: FileList | File[] | null) => void;
   onRemoveFile: (id: string) => void;
+  onResumeLast?: () => void;
   onSetDimension: (dimension: "2d" | "3d") => void;
   onSetIdea: (idea: string) => void;
+  uploading: boolean;
 }) {
   const examples = ["Cyberpunk cat runner", "Cozy forest puzzle", "Pixel racing game"];
-  const canGenerate = idea.trim().length > 0 && !busy;
+  const canGenerate = idea.trim().length > 0 && !busy && !uploading;
 
   return (
     <div className="pf-create-grid">
       <div className="pf-create-main">
+        {onResumeLast && (
+          <button className="pf-resume-banner" onClick={onResumeLast} type="button">
+            <RefreshCcw size={15} />
+            <span>Continue your last generation task</span>
+            <ArrowRight size={15} />
+          </button>
+        )}
         <article className="pf-create-card pf-input-card">
           <div className="pf-input-heading">
             <span className="pf-orb-icon">
@@ -426,9 +494,9 @@ function CreateInput({
               onPickFiles(event.dataTransfer.files);
             }}
           >
-            <UploadCloud size={30} />
-            <strong>Upload references</strong>
-            <span>Drop images, video, or files here. Up to 5 assets, 10MB each.</span>
+            {uploading ? <Loader2 className="pf-spin" size={30} /> : <UploadCloud size={30} />}
+            <strong>{uploading ? "Uploading…" : "Upload references"}</strong>
+            <span>Drop images, video, or files here. Up to 6 assets, 10MB each.</span>
             <input
               multiple
               onChange={(event) => {
@@ -744,7 +812,8 @@ function PreviewCard({ now, task }: { now: number; task?: Task }) {
       <h3>{statusLine}</h3>
 
       <div className="pf-runtime-list">
-        <RuntimeRow ready label="Sandbox ready" />
+        {/* 沙箱在预览 iframe 挂载时才真实存在，不再恒显 ready */}
+        <RuntimeRow label={previewAvailable ? "Sandboxed preview mounted" : "Sandbox pending"} ready={previewAvailable} />
         {gameplayStatus && (
           <RuntimeRow label={gameplayRuntimeLabel(gameplayStatus)} ready={gameplayStatus === "completed"} />
         )}
@@ -1071,7 +1140,7 @@ function normalizeStatus(status?: string): StepState {
 }
 
 function getBrief(task: Task | undefined, uploadedFiles: UploadedAsset[]) {
-  const title = task?.game_title || task?.game?.title || summarizeIdea(task?.idea) || summarizeIdea(uploadedFiles[0]?.name) || "Cyberpunk cat runner";
+  const title = task?.game_title || task?.game?.title || summarizeIdea(task?.idea) || summarizeIdea(uploadedFiles[0]?.name) || "Untitled game";
   const source = `${title} ${task?.idea || ""}`.toLowerCase();
   const genre = inferGenre(source);
   const style = inferStyle(source);
@@ -1179,24 +1248,19 @@ function getRecentUpdates(task: Task | undefined, now: number) {
     }));
 
   if (updates.length > 0) return updates;
+  // 没有真实日志时不编造系统状态（"sandbox ready / pipeline connected" 之类
+  // 会在故障时显示一切正常）—— 只说我们真正知道的事。
   if (!task) {
-    return [
-      { level: "info" as const, message: "Runtime sandbox ready", time: "now" },
-      { level: "info" as const, message: "Object storage ready", time: "now" },
-      { level: "info" as const, message: "Waiting for your game brief", time: "now" },
-    ];
+    return [{ level: "info" as const, message: "Loading task…", time: "now" }];
   }
   if (task.status === "succeeded") {
     return [
       { level: "success" as const, message: "Preview ready", time: formatRelative(task.finished_at || task.updated_at, now) || "just now" },
-      { level: "success" as const, message: "Manifest uploaded", time: formatRelative(task.finished_at || task.updated_at, now) || "just now" },
-      { level: "success" as const, message: "Runtime validation passed", time: formatRelative(task.finished_at || task.updated_at, now) || "just now" },
     ];
   }
   return [
     { level: "info" as const, message: "Generation task created", time: formatRelative(task.created_at, now) || "just now" },
-    { level: "info" as const, message: "Agent pipeline connected", time: "now" },
-    { level: "info" as const, message: "Waiting for the next update", time: "now" },
+    { level: "info" as const, message: "Waiting for the first agent update", time: "now" },
   ];
 }
 

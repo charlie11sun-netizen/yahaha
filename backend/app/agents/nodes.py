@@ -268,6 +268,13 @@ def _simplify_design_3d(design: dict) -> dict:
 
 
 def _should_inject(state: dict) -> bool:
+    """演示用故障注入（默认关闭）。开启后 prompt 含 force-repair/force-replan
+    会故意注入违禁 API 触发修复回环 —— 必须由配置显式打开，绝不能让普通用户的
+    prompt 文本改变引擎行为（用户创意里碰巧出现关键词会白烧一轮修复预算）。"""
+    from app.core.config import settings
+
+    if not settings.DEMO_FAULT_INJECTION:
+        return False
     p = (state.get("normalized_prompt") or state.get("prompt") or "").lower()
     if "force-replan" in p:
         return state.get("replan_attempts", 0) == 0
@@ -1293,7 +1300,7 @@ def asset_processing_node(state: dict) -> dict:
         db = SessionLocal()
         try:
             for asset in db.query(Asset).filter(Asset.id.in_(ids)).all():
-                uploaded.append({"id": asset.id, "key": asset.filename, "type": asset.kind, "url": s3.public_url(asset.oss_key), "source": "uploaded"})
+                uploaded.append({"id": asset.id, "key": asset.filename, "type": asset.kind, "url": s3.presigned_url(asset.oss_key), "source": "uploaded"})
         finally:
             db.close()
     spec = state.get("game_spec") or {}

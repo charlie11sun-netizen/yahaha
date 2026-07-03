@@ -45,8 +45,10 @@ class Game(PkMixin, TimestampMixin, Base):
 
     author = relationship("User", lazy="joined")
     tags: Mapped[list["Tag"]] = relationship("Tag", secondary=game_tags, lazy="selectin")
+    # 默认惰性加载：列表页（game_card）不用 versions，selectin 会让每次
+    # /games 查询连带加载所有游戏的所有版本行；需要版本的场景都在会话内显式访问。
     versions: Mapped[list["GameVersion"]] = relationship(
-        back_populates="game", cascade="all, delete-orphan", lazy="selectin"
+        back_populates="game", cascade="all, delete-orphan"
     )
 
 
