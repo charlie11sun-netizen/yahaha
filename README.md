@@ -4,7 +4,7 @@
 
 > 📋 **交付必看 —— [完成度说明](docs/完成度说明.md)**：逐项说明「已完成 / Mock 或简化 / 未完成」，以及「再给 1 周」的迭代计划。
 
-> 设计文档见 [`docs/`](docs/)：[技术选型](docs/技术选型.md) · [系统架构](docs/系统架构.md) · [数据模型与接口](docs/数据模型与接口.md) · [Multi-Agent 设计](docs/multi-agent_design.md) · [记忆系统设计](docs/memory_system_design.md) · [安全与可观测性](docs/安全与可观测性.md) · [完成度说明](docs/完成度说明.md) · [访问密码门禁](docs/访问密码门禁.md) · [AI 协作记录](docs/AI协作记录.md)
+> 设计文档见 [`docs/`](docs/)：[技术选型](docs/技术选型.md) · [系统架构](docs/系统架构.md) · [数据模型与接口](docs/数据模型与接口.md) · [Multi-Agent 设计](docs/multi-agent_design.md) · [记忆系统设计](docs/memory_system_design.md) · [安全与可观测性](docs/安全与可观测性.md) · [完成度说明](docs/完成度说明.md) · [加固路线图](docs/加固路线图-2026-07.md) · [访问密码门禁](docs/访问密码门禁.md) · [AI 协作记录](docs/AI协作记录.md)
 > 部署见 [部署指南](deploy/DEPLOY.md)（本地 docker compose / Zeabur 托管 + 跨机数据迁移）。
 
 ## 技术栈
