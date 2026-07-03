@@ -58,3 +58,44 @@ def test_gameplay_qa_marks_required_sandbox_unavailable(monkeypatch):
     )
     assert result["status"] == "failed"
     assert result["error_code"] == "SANDBOX_UNAVAILABLE"
+
+
+def test_3d_sandbox_payload_includes_vendored_three():
+    from app.agents import nodes
+
+    files = nodes._assemble_bundle({"game.js": "const scene = new THREE.Scene();" + ("//x\n" * 120)}, "T", "3d")
+    assert {file["path"] for file in files} == {"index.html", "style.css", "game.js"}
+    payload = nodes._sandbox_files_for_qa(files, "3d")
+    by_path = {file["path"]: file["content"] for file in payload}
+    assert "three.min.js" in by_path
+    assert len(by_path["three.min.js"].encode("utf-8")) > 500_000
+
+
+def test_setinterval_loop_is_valid_sandbox_activity(monkeypatch):
+    from app.agents import nodes
+    from app.services.sandbox_client import SandboxResult
+
+    js = (
+        "var player=0;"
+        "window.onkeydown=function(e){player+=1};"
+        "function restart(){player=0};"
+        "setInterval(function(){player+=1}, 16);"
+        + ("// padding\n" * 80)
+    )
+    monkeypatch.setattr(
+        nodes.sandbox_client,
+        "run_bundle",
+        lambda *args, **kwargs: SandboxResult(ok=True, frames_observed=0, intervals_observed=3, load_ms=120),
+    )
+    result = nodes.gameplay_qa_node(
+        {
+            "dimension": "2d",
+            "generated_files": [
+                {"path": "index.html", "content": '<!doctype html><script src="game.js"></script>'},
+                {"path": "style.css", "content": "body{background:#000}"},
+                {"path": "game.js", "content": js},
+            ],
+            "validation_result": {"valid": True},
+        }
+    )
+    assert result["gameplay_qa_result"]["passed"] is True

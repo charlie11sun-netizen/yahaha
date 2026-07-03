@@ -20,6 +20,7 @@ class SandboxResult:
     console_warnings: list[str] = field(default_factory=list)
     requests_aborted: list[str] = field(default_factory=list)
     frames_observed: int = 0
+    intervals_observed: int = 0
     load_ms: int = 0
     timed_out: bool = False
     skipped: bool = False
@@ -85,6 +86,7 @@ def run_bundle(
         console_warnings=list(data.get("console_warnings") or []),
         requests_aborted=list(data.get("requests_aborted") or []),
         frames_observed=int(data.get("frames_observed") or 0),
+        intervals_observed=int(data.get("intervals_observed") or 0),
         load_ms=int(data.get("load_ms") or 0),
         timed_out=bool(data.get("timed_out")),
     )

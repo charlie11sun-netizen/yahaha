@@ -365,6 +365,22 @@ def _assemble_bundle(bundle: dict, title: str, dimension: str = "2d") -> list[di
     ]
 
 
+def _sandbox_files_for_qa(files: list[dict], dimension: str | None = None) -> list[dict]:
+    payload = [dict(file) for file in files]
+    has_three_reference = any(
+        file.get("path") == "index.html" and "three.min.js" in str(file.get("content") or "").lower()
+        for file in payload
+    )
+    has_three_file = any(file.get("path") == "three.min.js" for file in payload)
+    if (dimension == "3d" or has_three_reference) and not has_three_file:
+        from app.services import packaging
+
+        engine = packaging.three_engine_bytes()
+        if engine:
+            payload.append({"path": "three.min.js", "content": engine.decode("utf-8")})
+    return payload
+
+
 # 给 Coder 一个同类的优质参考实现（few-shot），把质量下限抬上去。
 _REFERENCE_BY_ARCHETYPE = {
     "vertical_shooter": "neondodge",
@@ -900,7 +916,7 @@ def _gameplay_qa(state: dict) -> dict:
     if smoke_ok and validation_result.get("valid") and files:
         try:
             browser_result = sandbox_client.run_bundle(
-                files,
+                _sandbox_files_for_qa(files, state.get("dimension")),
                 entry="index.html",
                 timeout_ms=settings.SANDBOX_TIMEOUT_MS,
                 simulate_input=True,
@@ -920,8 +936,12 @@ def _gameplay_qa(state: dict) -> dict:
                     issues.append(f"browser console error: {browser_result.console_errors[0]}")
                 if browser_result.requests_aborted:
                     issues.append(f"browser sandbox blocked request: {browser_result.requests_aborted[0]}")
-                if browser_result.frames_observed <= 0:
-                    issues.append("browser sandbox observed zero animation frames")
+                has_interval_loop = "setinterval" in low
+                loop_observed = browser_result.frames_observed > 0 or browser_result.intervals_observed > 0
+                if not loop_observed and has_interval_loop:
+                    warnings.append("browser sandbox observed zero animation frames; setInterval loop detected")
+                elif not loop_observed:
+                    issues.append("browser sandbox observed no game-loop activity")
 
     is_3d = state.get("dimension") == "3d"
     if is_3d:
@@ -955,6 +975,7 @@ def _gameplay_qa(state: dict) -> dict:
             "sandbox_ok": None if browser_result is None else browser_result.ok,
             "sandbox_skipped": None if browser_result is None else browser_result.skipped,
             "sandbox_frames": None if browser_result is None else browser_result.frames_observed,
+            "sandbox_intervals": None if browser_result is None else browser_result.intervals_observed,
             "sandbox_load_ms": None if browser_result is None else browser_result.load_ms,
             ("uses_three_webgl" if is_3d else "uses_gradient_or_glow"): depth_metric,
         },
@@ -978,7 +999,8 @@ def _gameplay_qa_log_lines(result: dict) -> list[str]:
         else:
             lines.append(
                 f"browser sandbox: {'passed' if m.get('sandbox_ok') else 'failed'}, "
-                f"frames={m.get('sandbox_frames')}, load_ms={m.get('sandbox_load_ms')}"
+                f"frames={m.get('sandbox_frames')}, intervals={m.get('sandbox_intervals')}, "
+                f"load_ms={m.get('sandbox_load_ms')}"
             )
     if result.get("warnings"):
         lines.append("quality warnings: " + "; ".join(result["warnings"][:4]))

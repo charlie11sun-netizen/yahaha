@@ -15,8 +15,8 @@ from playwright.async_api import Browser, Error as PlaywrightError, Page, async_
 
 ORIGIN_HOST = "bundle.sandbox"
 ORIGIN = f"https://{ORIGIN_HOST}"
-MAX_FILE_BYTES = 500_000
-MAX_TOTAL_BYTES = 1_500_000
+MAX_FILE_BYTES = 1_000_000
+MAX_TOTAL_BYTES = 2_500_000
 
 
 class Settings(BaseSettings):
@@ -51,6 +51,7 @@ class RunResponse(BaseModel):
     console_warnings: list[str] = []
     requests_aborted: list[str] = []
     frames_observed: int
+    intervals_observed: int = 0
     load_ms: int
     timed_out: bool = False
     screenshot_b64: str | None = None
@@ -111,7 +112,7 @@ def _decode_files(files: list[BundleFile]) -> dict[str, bytes]:
 async def _launch_browser() -> Browser:
     if state.playwright is None:
         state.playwright = await async_playwright().start()
-    launch_args: list[str] = []
+    launch_args: list[str] = ["--disable-dev-shm-usage", "--disable-crash-reporter"]
     if settings.chromium_no_sandbox:
         launch_args.append("--no-sandbox")
     return await state.playwright.chromium.launch(headless=True, args=launch_args)  # type: ignore[union-attr]
@@ -153,6 +154,7 @@ async def _install_routes(page: Page, files: dict[str, bytes], requests_aborted:
 _INIT_SCRIPT = r"""
 (() => {
   window.__sandboxFrameCount = 0;
+  window.__sandboxIntervalCount = 0;
   const original = window.requestAnimationFrame ? window.requestAnimationFrame.bind(window) : null;
   window.requestAnimationFrame = (callback) => {
     if (!original) return 0;
@@ -161,6 +163,14 @@ _INIT_SCRIPT = r"""
       return callback(timestamp);
     });
   };
+  const originalSetInterval = window.setInterval ? window.setInterval.bind(window) : null;
+  if (originalSetInterval) {
+    window.setInterval = (callback, delay, ...args) => originalSetInterval((...cbArgs) => {
+      window.__sandboxIntervalCount += 1;
+      if (typeof callback === "function") return callback(...cbArgs);
+      return undefined;
+    }, delay, ...args);
+  }
 })();
 """
 
@@ -202,8 +212,12 @@ async def _drive_page(
             frames_observed = int(await page.evaluate("window.__sandboxFrameCount || 0"))
         except PlaywrightError:
             frames_observed = 0
+        try:
+            intervals_observed = int(await page.evaluate("window.__sandboxIntervalCount || 0"))
+        except PlaywrightError:
+            intervals_observed = 0
         load_ms = int((time.perf_counter() - started) * 1000)
-        ok = not page_errors and not console_errors and not requests_aborted and frames_observed > 0
+        ok = not page_errors and not console_errors and not requests_aborted and (frames_observed > 0 or intervals_observed > 0)
         if not ok and settings.screenshot_on_failure:
             raw = await page.screenshot(type="png", timeout=1000)
             screenshot_b64 = base64.b64encode(raw).decode("ascii")
@@ -214,6 +228,7 @@ async def _drive_page(
             console_warnings=console_warnings,
             requests_aborted=requests_aborted,
             frames_observed=frames_observed,
+            intervals_observed=intervals_observed,
             load_ms=load_ms,
             screenshot_b64=screenshot_b64,
         )

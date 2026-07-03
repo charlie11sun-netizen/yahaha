@@ -1,7 +1,9 @@
 FROM mcr.microsoft.com/playwright/python:v1.60.0-noble
 
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    HOME=/tmp \
+    XDG_CACHE_HOME=/tmp/.cache
 
 WORKDIR /app
 

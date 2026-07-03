@@ -132,6 +132,7 @@ services:
     build: ./sandbox
     init: true
     read_only: true
+    shm_size: 1gb
     tmpfs:
       - /tmp
     mem_limit: 768m
@@ -140,6 +141,8 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/.cache
       SANDBOX_RUNNER_CONCURRENCY: "1"
       SANDBOX_RUNNER_CHROMIUM_NO_SANDBOX: ${SANDBOX_RUNNER_CHROMIUM_NO_SANDBOX:-true}
     networks:

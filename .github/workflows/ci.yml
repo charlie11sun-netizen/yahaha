@@ -19,6 +19,40 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: pytest -q
 
+  sandbox-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: docker build -t gameweave-sandbox ./sandbox
+      - name: Start sandbox runner
+        run: >
+          docker run -d --name gameweave-sandbox
+          --init
+          --read-only
+          --tmpfs /tmp
+          --shm-size=1g
+          --pids-limit=256
+          --security-opt no-new-privileges:true
+          -e HOME=/tmp
+          -e XDG_CACHE_HOME=/tmp/.cache
+          -e SANDBOX_RUNNER_CHROMIUM_NO_SANDBOX=true
+          -p 8001:8001
+          gameweave-sandbox
+      - name: Wait for sandbox health
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:8001/health; then exit 0; fi
+            docker logs gameweave-sandbox || true
+            sleep 2
+          done
+          docker logs gameweave-sandbox || true
+          exit 1
+      - run: pip install -r backend/requirements-dev.txt
+      - run: SANDBOX_URL=http://127.0.0.1:8001 pytest backend/tests/test_sandbox_runner_integration.py -q
+
   frontend-build:
     runs-on: ubuntu-latest
     defaults:
