@@ -24,6 +24,9 @@ redis>=5.0
 
 # 对象存储（S3 兼容）
 boto3>=1.35
+filetype>=1.2
+Pillow>=10.4
+clamd>=1.0
 
 # Agent / 模型（USE_REAL_MODEL=true 时启用）
 langgraph>=0.2

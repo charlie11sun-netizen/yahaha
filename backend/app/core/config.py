@@ -68,6 +68,16 @@ class Settings(BaseSettings):
     SANDBOX_TIMEOUT_MS: int = 5000
     MAX_ACTIVE_TASKS_PER_USER: int = 2
 
+    # Upload and content moderation hardening. Local/dev stays offline by
+    # default: uploads are structurally validated, ClamAV is optional, and text
+    # moderation uses the deterministic blocklist.
+    UPLOAD_SCAN: str = "off"  # off | clamav
+    CLAMD_HOST: str = "clamav"
+    CLAMD_PORT: int = 3310
+    MODERATION_PROVIDER: str = "blocklist"  # off | blocklist | llm
+    MODERATION_MODE: str = "log"  # log | enforce
+    MODERATION_CACHE_TTL_SECONDS: int = 24 * 60 * 60
+
     # Site access gate (front-door password). Empty = disabled (open). When set,
     # every API request must carry a matching X-Gate-Token; shared with the web
     # front-end via the same SITE_PASSWORD env var.

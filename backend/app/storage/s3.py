@@ -90,11 +90,19 @@ def public_url(key: str) -> str:
     return f"{settings.S3_PUBLIC_ENDPOINT}/{settings.S3_BUCKET}/{key}"
 
 
-def presigned_url(key: str, expires_seconds: int = 3600) -> str:
+def presigned_url(
+    key: str,
+    expires_seconds: int = 3600,
+    *,
+    response_content_disposition: str | None = None,
+) -> str:
     """Short-lived browser URL for private uploads and other non-public objects."""
+    params = {"Bucket": settings.S3_BUCKET, "Key": key}
+    if response_content_disposition:
+        params["ResponseContentDisposition"] = response_content_disposition
     return public_client().generate_presigned_url(
         "get_object",
-        Params={"Bucket": settings.S3_BUCKET, "Key": key},
+        Params=params,
         ExpiresIn=expires_seconds,
     )
 

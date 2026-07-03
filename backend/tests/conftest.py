@@ -61,7 +61,7 @@ def client(db_session_factory, monkeypatch):
     monkeypatch.setattr(deps, "_get_rl_redis", lambda: _FakeRedis())
     monkeypatch.setattr(s3, "put_object", lambda key, body, content_type: key)
     monkeypatch.setattr(s3, "public_url", lambda key: f"https://oss.test/{key}")
-    monkeypatch.setattr(s3, "presigned_url", lambda key: f"https://oss.test/private/{key}?signature=test")
+    monkeypatch.setattr(s3, "presigned_url", lambda key, **kwargs: f"https://oss.test/private/{key}?signature=test")
     monkeypatch.setattr(
         s3, "manifest_url",
         lambda gid, ver: f"https://oss.test/games/{gid}/{ver}/manifest.json",

@@ -196,6 +196,18 @@ services:
       timeout: 3s
       retries: 10
 
+  clamav:
+    image: clamav/clamav:stable
+    profiles: ["scan"]
+    restart: unless-stopped
+    mem_limit: 1536m
+    cpus: "1.0"
+    healthcheck:
+      test: ["CMD", "clamdscan", "--version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
   web:
     build:
       context: ./frontend

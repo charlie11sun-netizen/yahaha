@@ -7,6 +7,7 @@ from app.core.security import create_access_token, hash_password, password_hash_
 from app.db.session import get_db
 from app.models import OAuthAccount, User
 from app.schemas import ChangePasswordIn, LoginIn, ProfileUpdateIn, RegisterIn
+from app.services import content_safety
 from app.services.serialize import user_out
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -20,6 +21,11 @@ def _initial(name: str) -> str:
 def register(body: RegisterIn, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == body.email).first():
         raise HTTPException(status_code=409, detail="Email already registered")
+    content_safety.ensure_allowed(
+        db,
+        text=body.display_name,
+        surface="auth.register.display_name",
+    )
     user = User(
         email=body.email,
         password_hash=hash_password(body.password),
@@ -52,6 +58,22 @@ def me(user: User = Depends(get_current_user)):
 
 @router.patch("/me")
 def update_me(body: ProfileUpdateIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if body.display_name is not None:
+        content_safety.ensure_allowed(
+            db,
+            text=body.display_name,
+            surface="user.display_name",
+            user_id=user.id,
+            object_id=user.id,
+        )
+    if body.avatar is not None and body.avatar.strip():
+        content_safety.ensure_allowed(
+            db,
+            text=body.avatar,
+            surface="user.avatar",
+            user_id=user.id,
+            object_id=user.id,
+        )
     if body.display_name is not None:
         user.display_name = body.display_name.strip()
         user.avatar_initial = _initial(user.display_name)

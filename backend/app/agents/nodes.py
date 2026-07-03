@@ -11,18 +11,8 @@ import re
 from app.agents import bundles, llm, prompts, smoke, templating, validation
 from app.agents.state import MAX_GAMEPLAY_REPAIR, MAX_REPAIR, MAX_REPLAN
 from app.core.config import settings
-from app.services import sandbox_client
+from app.services import content_safety, sandbox_client
 from app.storage import s3
-
-_BLOCKED = [
-    r"ignore (previous|all) (instructions|prompts)",
-    r"system prompt",
-    r"document\.cookie",
-    r"process\.env",
-    r"\bexfiltrate\b",
-    r"steal .*(key|password|secret|token)",
-    r"reveal .*(key|secret|prompt)",
-]
 
 _THEMES = ["space", "neon", "candy", "forest", "retro", "ocean"]
 _THEME_COVER = {
@@ -1152,15 +1142,63 @@ def safety_intake_node(state: dict) -> dict:
             "_agent": "SafetyIntakeAgent",
             "_logs": ["prompt exceeds 2000 chars -> rejected"],
         }
-    for pattern in _BLOCKED:
-        if re.search(pattern, prompt, re.IGNORECASE):
+    moderation_log = "moderation skipped: unable to persist event"
+    try:
+        from app.db.session import SessionLocal
+
+        db = SessionLocal()
+        try:
+            decision = content_safety.moderate_and_record(
+                db,
+                text=prompt,
+                surface="task.idea" if state.get("task_kind") != "revision" else "task.revision_feedback",
+                user_id=state.get("user_id"),
+                object_id=state.get("task_id"),
+            )
+            asset_blocked = None
+            asset_ids = state.get("asset_ids") or []
+            if asset_ids:
+                from app.models import Asset
+
+                for asset in db.query(Asset).filter(Asset.id.in_(asset_ids)).all():
+                    asset_decision = content_safety.moderate_and_record(
+                        db,
+                        text=asset.filename,
+                        surface="asset.filename",
+                        user_id=state.get("user_id"),
+                        object_id=asset.id,
+                    )
+                    if asset_decision.blocked:
+                        asset_blocked = (asset.filename, asset_decision)
+                        break
+            db.commit()
+        finally:
+            db.close()
+        categories = ", ".join(decision.categories.keys()) or "none"
+        moderation_log = f"moderation: {decision.provider}/{decision.action}, categories={categories}"
+        if decision.blocked:
             return {
                 "status": "failed",
-                "error_code": "SAFETY_REJECTED",
-                "error_message": "Prompt rejected by safety rule",
+                "error_code": "MODERATION_BLOCKED",
+                "error_message": "Prompt rejected by content moderation",
                 "_agent": "SafetyIntakeAgent",
-                "_logs": [f"blocked pattern matched ({pattern}) -> rejected"],
+                "_logs": [moderation_log, "prompt blocked before generation"],
             }
+        if asset_blocked:
+            filename, asset_decision = asset_blocked
+            asset_categories = ", ".join(asset_decision.categories.keys()) or "none"
+            return {
+                "status": "failed",
+                "error_code": "MODERATION_BLOCKED",
+                "error_message": "Uploaded asset filename rejected by content moderation",
+                "_agent": "SafetyIntakeAgent",
+                "_logs": [
+                    moderation_log,
+                    f"asset filename blocked: {_clip(filename, 80)} categories={asset_categories}",
+                ],
+            }
+    except Exception as exc:  # noqa: BLE001
+        moderation_log = f"moderation failed open: {_clip(exc, 120)}"
     cues = _prompt_cues(prompt)
     return {
         "normalized_prompt": prompt.strip(),
@@ -1170,7 +1208,8 @@ def safety_intake_node(state: dict) -> dict:
             f"prompt accepted: {len(prompt)} chars, {len(prompt.split())} word(s)",
             "intent cues: " + (", ".join(cues) if cues else "none detected"),
             f"uploaded asset ids received: {len(state.get('asset_ids') or [])}",
-            f"policy scan passed: {len(_BLOCKED)} blocked-pattern checks",
+            moderation_log,
+            f"policy scan passed: {len(content_safety.BLOCKLIST_PATTERNS)} blocked-pattern checks",
             f"normalized prompt: {_clip(prompt, 160)}",
         ],
     }
@@ -1358,6 +1397,7 @@ def archetype_router_node(state: dict) -> dict:
 def asset_processing_node(state: dict) -> dict:
     from app.db.session import SessionLocal
     from app.models import Asset
+    from app.services.upload_safety import presigned_asset_url
 
     ids = state.get("asset_ids") or []
     uploaded = []
@@ -1365,7 +1405,9 @@ def asset_processing_node(state: dict) -> dict:
         db = SessionLocal()
         try:
             for asset in db.query(Asset).filter(Asset.id.in_(ids)).all():
-                uploaded.append({"id": asset.id, "key": asset.filename, "type": asset.kind, "url": s3.presigned_url(asset.oss_key), "source": "uploaded"})
+                url = presigned_asset_url(asset)
+                if url:
+                    uploaded.append({"id": asset.id, "key": asset.filename, "type": asset.kind, "url": url, "source": "uploaded"})
         finally:
             db.close()
     spec = state.get("game_spec") or {}

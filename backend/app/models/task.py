@@ -5,6 +5,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Table,
@@ -32,10 +33,12 @@ class Asset(PkMixin, TimestampMixin, Base):
     kind: Mapped[str] = mapped_column(String(20), default=AssetKind.FILE)
     size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     oss_key: Mapped[str] = mapped_column(String(400))
+    scan_status: Mapped[str] = mapped_column(String(20), default="skipped")
 
 
 class GenerationTask(PkMixin, TimestampMixin, Base):
     __tablename__ = "generation_tasks"
+    __table_args__ = (Index("ix_generation_tasks_user_id_status", "user_id", "status"),)
 
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     idea: Mapped[str] = mapped_column(Text)

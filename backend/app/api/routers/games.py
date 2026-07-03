@@ -11,6 +11,7 @@ from app.db.session import get_db
 from app.models import Comment, Favorite, Game, Like, PlayEvent, Score, Tag
 from app.models.common import GameStatus, now_utc
 from app.schemas import CommentIn, GameUpdateIn, ScoreIn
+from app.services import content_safety
 from app.services.serialize import comment_out, fmt, game_card, game_detail, score_out
 from app.storage import s3
 
@@ -218,6 +219,13 @@ def unfavorite(game_id: str, user=Depends(get_current_user), db: Session = Depen
 @router.post("/games/{game_id}/publish")
 def publish(game_id: str, user=Depends(get_current_user), db: Session = Depends(get_db)):
     g = _owned_game(game_id, user, db)
+    content_safety.ensure_allowed(
+        db,
+        text="\n".join([g.title or "", g.summary or "", " ".join(t.name for t in g.tags)]),
+        surface="game.publish.copy",
+        user_id=user.id,
+        object_id=g.id,
+    )
     g.status = GameStatus.PUBLISHED
     if not g.published_at:
         g.published_at = now_utc()
@@ -245,6 +253,22 @@ def unpublish(game_id: str, user=Depends(get_current_user), db: Session = Depend
 @router.patch("/games/{game_id}")
 def update_game(game_id: str, body: GameUpdateIn, user=Depends(get_current_user), db: Session = Depends(get_db)):
     g = _owned_game(game_id, user, db)
+    if body.title is not None:
+        content_safety.ensure_allowed(
+            db, text=body.title, surface="game.title", user_id=user.id, object_id=g.id
+        )
+    if body.summary is not None:
+        content_safety.ensure_allowed(
+            db, text=body.summary, surface="game.summary", user_id=user.id, object_id=g.id
+        )
+    if body.tags is not None:
+        content_safety.ensure_allowed(
+            db,
+            text=" ".join(str(name) for name in body.tags[:8]),
+            surface="game.tags",
+            user_id=user.id,
+            object_id=g.id,
+        )
     if body.title is not None:
         g.title = body.title.strip()
     if body.summary is not None:
@@ -297,6 +321,13 @@ def list_comments(game_id: str, user=Depends(get_optional_user), db: Session = D
 @router.post("/games/{game_id}/comments", dependencies=[Depends(rate_limit(30, 3600, "comment"))])
 def add_comment(game_id: str, body: CommentIn, user=Depends(get_current_user), db: Session = Depends(get_db)):
     _visible_game(game_id, user, db)
+    content_safety.ensure_allowed(
+        db,
+        text=body.body,
+        surface="comment",
+        user_id=user.id,
+        object_id=game_id,
+    )
     c = Comment(game_id=game_id, user_id=user.id, body=body.body.strip())
     db.add(c)
     db.commit()
@@ -336,6 +367,13 @@ def related_games(game_id: str, limit: int = 6, user=Depends(get_optional_user),
 def submit_score(game_id: str, body: ScoreIn, user=Depends(get_optional_user), db: Session = Depends(get_db)):
     _visible_game(game_id, user, db)
     name = (body.player_name or (user.display_name if user else "Anonymous")).strip()[:80] or "Anonymous"
+    content_safety.ensure_allowed(
+        db,
+        text=name,
+        surface="score.player_name",
+        user_id=user.id if user else None,
+        object_id=game_id,
+    )
     db.add(Score(game_id=game_id, user_id=user.id if user else None, player_name=name, points=body.points))
     db.commit()
     return {"ok": True}

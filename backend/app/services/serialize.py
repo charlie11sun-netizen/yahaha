@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timezone
 
 from app.core.config import settings
+from app.services.upload_safety import presigned_asset_url
 from app.storage import s3
 
 # 主阶段（agent → step key → 中文标题），对应 Create 生成控制台
@@ -245,7 +246,7 @@ def task_out(t, include_details: bool = True) -> dict:
     out["design"] = _design_preview(spec, design)
     out["assets"] = [
         {"name": a.filename, "type": "uploaded", "status": "已上传",
-         "kind": a.kind, "url": s3.presigned_url(a.oss_key)}
+         "kind": a.kind, "scan_status": a.scan_status, "url": presigned_asset_url(a)}
         for a in t.assets
     ]
     out["logs"] = [

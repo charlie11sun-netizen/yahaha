@@ -10,6 +10,7 @@ from app.schemas import (
     MemoryUpdateIn,
 )
 from app.services import memory as memory_service
+from app.services import content_safety
 from app.services import memory_entities as entity_service
 from app.services import memory_profiles as profile_service
 
@@ -69,6 +70,21 @@ def create_memory(body: MemoryCreateIn, user=Depends(get_current_user), db: Sess
         raise HTTPException(status_code=400, detail="User-scope memory must not include scope_id")
     if body.scope_type != "user" and not body.scope_id:
         raise HTTPException(status_code=400, detail="Non-user memory requires scope_id")
+    content_safety.ensure_allowed(
+        db,
+        text=body.raw_text,
+        surface="memory.raw_text",
+        user_id=user.id,
+        object_id=body.scope_id,
+    )
+    if body.extracted_text:
+        content_safety.ensure_allowed(
+            db,
+            text=body.extracted_text,
+            surface="memory.extracted_text",
+            user_id=user.id,
+            object_id=body.scope_id,
+        )
     item = memory_service.create_memory(
         db,
         user.id,
@@ -133,7 +149,17 @@ def update_memory_profile(
     profile = profile_service.get_owned_profile(db, user.id, profile_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Memory profile not found")
-    profile_service.correct_profile(db, profile, **body.model_dump(exclude_unset=True))
+    patch = body.model_dump(exclude_unset=True)
+    for key in ("value_text", "summary_text"):
+        if patch.get(key):
+            content_safety.ensure_allowed(
+                db,
+                text=patch[key],
+                surface=f"memory_profile.{key}",
+                user_id=user.id,
+                object_id=profile.id,
+            )
+    profile_service.correct_profile(db, profile, **patch)
     db.commit()
     db.refresh(profile)
     return profile_service.profile_out(profile)
@@ -150,6 +176,22 @@ def update_memory(
     if not item:
         raise HTTPException(status_code=404, detail="Memory not found")
     patch = body.model_dump(exclude_unset=True)
+    if patch.get("raw_text"):
+        content_safety.ensure_allowed(
+            db,
+            text=patch["raw_text"],
+            surface="memory.raw_text",
+            user_id=user.id,
+            object_id=item.id,
+        )
+    if patch.get("extracted_text"):
+        content_safety.ensure_allowed(
+            db,
+            text=patch["extracted_text"],
+            surface="memory.extracted_text",
+            user_id=user.id,
+            object_id=item.id,
+        )
     profile_fields_changed = bool({"raw_text", "extracted_text", "category", "status"} & patch.keys())
     if profile_fields_changed:
         profile_service.retire_profiles_for_memory(

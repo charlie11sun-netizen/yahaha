@@ -23,6 +23,7 @@ from app.models.memory import (
     MemorySource,
     MemoryStatus,
 )
+from app.models.moderation import ModerationEvent
 from app.models.task import (
     AgentLog,
     AgentStep,
@@ -60,6 +61,7 @@ __all__ = [
     "MemorySettings",
     "MemorySource",
     "MemoryStatus",
+    "ModerationEvent",
     "Asset",
     "task_assets",
     "GenerationTask",
