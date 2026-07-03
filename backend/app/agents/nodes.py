@@ -10,6 +10,8 @@ import re
 
 from app.agents import bundles, llm, prompts, smoke, templating, validation
 from app.agents.state import MAX_GAMEPLAY_REPAIR, MAX_REPAIR, MAX_REPLAN
+from app.core.config import settings
+from app.services import sandbox_client
 from app.storage import s3
 
 _BLOCKED = [
@@ -888,10 +890,38 @@ def _gameplay_qa(state: dict) -> dict:
     if not has_restart:
         warnings.append("no obvious restart affordance detected")
 
-    # 运行时冒烟：在沙箱里把 game.js 顶层跑一遍，"一加载就崩"判硬失败 → 触发 repair/replan。
+    # 运行时冒烟：先用 V8 快速预检，再用真浏览器沙箱观察加载错误和动画帧。
     smoke_ok, smoke_detail = smoke.run_smoke(js)
     if not smoke_ok:
         issues.append(f"runtime smoke test: game crashed on load — {smoke_detail}")
+
+    browser_result = None
+    sandbox_error_code = None
+    if smoke_ok and validation_result.get("valid") and files:
+        try:
+            browser_result = sandbox_client.run_bundle(
+                files,
+                entry="index.html",
+                timeout_ms=settings.SANDBOX_TIMEOUT_MS,
+                simulate_input=True,
+            )
+        except sandbox_client.SandboxUnavailableError as exc:
+            sandbox_error_code = "SANDBOX_UNAVAILABLE"
+            issues.append(f"browser sandbox unavailable — {_clip(exc, 180)}")
+        else:
+            if browser_result.skipped:
+                warnings.append(browser_result.detail or "browser sandbox skipped")
+            else:
+                if browser_result.timed_out:
+                    issues.append("browser sandbox timed out")
+                if browser_result.page_errors:
+                    issues.append(f"browser page error: {browser_result.page_errors[0]}")
+                if browser_result.console_errors:
+                    issues.append(f"browser console error: {browser_result.console_errors[0]}")
+                if browser_result.requests_aborted:
+                    issues.append(f"browser sandbox blocked request: {browser_result.requests_aborted[0]}")
+                if browser_result.frames_observed <= 0:
+                    issues.append("browser sandbox observed zero animation frames")
 
     is_3d = state.get("dimension") == "3d"
     if is_3d:
@@ -922,8 +952,13 @@ def _gameplay_qa(state: dict) -> dict:
             "has_input": has_input,
             "has_restart": has_restart,
             "runtime_smoke_ok": smoke_ok,
+            "sandbox_ok": None if browser_result is None else browser_result.ok,
+            "sandbox_skipped": None if browser_result is None else browser_result.skipped,
+            "sandbox_frames": None if browser_result is None else browser_result.frames_observed,
+            "sandbox_load_ms": None if browser_result is None else browser_result.load_ms,
             ("uses_three_webgl" if is_3d else "uses_gradient_or_glow"): depth_metric,
         },
+        "error_code": sandbox_error_code,
     }
 
 
@@ -937,6 +972,14 @@ def _gameplay_qa_log_lines(result: dict) -> list[str]:
     ]
     if m.get("runtime_smoke_ok") is not None:
         lines.append("runtime smoke: " + ("passed (top-level executes clean)" if m.get("runtime_smoke_ok") else "CRASHED on load"))
+    if m.get("sandbox_ok") is not None:
+        if m.get("sandbox_skipped"):
+            lines.append("browser sandbox: skipped")
+        else:
+            lines.append(
+                f"browser sandbox: {'passed' if m.get('sandbox_ok') else 'failed'}, "
+                f"frames={m.get('sandbox_frames')}, load_ms={m.get('sandbox_load_ms')}"
+            )
     if result.get("warnings"):
         lines.append("quality warnings: " + "; ".join(result["warnings"][:4]))
     if result.get("issues"):
@@ -1480,6 +1523,10 @@ def gameplay_qa_node(state: dict) -> dict:
     if failed:
         output["last_error"] = "; ".join(result.get("issues") or ["gameplay QA failed"])
         output["_step_failed"] = True
+        if result.get("error_code") == "SANDBOX_UNAVAILABLE":
+            output["status"] = "failed"
+            output["error_code"] = "SANDBOX_UNAVAILABLE"
+            output["error_message"] = output["last_error"]
     return output
 
 
@@ -1681,6 +1728,7 @@ def failed_node(state: dict) -> dict:
     return {
         "status": "failed",
         "error_message": msg,
+        "error_code": state.get("error_code"),
         "_agent": "FailureHandler",
         "_logs": [
             f"task failed: {_clip(msg, 220)}",
@@ -1724,6 +1772,8 @@ def should_continue_after_validation(state: dict) -> str:
 
 
 def should_continue_after_gameplay_qa(state: dict) -> str:
+    if state.get("status") == "failed":
+        return "failed"
     if state.get("task_kind") == "revision":
         if (state.get("gameplay_qa_result") or {}).get("passed"):
             return "publish_revision"

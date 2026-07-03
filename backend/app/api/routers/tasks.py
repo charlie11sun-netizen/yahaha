@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, rate_limit
+from app.core.config import settings
 from app.db.session import get_db
 from app.models import Asset, GenerationTask
 from app.models.common import GameStatus, TaskStatus, now_utc
@@ -21,8 +22,25 @@ def _owned_task(task_id: str, user, db: Session) -> GenerationTask:
     return task
 
 
+def _ensure_active_task_slot(user_id: str, db: Session) -> None:
+    max_active = int(settings.MAX_ACTIVE_TASKS_PER_USER or 0)
+    if max_active <= 0:
+        return
+    active_count = (
+        db.query(GenerationTask)
+        .filter(
+            GenerationTask.user_id == user_id,
+            GenerationTask.status.in_([TaskStatus.PENDING, TaskStatus.RUNNING]),
+        )
+        .count()
+    )
+    if active_count >= max_active:
+        raise HTTPException(status_code=409, detail="TOO_MANY_ACTIVE_TASKS")
+
+
 @router.post("", dependencies=[Depends(rate_limit(20, 3600, "task_create"))])
 def create_task(body: TaskCreateIn, user=Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_active_task_slot(user.id, db)
     task = GenerationTask(user_id=user.id, idea=body.idea, status=TaskStatus.PENDING, dimension=body.dimension)
     if body.asset_ids:
         task.assets = (
@@ -70,6 +88,7 @@ def revise_task(
     current_version = next((v for v in game.versions if v.version == game.current_version), None)
     if not current_version or source.version_id != current_version.id:
         raise HTTPException(status_code=409, detail="This task is not the game's current preview version")
+    _ensure_active_task_slot(user.id, db)
     active = (
         db.query(GenerationTask)
         .filter(
@@ -109,6 +128,7 @@ def retry_task(task_id: str, user=Depends(get_current_user), db: Session = Depen
     task = _owned_task(task_id, user, db)
     if task.status != TaskStatus.FAILED:
         raise HTTPException(status_code=400, detail="Only failed tasks can be retried")
+    _ensure_active_task_slot(user.id, db)
     for step in list(task.steps):
         db.delete(step)
     task.status = TaskStatus.PENDING

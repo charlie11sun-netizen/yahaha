@@ -12,6 +12,7 @@ class Settings(BaseSettings):
 
     # Redis / Celery
     REDIS_URL: str = "redis://localhost:6379/0"
+    WORKER_MAX_MEMORY_PER_CHILD: int = 500_000
 
     # Object storage (S3 compatible)
     S3_ENDPOINT: str = "http://localhost:9000"           # 服务端访问 OSS
@@ -58,6 +59,14 @@ class Settings(BaseSettings):
     # 演示故障注入（prompt 含 force-repair/force-replan 时故意注入违禁 API 触发
     # 修复回环）。仅限本地演示显式开启。
     DEMO_FAULT_INJECTION: bool = False
+
+    # Build-time browser sandbox. Docker compose enables this service and keeps
+    # SANDBOX_REQUIRED=true. Bare pytest/local backend runs may leave the URL
+    # empty and keep the old V8 precheck as a non-blocking fallback.
+    SANDBOX_URL: str = ""
+    SANDBOX_REQUIRED: bool = False
+    SANDBOX_TIMEOUT_MS: int = 5000
+    MAX_ACTIVE_TASKS_PER_USER: int = 2
 
     # Site access gate (front-door password). Empty = disabled (open). When set,
     # every API request must carry a matching X-Gate-Token; shared with the web

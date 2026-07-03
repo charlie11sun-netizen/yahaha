@@ -37,6 +37,15 @@ def test_create_task_dimension_invalid_rejected(client):
     assert r.status_code == 422
 
 
+def test_third_active_task_for_same_user_rejected(client):
+    h = _auth(client)
+    assert client.post("/tasks", json={"idea": "one", "asset_ids": []}, headers=h).status_code == 200
+    assert client.post("/tasks", json={"idea": "two", "asset_ids": []}, headers=h).status_code == 200
+    r = client.post("/tasks", json={"idea": "three", "asset_ids": []}, headers=h)
+    assert r.status_code == 409
+    assert r.json()["detail"] == "TOO_MANY_ACTIVE_TASKS"
+
+
 def test_three_engine_vendored_and_injected():
     """3D 引擎已 vendored，且 3D bundle 会注入 three.min.js（2D 不注入）。"""
     from app.agents import nodes

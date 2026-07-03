@@ -3,6 +3,8 @@ name: gameweave
 services:
   postgres:
     image: pgvector/pgvector:0.8.2-pg16
+    mem_limit: 1g
+    cpus: "1.0"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-gameweave}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gameweave}
@@ -19,6 +21,8 @@ services:
 
   redis:
     image: redis:7-alpine
+    mem_limit: 256m
+    cpus: "0.5"
     ports:
       - "6379:6379"
     healthcheck:
@@ -29,6 +33,8 @@ services:
 
   minio:
     image: minio/minio
+    mem_limit: 512m
+    cpus: "0.5"
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
@@ -56,6 +62,8 @@ services:
 
   api:
     build: ./backend
+    mem_limit: 512m
+    cpus: "1.0"
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD:-gameweave}@postgres:5432/${POSTGRES_DB:-gameweave}
@@ -77,15 +85,22 @@ services:
 
   worker:
     build: ./backend
+    mem_limit: 1g
+    cpus: "1.5"
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD:-gameweave}@postgres:5432/${POSTGRES_DB:-gameweave}
       REDIS_URL: redis://redis:6379/0
       S3_ENDPOINT: http://minio:9000
       S3_PUBLIC_ENDPOINT: http://localhost:9000
-    command: celery -A app.tasks.celery_app.celery worker --loglevel=info
+      SANDBOX_URL: http://sandbox:8001
+      SANDBOX_REQUIRED: "true"
+    command: celery -A app.tasks.celery_app.celery worker --loglevel=info --concurrency=2 --max-tasks-per-child=20
     volumes:
       - ./backend:/app
+    networks:
+      - default
+      - sandbox_net
     depends_on:
       postgres:
         condition: service_healthy
@@ -93,9 +108,13 @@ services:
         condition: service_healthy
       createbuckets:
         condition: service_completed_successfully
+      sandbox:
+        condition: service_healthy
 
   beat:
     build: ./backend
+    mem_limit: 256m
+    cpus: "0.5"
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD:-gameweave}@postgres:5432/${POSTGRES_DB:-gameweave}
@@ -108,6 +127,28 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  sandbox:
+    build: ./sandbox
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 768m
+    cpus: "1.0"
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      SANDBOX_RUNNER_CONCURRENCY: "1"
+      SANDBOX_RUNNER_CHROMIUM_NO_SANDBOX: ${SANDBOX_RUNNER_CHROMIUM_NO_SANDBOX:-true}
+    networks:
+      - sandbox_net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
 
   web:
     build: ./frontend
@@ -134,3 +175,7 @@ services:
 volumes:
   pgdata:
   miniodata:
+
+networks:
+  sandbox_net:
+    internal: true
