@@ -8,7 +8,7 @@ balance before publishing.
 import json
 import re
 
-from app.agents import bundles, llm, prompts, smoke, templating, validation
+from app.agents import bundles, code_agent, llm, prompts, smoke, templating, validation
 from app.agents.state import MAX_GAMEPLAY_REPAIR, MAX_REPAIR, MAX_REPLAN
 from app.core.config import settings
 from app.core.errors import TaskErrorCode
@@ -1620,17 +1620,46 @@ def gameplay_qa_node(state: dict) -> dict:
 
 def repair_code_node(state: dict) -> dict:
     attempts = state.get("repair_attempts", 0) + 1
+    logs = [
+        f"repair attempt: {attempts}/{MAX_REPAIR}",
+        f"previous validation error: {_clip(state.get('last_error'), 180)}",
+    ]
+    # 内层工具循环 agent（CODE_AGENT_ENABLED）：read/write/run_checks 最小修复，
+    # 自测通过才提交；不可用/不收敛回落下面的整体重生成。外层 build_validation
+    # 仍会独立复检，agent 的自测不作数。
+    agent_tokens = 0
+    if code_agent.enabled(state):
+        outcome = code_agent.run_repair(
+            state.get("generated_files") or [],
+            error=str(state.get("last_error") or "build validation failed"),
+            dimension=str(state.get("dimension") or "2d"),
+        )
+        if outcome is not None:
+            agent_tokens = outcome.tokens
+            logs += [f"repair mode: agent tool loop ({outcome.turns} model turn(s))"] + outcome.logs
+            if outcome.checks_ok:
+                return {
+                    "generated_files": outcome.files,
+                    "repair_attempts": attempts,
+                    "_agent": "GameCodeAgentRepair",
+                    "_tokens_delta": agent_tokens,
+                    "_logs": logs
+                    + _file_log_lines(outcome.files)
+                    + ["agent self-checks passed", "queued validation retry"],
+                }
+            logs.append(
+                f"agent loop did not converge ({_clip(outcome.note, 120)}); falling back to full regeneration"
+            )
+        else:
+            logs.append("agent loop unavailable; falling back to full regeneration")
     files, tokens, mode = _generate_code({**state, "repair_attempts": attempts}, repair_error=state.get("last_error"))
     return {
         "generated_files": files,
         "repair_attempts": attempts,
         "_agent": "GameCodeAgentRepair",
-        "_tokens_delta": tokens,
-        "_logs": [
-            f"repair attempt: {attempts}/{MAX_REPAIR}",
-            f"previous validation error: {_clip(state.get('last_error'), 180)}",
-            f"regenerated game.js using {mode}",
-        ]
+        "_tokens_delta": tokens + agent_tokens,
+        "_logs": logs
+        + [f"regenerated game.js using {mode}"]
         + _file_log_lines(files)
         + ["queued validation retry"],
     }
@@ -1638,6 +1667,46 @@ def repair_code_node(state: dict) -> dict:
 
 def revision_repair_node(state: dict) -> dict:
     attempts = state.get("repair_attempts", 0) + 1
+    logs = [
+        f"revision repair attempt: {attempts}/{MAX_REPAIR}",
+        f"previous error: {_clip(state.get('last_error'), 180)}",
+    ]
+    agent_tokens = 0
+    if code_agent.enabled(state):
+        outcome = code_agent.run_repair(
+            state.get("generated_files") or state.get("existing_files") or [],
+            error=str(state.get("last_error") or "revision validation failed"),
+            dimension=str(state.get("dimension") or "2d"),
+            task_note=(
+                f"This bundle is a user-requested {state.get('task_kind', 'revision')} of an existing game; "
+                "apply the smallest fix and keep unrelated behavior identical."
+            ),
+        )
+        if outcome is not None:
+            agent_tokens = outcome.tokens
+            logs += [f"repair mode: agent tool loop ({outcome.turns} model turn(s))"] + outcome.logs
+            # 外层门禁要求 revision/remix 至少改动一个文件，空编辑等于没修
+            if outcome.checks_ok and outcome.changed:
+                return {
+                    "generated_files": outcome.files,
+                    "revision_result": {"changed_files": outcome.changed, "base_version": state.get("base_version")},
+                    "validation_result": {},
+                    "gameplay_qa_result": {},
+                    "repair_attempts": attempts,
+                    "_agent": "CodeRevisionRepairAgent",
+                    "_tokens_delta": agent_tokens,
+                    "_logs": logs
+                    + [
+                        "changed files: " + ", ".join(outcome.changed),
+                        "agent self-checks passed",
+                        "queued validation retry",
+                    ],
+                }
+            logs.append(
+                f"agent loop did not converge ({_clip(outcome.note, 120)}); falling back to single-shot revision repair"
+            )
+        else:
+            logs.append("agent loop unavailable; falling back to single-shot revision repair")
     try:
         files, tokens, changed, mode = _generate_revision_code(state, repair_error=state.get("last_error"))
     except Exception as exc:  # noqa: BLE001
@@ -1649,10 +1718,9 @@ def revision_repair_node(state: dict) -> dict:
         "gameplay_qa_result": {},
         "repair_attempts": attempts,
         "_agent": "CodeRevisionRepairAgent",
-        "_tokens_delta": tokens,
-        "_logs": [
-            f"revision repair attempt: {attempts}/{MAX_REPAIR}",
-            f"previous error: {_clip(state.get('last_error'), 180)}",
+        "_tokens_delta": tokens + agent_tokens,
+        "_logs": logs
+        + [
             f"revision mode: {mode}",
             "changed files: " + (", ".join(changed) if changed else "none"),
             "queued validation retry",

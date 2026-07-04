@@ -46,7 +46,7 @@ Create 链路是本系统的核心。它不能只是普通 CRUD，也不能只�
 | **mock（默认）** | `USE_REAL_MODEL=false` 或无 `OPENAI_API_KEY` | 全程走确定性启发式（`_heuristic_*`），不调模型，离线可跑、可单测 |
 | **real** | `USE_REAL_MODEL=true` 且配置 `OPENAI_API_KEY` | 规划 / 设计 / 代码节点改为调用 OpenAI 兼容模型（默认 `MODEL_NAME=gpt-5.5`），失败自动回退启发式 |
 
-模型层见 [`backend/app/agents/llm.py`](../backend/app/agents/llm.py)：只发 `model + messages`，换 provider / 模型只改 `.env` 的 `OPENAI_BASE_URL` / `MODEL_NAME`。
+模型层见 [`backend/app/agents/llm.py`](../backend/app/agents/llm.py)：只发 `model + messages`，换 provider / 模型只改 `.env` 的 `OPENAI_BASE_URL` / `MODEL_NAME`。real 模式下另有一个可选增强开关 `CODE_AGENT_ENABLED`：把构建 / 修订的**修复节点**从整体重生成升级为 OpenAI Agents SDK 的内层工具循环（见 §2.4① / §6.12），默认关闭、可灰度、失败自动回落。
 
 ### 1.2 两种维度：2D Canvas 与 3D WebGL
 
@@ -147,11 +147,16 @@ Plan-and-Execute 只用于局部游戏生成，不控制系统级流程。Planne
 ```text
 Action: validate generated files
 Observation: validation error（forbidden API / 缺文件 / 体积超限 / 未引用 game.js）
-Action: repair_code 重新生成
+Action: repair_code 修复代码
 Observation: 再次 validate
 ```
 
-上限 `MAX_REPAIR = 2`。
+上限 `MAX_REPAIR = 2`。修复节点内部有两条实现路径：
+
+* **整体重生成（默认）**：把 `last_error` 塞回提示词，`_generate_code(..., repair_error=…)` 重新产出整套代码。简单、无额外依赖，但每次都重写整份 `game.js`。
+* **内层工具循环 Agent（`CODE_AGENT_ENABLED=true` 且 real 模式）**：用 OpenAI Agents SDK（[`code_agent.py`](../backend/app/agents/code_agent.py)）让模型在**有界回合**内自主 `read_file → write_file → run_checks`（静态校验 + V8 冒烟），做**最小定点修复**并自测收敛，命中 skill 合同时还能 `read_skill` 按需取参考。这才是真正的 in-node ReAct：模型自己决定读哪个文件、改哪一行、何时收手，而不是被动接收一次错误串。上限 `CODE_AGENT_MAX_TURNS = 8`（模型往返数）。
+
+> **agent-in-the-workflow 边界**：工具循环只活在修复节点*内部*。顶层图拓扑、安全 / 校验 / 发布节点仍是固定的确定性代码——agent 无权跳过它们。agent 的自测通过**不等于**放行：跳出节点后 `build_validation` 仍会独立复检一遍（agent 说修好了不作数）。SDK 未安装、缺 key、网络异常或超回合数不收敛，**一律回落整体重生成**，绝不比默认路径更差；两条路径花掉的 token 都并入同一步骤增量与 `LLMCall` 记账。
 
 **② 玩法修复（gameplay_qa 之后）**
 
@@ -494,7 +499,16 @@ localStorage  |  sessionStorage  |  fetch(  |  XMLHttpRequest  |  WebSocket
 
 ### 6.12 RepairCodeNode (`repair_code`)
 
-校验失败且仍有次数时，按 `last_error` 重新生成代码（`_generate_code(..., repair_error=last_error)`），`repair_attempts += 1`，回 `build_validation`。不改设计，只修代码层问题。上限 `MAX_REPAIR = 2`。
+校验失败且仍有次数时修复代码，`repair_attempts += 1`，回 `build_validation`。不改设计，只修代码层问题。上限 `MAX_REPAIR = 2`。
+
+两条实现路径（详见 §2.4①）：
+
+* **默认**：`_generate_code(..., repair_error=last_error)` 按错误整体重生成。
+* **工具循环 Agent**（`CODE_AGENT_ENABLED=true` 且 `use_real`）：`code_agent.run_repair(...)` 用 OpenAI Agents SDK 跑 `read_file / write_file / run_checks / read_skill` 有界循环做最小修复。`run_checks` 复用与外层完全相同的 `validation.validate_files` + `smoke.run_smoke`，所以 agent 的自测口径和门禁一致。只有 agent **自测通过**才提交其产物；不收敛 / 不可用则回落整体重生成，并把已花 token 一并计入。
+
+`revision_repair`（revision / remix 分支的修复节点）走同一 `run_repair` 入口，额外要求修复结果**至少改动一个文件**（满足 revision/remix “必须有 diff” 的门禁），否则同样回落单次修订重生成。
+
+> **工具面与安全**：`RepairSession`（纯 Python，离线可单测）封装 bundle 快照与编辑集——`write_file` 只接受 `{index.html, style.css, game.js}` 白名单且强制 ≤ 400KB，`read_skill` 拒绝路径穿越。skill 文档放在 [`backend/app/agents/skills/<name>/SKILL.md`](../backend/app/agents/skills/)（现有 `gameweave-runtime` 记录沙箱运行时合同），未来接入 Phaser 等运行时时只需向该目录投放 skill，agent 即可读到，无需改代码。
 
 ### 6.13 GameplayQAAgent (`gameplay_qa`)
 

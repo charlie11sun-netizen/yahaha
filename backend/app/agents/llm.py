@@ -101,6 +101,34 @@ def _record_call(result: LLMResult, *, retried: bool = False) -> None:
         db.close()
 
 
+def record_usage(
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    latency_ms: int,
+    *,
+    retried: bool = False,
+) -> LLMResult:
+    """把外部执行的模型调用并入统一记账（LLMCall 行 + task.cost_usd）。
+
+    Agents SDK 的工具循环（code_agent.py）自带 OpenAI client，不经过下面的
+    chat()；此入口补齐相同的落库路径，保证 ops 查询与成本核算口径一致。
+    """
+    prompt_tokens = int(prompt_tokens or 0)
+    completion_tokens = int(completion_tokens or 0)
+    result = LLMResult(
+        text="",
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+        model=model,
+        latency_ms=int(latency_ms or 0),
+        cost_usd=_price_for(model, prompt_tokens, completion_tokens),
+    )
+    _record_call(result, retried=retried)
+    return result
+
+
 def chat(
     system: str,
     user: str,

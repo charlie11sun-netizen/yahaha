@@ -64,6 +64,8 @@ group by 1, 2
 order by cost_usd desc nulls last, total_tokens desc;
 ```
 
+> 注：`CODE_AGENT_ENABLED=true` 时，`repair_code` / `revision_repair` 步骤的一次修复可能是**多轮工具循环**（每轮一条 `llm_calls`，`step_id` 都指向同一修复步骤），因此这两个节点的 `llm_calls` 计数会大于 `agent_steps` 里的 attempt 数，成本也相应集中——属预期，不是重复计费。
+
 ## 节点失败率与尝试次数
 
 ```sql
