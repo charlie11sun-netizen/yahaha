@@ -1,6 +1,7 @@
 import type {
   Comment,
   Game,
+  GameVersion,
   MemoryItem,
   MemoryProfile,
   MemoryProfileVersion,
@@ -116,6 +117,9 @@ export const api = {
   play: (id: string) => req<{ plays: number; plays_str: string }>(`/games/${id}/play`, { method: "POST" }),
   publish: (id: string) => req<Game>(`/games/${id}/publish`, { method: "POST" }),
   unpublish: (id: string) => req<Game>(`/games/${id}/unpublish`, { method: "POST" }),
+  gameVersions: (id: string) => req<{ items: GameVersion[] }>(`/games/${id}/versions`),
+  activateVersion: (id: string, version: string) =>
+    req<Game>(`/games/${id}/versions/${encodeURIComponent(version)}/activate`, { method: "POST" }),
   updateGame: (id: string, patch: { title?: string; summary?: string; tags?: string[] }) =>
     req<Game>(`/games/${id}`, { method: "PATCH", json: patch }),
   deleteGame: (id: string) => req<{ ok: boolean }>(`/games/${id}`, { method: "DELETE" }),
@@ -143,15 +147,26 @@ export const api = {
   submitScore: (id: string, points: number, player_name?: string) =>
     req<{ ok: boolean }>(`/games/${id}/score`, { json: { points, player_name } }),
   gameManifest: (id: string) =>
-    req<{ entry?: string; runtime?: string; sha256?: string; _source?: string; _url?: string }>(`/games/${id}/manifest`),
+    req<{ entry?: string; entry_url?: string; runtime?: string; sha256?: string; _source?: string; _url?: string }>(`/games/${id}/manifest`),
+  gameManifestVersion: (id: string, version: string) =>
+    req<{ entry?: string; entry_url?: string; runtime?: string; sha256?: string; _source?: string; _url?: string }>(
+      `/games/${id}/manifest?version=${encodeURIComponent(version)}`,
+    ),
 
   upload: (files: FileList | File[]) => {
     const fd = new FormData();
     Array.from(files).forEach((f) => fd.append("files", f));
     return req<{ assets: UploadedAsset[] }>("/uploads", { form: fd });
   },
-  createTask: (idea: string, asset_ids: string[], dimension: "2d" | "3d" = "2d") =>
-    req<{ task_id: string }>("/tasks", { json: { idea, asset_ids, dimension } }),
+  createTask: (
+    idea: string,
+    asset_ids: string[],
+    dimension: "2d" | "3d" = "2d",
+    opts: { task_kind?: "generation" | "remix"; source_game_id?: string } = {},
+  ) =>
+    req<{ task_id: string }>("/tasks", {
+      json: { idea, asset_ids, dimension, ...opts },
+    }),
   tasks: () => req<{ items: Task[] }>("/tasks"),
   task: (id: string) => req<Task>(`/tasks/${id}`),
   retryTask: (id: string) => req<{ task_id: string }>(`/tasks/${id}/retry`, { method: "POST" }),

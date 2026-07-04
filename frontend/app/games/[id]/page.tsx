@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   Calendar,
   Database,
+  GitFork,
   Heart,
   MessageCircle,
   Play,
@@ -92,6 +93,16 @@ export default function DetailPage() {
     }
   };
 
+  const remix = () => {
+    if (!requireUser("Sign in to remix games")) return;
+    const params = new URLSearchParams({
+      remix: game.id,
+      sourceTitle: game.title,
+      idea: `Remix ${game.title} with a fresh mechanic and visual twist.`,
+    });
+    router.push(`/create?${params.toString()}`);
+  };
+
   const postComment = async () => {
     if (!requireUser("Sign in to comment")) return;
     const body = commentText.trim();
@@ -158,6 +169,10 @@ export default function DetailPage() {
                 <Share2 size={16} />
                 Share
               </button>
+              <button onClick={remix} type="button">
+                <GitFork size={16} />
+                Remix
+              </button>
             </div>
 
             <p>{game.summary}</p>
@@ -172,6 +187,7 @@ export default function DetailPage() {
               <DetailStat value={game.plays_str} label="plays" />
               <DetailStat value={game.likes_str} label="likes" />
               <DetailStat value={game.version} label="version" />
+              <DetailStat value={String(game.remix_count ?? 0)} label="remixes" />
             </div>
 
             <div className="pf-detail-bundle">
@@ -187,6 +203,17 @@ export default function DetailPage() {
                 <strong>Generated from prompt</strong>
                 <p>{game.prompt}</p>
               </div>
+            ) : null}
+
+            {game.remixed_from ? (
+              <button
+                className="pf-detail-remix-source"
+                onClick={() => router.push(`/games/${game.remixed_from?.id}`)}
+                type="button"
+              >
+                <GitFork size={16} />
+                Remix of {game.remixed_from.title} by {game.remixed_from.author}
+              </button>
             ) : null}
           </div>
         </section>

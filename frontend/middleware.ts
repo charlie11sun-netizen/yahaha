@@ -1,13 +1,25 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import { GATE_COOKIE, GATE_TOKEN_COOKIE, gateEnabled, gateToken, safeEqual, sitePassword } from "@/lib/gate";
+import {
+  GATE_COOKIE,
+  GATE_TOKEN_COOKIE,
+  gateEnabled,
+  gateToken,
+  publicBrowseEnabled,
+  safeEqual,
+  sitePassword,
+} from "@/lib/gate";
 
 // Front-door password gate for the whole site. When SITE_PASSWORD is set, every
 // page (the per-user login included) sits behind this; an unlocked visitor is
 // bounced to /gate and returned to where they were headed after unlocking.
 export async function middleware(req: NextRequest) {
   if (!gateEnabled()) return NextResponse.next();
+
+  if (publicBrowseEnabled() && isPublicBrowsePath(req.nextUrl.pathname)) {
+    return NextResponse.next();
+  }
 
   const expected = await gateToken(sitePassword());
   const token = req.cookies.get(GATE_COOKIE)?.value;
@@ -32,6 +44,16 @@ export async function middleware(req: NextRequest) {
   url.search = "";
   url.searchParams.set("next", target);
   return NextResponse.redirect(url);
+}
+
+function isPublicBrowsePath(pathname: string): boolean {
+  return (
+    pathname === "/" ||
+    pathname === "/explore" ||
+    pathname === "/gate" ||
+    pathname.startsWith("/games/") ||
+    pathname.startsWith("/play/")
+  );
 }
 
 export const config = {

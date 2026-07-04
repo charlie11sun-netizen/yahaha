@@ -1,0 +1,15 @@
+{$PUBLIC_HOST:localhost} {
+	encode gzip
+
+	handle_path /api/* {
+		reverse_proxy api:8000
+	}
+
+	handle_path /s3/* {
+		reverse_proxy minio:9000
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}

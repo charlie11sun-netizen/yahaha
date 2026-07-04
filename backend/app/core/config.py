@@ -46,6 +46,15 @@ class Settings(BaseSettings):
     MEMORY_LEXICAL_MIN_SCORE: float = 0.10
     MEMORY_SEMANTIC_MIN_SCORE: float = 0.20
     OPENAI_TIMEOUT: int = 600  # 写整个 game.js 耗时长，给足超时
+    MODEL_PRICING_JSON: str = ""
+
+    # Observability. Empty DSN / OTLP endpoint keeps local development fully
+    # offline. LOG_FORMAT=json is intended for production log aggregation.
+    SENTRY_DSN: str = ""
+    SENTRY_ENVIRONMENT: str = "development"
+    LOG_FORMAT: str = "console"  # console | json
+    OTEL_EXPORTER_OTLP_ENDPOINT: str = ""
+    OTEL_TRACES_SAMPLE_RATE: float = 1.0
 
     # OAuth (optional)
     GOOGLE_CLIENT_ID: str = ""
@@ -67,6 +76,7 @@ class Settings(BaseSettings):
     SANDBOX_REQUIRED: bool = False
     SANDBOX_TIMEOUT_MS: int = 5000
     MAX_ACTIVE_TASKS_PER_USER: int = 2
+    TASK_TOKEN_BUDGET: int = 0
 
     # Upload and content moderation hardening. Local/dev stays offline by
     # default: uploads are structurally validated, ClamAV is optional, and text
@@ -82,6 +92,7 @@ class Settings(BaseSettings):
     # every API request must carry a matching X-Gate-Token; shared with the web
     # front-end via the same SITE_PASSWORD env var.
     SITE_PASSWORD: str = ""
+    GATE_PUBLIC_BROWSE: bool = False
 
     # CORS
     CORS_ORIGINS: str = "http://localhost:3000"

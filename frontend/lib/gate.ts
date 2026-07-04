@@ -26,6 +26,10 @@ export function gateEnabled(): boolean {
   return sitePassword().length > 0;
 }
 
+export function publicBrowseEnabled(): boolean {
+  return process.env.GATE_PUBLIC_BROWSE === "true" || process.env.GATE_PUBLIC_BROWSE === "1";
+}
+
 /**
  * Opaque cookie value proving the holder knew the password, without ever
  * storing the password itself. SHA-256 is not reversible and the token is not

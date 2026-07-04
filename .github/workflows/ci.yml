@@ -65,3 +65,43 @@ jobs:
           node-version: "20"
       - run: npm ci
       - run: npx tsc --noEmit
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install Playwright tests
+        working-directory: e2e
+        run: npm ci
+      - name: Install Chromium
+        working-directory: e2e
+        run: npx playwright install --with-deps chromium
+      - name: Start stack
+        run: docker compose up -d --build
+      - name: Wait for API readiness
+        run: |
+          for i in {1..60}; do
+            if curl -fsS http://127.0.0.1:8000/health/ready; then exit 0; fi
+            docker compose logs --tail=80 api worker sandbox || true
+            sleep 2
+          done
+          docker compose logs api worker sandbox || true
+          exit 1
+      - name: Run Playwright E2E
+        working-directory: e2e
+        env:
+          E2E_BASE_URL: http://127.0.0.1:3000
+          E2E_API_URL: http://127.0.0.1:8000
+        run: npx playwright test
+      - name: Upload Playwright artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            e2e/playwright-report
+            e2e/test-results

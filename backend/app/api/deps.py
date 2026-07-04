@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.security import decode_token
+from app.core.telemetry import bind_context
 from app.db.session import get_db
 from app.models import User
 
@@ -61,6 +62,7 @@ def get_current_user(
     # "禁用"必须对持旧 JWT 的会话全局生效，而不只在密码登录那一刻检查
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
+    bind_context(user_id=user.id)
     return user
 
 

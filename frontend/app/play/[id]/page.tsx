@@ -14,7 +14,7 @@ import {
   ShieldCheck,
   Trophy,
 } from "lucide-react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
@@ -32,6 +32,8 @@ const INITIAL_RUNTIME: Record<RuntimeKey, RuntimeStatus> = {
 
 export default function PlayPage() {
   const { id } = useParams() as { id: string };
+  const searchParams = useSearchParams();
+  const requestedVersion = searchParams.get("version");
   const router = useRouter();
   const stageRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
@@ -48,6 +50,7 @@ export default function PlayPage() {
   const [runtime, setRuntime] = useState<Record<RuntimeKey, RuntimeStatus>>(INITIAL_RUNTIME);
   const [activity, setActivity] = useState<string[]>([]);
   const [iframeKey, setIframeKey] = useState(0);
+  const [bundleUrl, setBundleUrl] = useState<string | null>(null);
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [isTheater, setIsTheater] = useState(false);
 
@@ -65,12 +68,15 @@ export default function PlayPage() {
     setActivity(["Fetching manifest from object storage…"]);
 
     // 真实拉取 manifest（后端从 OSS 读取），替代此前的纯动画
+    let manifest: { entry?: string; entry_url?: string; runtime?: string; sha256?: string; _source?: string } | null = null;
     try {
-      const m = await api.gameManifest(nextGame.id);
+      manifest = requestedVersion
+        ? await api.gameManifestVersion(nextGame.id, requestedVersion)
+        : await api.gameManifest(nextGame.id);
       patchRuntime("manifest", "ready");
-      const sha = m.sha256 ? ` · sha256=${String(m.sha256).slice(0, 12)}` : "";
+      const sha = manifest.sha256 ? ` · sha256=${String(manifest.sha256).slice(0, 12)}` : "";
       addActivity(
-        `Manifest ${m._source === "oss" ? "fetched from OSS" : "resolved"} ✓ entry=${m.entry || "index.html"} · runtime=${m.runtime || "iframe"}${sha}`,
+        `Manifest ${manifest._source === "oss" ? "fetched from OSS" : "resolved"} ✓ entry=${manifest.entry || "index.html"} · runtime=${manifest.runtime || "iframe"}${sha}`,
       );
     } catch {
       patchRuntime("manifest", "failed");
@@ -81,13 +87,19 @@ export default function PlayPage() {
 
     // 舞台状态绑定真实事件：bundle 状态由 iframe onLoad 翻转，
     // 不再用 setTimeout 表演"已挂载"（真 404 时旧 UI 已显示 Bundle mounted）。
-    if (!nextGame.bundle_url) {
+    if (!manifest) {
+      setPhase("error");
+      return;
+    }
+    const nextBundleUrl = manifest.entry_url || nextGame.bundle_url;
+    if (!nextBundleUrl) {
       patchRuntime("sandbox", "failed");
       patchRuntime("bundle", "failed");
       addActivity("Bundle URL is missing");
       setPhase("error");
       return;
     }
+    setBundleUrl(nextBundleUrl);
     patchRuntime("sandbox", "ready");
     addActivity("Sandboxed iframe prepared (scripts only, no same-origin)");
     patchRuntime("bundle", "running");
@@ -104,7 +116,7 @@ export default function PlayPage() {
   useEffect(() => {
     if (game) runLoad(game);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [game?.id, game?.bundle_url]);
+  }, [game?.id, game?.bundle_url, requestedVersion]);
 
   useEffect(() => {
     const onFullScreenChange = () => {
@@ -203,7 +215,7 @@ export default function PlayPage() {
         </button>
         <div className="pf-play-game-meta">
           <h1>{game?.title || "Loading game"}</h1>
-          <p>{game ? `by ${game.author} . ${game.version}` : "Preparing browser runtime"}</p>
+          <p>{game ? `by ${game.author} . ${requestedVersion || game.version}` : "Preparing browser runtime"}</p>
         </div>
         <div className="pf-play-actions">
           <button onClick={() => router.back()} type="button">
@@ -278,7 +290,7 @@ export default function PlayPage() {
             </div>
           )}
 
-          {phase === "ready" && game && (
+          {phase === "ready" && game && bundleUrl && (
             <>
               <iframe
                 allow="fullscreen"
@@ -286,7 +298,7 @@ export default function PlayPage() {
                 onLoad={onBundleLoaded}
                 ref={frameRef}
                 sandbox="allow-scripts allow-pointer-lock"
-                src={game.bundle_url}
+                src={bundleUrl}
                 title={game.title}
               />
               <div className="pf-play-stage-status">

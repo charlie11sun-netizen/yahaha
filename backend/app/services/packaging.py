@@ -306,3 +306,134 @@ def publish_revision(state: dict) -> tuple[str, str, str, str]:
         return game.id, version.id, version_name, s3.manifest_url(game.id, version_name)
     finally:
         db.close()
+
+
+def publish_remix(state: dict) -> tuple[str, str, str]:
+    """Publish a remix as a brand-new preview game with immutable v1 artifacts."""
+    from app.db.session import SessionLocal
+    from app.models import Game, GameVersion, Tag
+    from app.models.common import GameSource, GameStatus
+
+    source_game_id = state.get("base_game_id")
+    source_version = state.get("base_version")
+    files = state.get("generated_files") or []
+    spec = state.get("game_spec") or {}
+    feedback = state.get("source_feedback") or state.get("prompt") or ""
+
+    db = SessionLocal()
+    try:
+        existing = db.query(GameVersion).filter_by(source_task_id=state.get("task_id")).first()
+        if existing:
+            return existing.game_id, existing.id, s3.manifest_url(existing.game_id, existing.version)
+
+        source = db.get(Game, source_game_id)
+        if not source or (source.status != GameStatus.PUBLISHED and source.author_id != state.get("user_id")):
+            raise RuntimeError("remix source is missing or not visible")
+
+        title = str(spec.get("title") or f"{source.title} Remix")[:60]
+        if title == source.title:
+            title = f"{title} Remix"[:60]
+        summary_seed = spec.get("summary") or feedback or source.summary
+        summary = str(summary_seed)[:200]
+        genre = str(spec.get("genre") or source.genre or "arcade").upper()[:80]
+        cover = source.cover or "linear-gradient(135deg,#7c5cff,#2dd4bf)"
+        tags = [str(tag.name)[:30] for tag in source.tags[:3]]
+        for tag in [*(spec.get("tags") or [])[:3], "Remix", "AI"]:
+            tag_name = str(tag)[:30]
+            if tag_name and tag_name not in tags:
+                tags.append(tag_name)
+
+        game = Game(
+            author_id=state.get("user_id"),
+            title=title,
+            summary=summary,
+            genre=genre,
+            cover=cover,
+            source=GameSource.CREATE,
+            status=GameStatus.PREVIEW,
+            current_version="v1",
+            prompt=feedback,
+            plays_count=0,
+            likes_count=0,
+            remixed_from_game_id=source.id,
+            remixed_from_version=source_version,
+        )
+        for name in tags[:6]:
+            tag = db.query(Tag).filter_by(name=name).first()
+            if not tag:
+                tag = Tag(name=name)
+                db.add(tag)
+            game.tags.append(tag)
+        db.add(game)
+        db.flush()
+
+        prefix = s3.game_prefix(game.id, "v1")
+        uploaded = []
+        size_bytes = 0
+        for file in files:
+            path = str(file.get("path") or "")
+            content = str(file.get("content") or "")
+            if path not in {"index.html", "style.css", "game.js"}:
+                continue
+            if path == "index.html":
+                content = inject_csp(content)
+            encoded = content.encode("utf-8")
+            key = f"{prefix}/{path}"
+            s3.put_object(key, encoded, _CONTENT_TYPE.get(path, "text/plain; charset=utf-8"))
+            size_bytes += len(encoded)
+            uploaded.append({
+                "path": path,
+                "url": s3.public_url(key),
+                "sha256": hashlib.sha256(encoded).hexdigest(),
+            })
+
+        if str(state.get("dimension")) == "3d":
+            engine = _three_engine_bytes()
+            if engine:
+                key = f"{prefix}/three.min.js"
+                s3.put_object(key, engine, _CONTENT_TYPE["three.min.js"])
+                uploaded.append({
+                    "path": "three.min.js",
+                    "url": s3.public_url(key),
+                    "sha256": hashlib.sha256(engine).hexdigest(),
+                })
+
+        index_sha = next((item["sha256"] for item in uploaded if item["path"] == "index.html"), "")
+        version = GameVersion(
+            game_id=game.id,
+            version="v1",
+            manifest_key=f"{prefix}/manifest.json",
+            bundle_key=f"{prefix}/index.html",
+            entry="index.html",
+            runtime="iframe-html",
+            sha256=index_sha,
+            size_bytes=size_bytes,
+            source_task_id=state.get("task_id"),
+        )
+        db.add(version)
+        db.flush()
+        manifest = {
+            "schema_version": "game-manifest/v1",
+            "game_id": game.id,
+            "version_id": version.id,
+            "title": title,
+            "runtime": "iframe-html",
+            "entry": "index.html",
+            "entry_url": s3.public_url(f"{prefix}/index.html"),
+            "files": uploaded,
+            "permissions": {"network": False, "storage": False, "cookies": False},
+            "remix": {
+                "source_game_id": source.id,
+                "source_version": source_version,
+                "changed_files": (state.get("revision_result") or {}).get("changed_files") or [],
+            },
+        }
+        s3.put_object(
+            f"{prefix}/manifest.json",
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            "application/json",
+        )
+        db.commit()
+        return game.id, version.id, s3.manifest_url(game.id, "v1")
+    finally:
+        db.close()

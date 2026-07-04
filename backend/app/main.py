@@ -1,4 +1,3 @@
-import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -11,13 +10,23 @@ from sqlalchemy import text
 import app.models  # noqa: F401  注册所有表到 Base.metadata
 from app.api.routers import auth, games, memory, oauth, tasks, uploads, users
 from app.core.config import settings
-from app.core.gate import gate_enabled, verify_gate_token
+from app.core.gate import gate_enabled, public_browse_request, verify_gate_token
+from app.core.telemetry import (
+    bind_context,
+    clear_context,
+    configure_logging,
+    get_logger,
+    init_otel,
+    init_sentry,
+    log_info,
+)
 from app.db.base import Base
 from app.db.session import engine
 from app.storage.s3 import ensure_bucket
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-logger = logging.getLogger("gameweave")
+configure_logging()
+init_sentry("gameweave-api")
+logger = get_logger("gameweave")
 
 
 @asynccontextmanager
@@ -29,6 +38,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="GameWeave API", version="0.1.0", lifespan=lifespan)
+init_otel(service_name="gameweave-api", fastapi_app=app, sqlalchemy_engine=engine)
 
 # Front-door site gate: when SITE_PASSWORD is set, every request must carry a
 # valid X-Gate-Token (the web front-end attaches it after unlock). Exempts CORS
@@ -43,7 +53,11 @@ _GATE_EXEMPT_PREFIXES = ("/auth/oauth",)
 async def site_gate(request, call_next):
     if gate_enabled() and request.method != "OPTIONS":
         path = request.url.path
-        exempt = path in _GATE_EXEMPT_EXACT or path.startswith(_GATE_EXEMPT_PREFIXES)
+        exempt = (
+            path in _GATE_EXEMPT_EXACT
+            or path.startswith(_GATE_EXEMPT_PREFIXES)
+            or public_browse_request(request.method, path)
+        )
         if not exempt and not verify_gate_token(request.headers.get("X-Gate-Token")):
             return JSONResponse(status_code=401, content={"detail": "Site locked. Unlock the site to continue."})
     return await call_next(request)
@@ -61,16 +75,24 @@ async def security_headers(request, call_next):
 
 @app.middleware("http")
 async def access_log(request, call_next):
-    request_id = uuid.uuid4().hex[:12]
+    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+    bind_context(request_id=request_id)
     start = time.perf_counter()
-    response = await call_next(request)
-    duration_ms = (time.perf_counter() - start) * 1000
-    response.headers["X-Request-ID"] = request_id
-    logger.info(
-        "%s %s -> %s %.1fms [%s]",
-        request.method, request.url.path, response.status_code, duration_ms, request_id,
-    )
-    return response
+    try:
+        response = await call_next(request)
+        duration_ms = (time.perf_counter() - start) * 1000
+        response.headers["X-Request-ID"] = request_id
+        log_info(
+            logger,
+            "http_request",
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            duration_ms=round(duration_ms, 1),
+        )
+        return response
+    finally:
+        clear_context()
 
 
 # CORS outermost: answers preflight and adds headers to every response (gate
@@ -80,7 +102,7 @@ app.add_middleware(
     allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Gate-Token"],
+    allow_headers=["Authorization", "Content-Type", "X-Gate-Token", "X-Request-ID"],
 )
 
 app.include_router(auth.router)

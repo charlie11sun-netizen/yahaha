@@ -60,6 +60,15 @@ const USER_REVISION_STEPS: UserStep[] = [
   { key: "publish_revision", label: "Saving new preview" },
   { key: "ready", label: "Ready to publish" },
 ];
+const USER_REMIX_STEPS: UserStep[] = [
+  { key: "safety_intake", label: "Remix checked" },
+  { key: "feedback_understanding", label: "Remix goal understood" },
+  { key: "code_revision", label: "Source files transformed" },
+  { key: "build_validation", label: "Validating remix" },
+  { key: "gameplay_qa", label: "Playtesting remix" },
+  { key: "publish_remix", label: "Saving remix preview" },
+  { key: "ready", label: "Ready to publish" },
+];
 
 type StepState = "pending" | "running" | "completed" | "failed";
 type StepRow = { key: string; label: string; status: StepState; summary?: string | null };
@@ -81,6 +90,9 @@ function CreatePageInner() {
   const now = useNow(1000);
   const taskParam = searchParams.get("task");
   const resumeLast = searchParams.get("resume") === "1";
+  const remixSourceId = searchParams.get("remix");
+  const remixSourceTitle = searchParams.get("sourceTitle") || "this game";
+  const remixIdea = searchParams.get("idea");
 
   const [idea, setIdea] = useState("");
   const [dimension, setDimension] = useState<"2d" | "3d">("2d");
@@ -112,6 +124,13 @@ function CreatePageInner() {
       localStorage.removeItem(DRAFT_KEY);
     }
   }, []);
+
+  useEffect(() => {
+    if (!remixSourceId) return;
+    setIdea((current) =>
+      current.trim() ? current : remixIdea || `Remix ${remixSourceTitle} with a fresh mechanic and visual twist.`,
+    );
+  }, [remixIdea, remixSourceId, remixSourceTitle]);
 
   useEffect(() => {
     if (taskParam) {
@@ -217,6 +236,7 @@ function CreatePageInner() {
         idea.trim(),
         files.map((file) => file.id),
         dimension,
+        remixSourceId ? { task_kind: "remix", source_game_id: remixSourceId } : undefined,
       );
       setTaskId(result.task_id);
       localStorage.setItem(LAST_TASK_KEY, result.task_id);
@@ -353,6 +373,7 @@ function CreatePageInner() {
             onResumeLast={lastTaskId ? () => resumeTask(lastTaskId) : undefined}
             onSetDimension={setDimension}
             onSetIdea={setIdea}
+            remixSourceTitle={remixSourceId ? remixSourceTitle : undefined}
             uploading={uploading}
           />
         )}
@@ -401,6 +422,7 @@ function CreateInput({
   onResumeLast,
   onSetDimension,
   onSetIdea,
+  remixSourceTitle,
   uploading,
 }: {
   busy: boolean;
@@ -415,6 +437,7 @@ function CreateInput({
   onResumeLast?: () => void;
   onSetDimension: (dimension: "2d" | "3d") => void;
   onSetIdea: (idea: string) => void;
+  remixSourceTitle?: string;
   uploading: boolean;
 }) {
   const examples = ["Cyberpunk cat runner", "Cozy forest puzzle", "Pixel racing game"];
@@ -436,8 +459,12 @@ function CreateInput({
               <WandSparkles size={30} />
             </span>
             <div>
-              <h2>What do you want to create?</h2>
-              <p>Give GameWeave a playable concept, reference style, rules, and win conditions.</p>
+              <h2>{remixSourceTitle ? `Remix ${remixSourceTitle}` : "What do you want to create?"}</h2>
+              <p>
+                {remixSourceTitle
+                  ? "Describe the gameplay, visual, or rule changes for this remix."
+                  : "Give GameWeave a playable concept, reference style, rules, and win conditions."}
+              </p>
             </div>
           </div>
 
@@ -1059,7 +1086,8 @@ function TechItem({ label, value }: { label: string; value: string }) {
 
 function buildStepRows(task?: Task): StepRow[] {
   const backend = new Map<string, StepSummary>((task?.step_summaries ?? []).map((step) => [step.step, step]));
-  const configuredSteps = task?.task_kind === "revision" ? USER_REVISION_STEPS : USER_STEPS;
+  const configuredSteps =
+    task?.task_kind === "remix" ? USER_REMIX_STEPS : task?.task_kind === "revision" ? USER_REVISION_STEPS : USER_STEPS;
   const visibleSteps = configuredSteps.filter((step) => !step.optional || stepHasBackendSummary(step, backend));
   const rows = visibleSteps.map((step) => {
     if (step.key === "ready") {

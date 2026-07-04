@@ -7,6 +7,8 @@ mock（默认离线）与 real（USE_REAL_MODEL=true + GPT-5.5）走同一张图
 import json
 
 from app.core.config import settings
+from app.core.errors import TaskErrorCode
+from app.core.telemetry import bind_context, clear_context
 from app.db.session import SessionLocal
 from app.models import GenerationTask
 from app.models.common import TaskStatus, now_utc
@@ -32,6 +34,10 @@ def _load_revision_files(game_id: str, version: str) -> list[dict]:
     return files
 
 
+def _uses_existing_bundle(task_kind: str) -> bool:
+    return task_kind in {"revision", "remix"}
+
+
 def _cleanup_cancelled_artifacts(db, task, final: dict | None) -> None:
     """取消恰好落在 publish 节点执行中时，图内已经建出 Game + bundle，
     而收尾不会回填 result_game_id —— 删掉这个游离的 preview 游戏和它的对象存储产物。
@@ -55,17 +61,21 @@ def _cleanup_cancelled_artifacts(db, task, final: dict | None) -> None:
 
 
 def run_generation(task_id: str) -> None:
+    bind_context(task_id=task_id)
     # 1) 置 running + 读取入参
     db = SessionLocal()
     try:
         task = db.get(GenerationTask, task_id)
         if not task:
+            clear_context()
             return
         if task.status == TaskStatus.CANCELLED:
+            clear_context()
             return
         # acks_late + broker 重投递：终态任务的旧消息直接丢弃，不得重跑
         # （否则会重复建 Game/bundle，并让 memory 证据重复计数）。
         if task.status in (TaskStatus.SUCCEEDED, TaskStatus.FAILED):
+            clear_context()
             return
         if task.status == TaskStatus.RUNNING:
             # worker 崩溃后的重投递：上一轮的步骤流已经作废，清掉再从头跑，
@@ -77,8 +87,10 @@ def run_generation(task_id: str) -> None:
         task.current_step = 0
         task.current_agent = None
         task.tokens_used = 0
+        task.cost_usd = None
         task.error = None
         task.error_code = None
+        task.failed_stage = None
         task.repair_attempts = 0
         task.replan_attempts = 0
         idea = task.idea
@@ -92,29 +104,31 @@ def run_generation(task_id: str) -> None:
         dimension = task.dimension or "2d"
         asset_ids = [a.id for a in task.assets]
         db.commit()
+        bind_context(task_id=task_id, user_id=user_id)
     finally:
         db.close()
 
     # 2) 跑图（节点内部实时落库）
     final: dict | None = None
     err = ""
+    error_code = TaskErrorCode.UNKNOWN.value
     try:
         from app.agents.graph import build_graph
-        from app.agents.tracing import TaskCancelledError
+        from app.agents.tracing import TaskBudgetExceededError, TaskCancelledError
 
         use_real = settings.USE_REAL_MODEL and bool(settings.OPENAI_API_KEY.strip())
         graph = build_graph()
         initial = {
             "task_id": task_id, "user_id": user_id, "use_real": use_real, "status": "running",
             "task_kind": task_kind,
-            "prompt": feedback_text if task_kind == "revision" else idea,
+            "prompt": feedback_text if _uses_existing_bundle(task_kind) else idea,
             "asset_ids": asset_ids, "dimension": dimension,
             "repair_attempts": 0, "replan_attempts": 0,
             "gameplay_repair_attempts": 0,
         }
-        if task_kind == "revision":
+        if _uses_existing_bundle(task_kind):
             if not base_game_id or not base_version or not feedback_text:
-                raise RuntimeError("revision task is missing its base version or feedback")
+                raise RuntimeError(f"{task_kind} task is missing its base version or feedback")
             initial.update({
                 "source_feedback": feedback_text,
                 "base_game_id": base_game_id,
@@ -127,6 +141,9 @@ def run_generation(task_id: str) -> None:
     except TaskCancelledError:
         # 用户取消：begin_step 在节点边界抛出。不算失败，收尾只做孤儿清理。
         final = None
+    except TaskBudgetExceededError as exc:
+        err = str(exc)[:500]
+        error_code = TaskErrorCode.BUDGET_EXCEEDED.value
     except Exception as exc:  # noqa: BLE001
         err = str(exc)[:500]
 
@@ -138,10 +155,14 @@ def run_generation(task_id: str) -> None:
             return
         if task.status == TaskStatus.CANCELLED:
             _cleanup_cancelled_artifacts(db, task, final)
+            task.error_code = TaskErrorCode.CANCELLED.value
+            db.commit()
             return
         if final is None:
             task.status = TaskStatus.FAILED
             task.error = err or "generation crashed"
+            task.error_code = error_code
+            task.failed_stage = task.failed_stage or task.current_agent
         else:
             if final.get("game_spec"):
                 task.spec_json = json.dumps(final["game_spec"], ensure_ascii=False)
@@ -156,8 +177,10 @@ def run_generation(task_id: str) -> None:
             else:
                 task.status = TaskStatus.FAILED
                 task.error = final.get("error_message") or final.get("last_error") or "generation failed"
-                task.error_code = final.get("error_code")
+                task.error_code = final.get("error_code") or TaskErrorCode.UNKNOWN.value
+                task.failed_stage = task.failed_stage or task.current_agent
         task.finished_at = now_utc()
         db.commit()
     finally:
         db.close()
+        clear_context()

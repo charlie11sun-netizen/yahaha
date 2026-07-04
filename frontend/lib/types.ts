@@ -32,6 +32,23 @@ export interface Game {
   bundle_url?: string;
   liked?: boolean;
   favorited?: boolean;
+  remixed_from_game_id?: string | null;
+  remixed_from_version?: string | null;
+  remixed_from?: {
+    id: string;
+    title: string;
+    author: string;
+    version?: string | null;
+  } | null;
+  remix_count?: number;
+}
+
+export interface GameVersion {
+  version: string;
+  created_at?: string | null;
+  size_bytes: number;
+  sha256: string;
+  is_current: boolean;
 }
 
 export interface Step {
@@ -75,7 +92,7 @@ export interface TaskAsset {
 export interface Task {
   id: string;
   status: string;
-  task_kind?: "generation" | "revision";
+  task_kind?: "generation" | "revision" | "remix";
   base_game_id?: string | null;
   base_version?: string | null;
   feedback_text?: string | null;

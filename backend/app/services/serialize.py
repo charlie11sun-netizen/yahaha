@@ -35,12 +35,22 @@ _REVISION_STAGES = [
     ("PublishRevisionAgent", "publish_revision", "保存新版 Preview"),
     ("MemoryUpdateAgent", "memory_update", "保存修改记忆"),
 ]
+_REMIX_STAGES = [
+    ("SafetyIntakeAgent", "safety_intake", "检查 Remix 方向"),
+    ("MemoryRetrievalAgent", "memory_retrieval", "检索创作记忆"),
+    ("FeedbackUnderstandingAgent", "feedback_understanding", "理解 Remix 目标"),
+    ("CodeRevisionAgent", "code_revision", "改造源游戏文件"),
+    ("BuildValidateAgent", "build_validation", "验证 Remix 构建"),
+    ("GameplayQAAgent", "gameplay_qa", "测试 Remix 玩法"),
+    ("PublishRemixAgent", "publish_remix", "保存 Remix 预览"),
+    ("MemoryUpdateAgent", "memory_update", "保存创作记忆"),
+]
 _PROGRESS = {"safety_intake": 10, "intent_spec": 18, "brief_expansion": 24, "mechanic_planner": 30,
              "archetype_router": 34, "asset_processing": 40, "game_design": 50, "content_plan": 56,
              "balance_plan": 62, "code_generation": 72, "build_validation": 82,
              "gameplay_qa": 90, "gameplay_repair": 88, "publish_artifact": 96,
              "feedback_understanding": 25, "code_revision": 55, "revision_repair": 65,
-             "publish_revision": 96, "memory_retrieval": 14, "memory_update": 98}
+             "publish_revision": 96, "publish_remix": 96, "memory_retrieval": 14, "memory_update": 98}
 _ST = {"done": "completed", "running": "running", "failed": "failed"}
 
 
@@ -90,6 +100,8 @@ def game_card(g) -> dict:
         "date": relative_time(g.published_at or g.created_at),
         "manifest_url": s3.manifest_url(g.id, g.current_version),
         "oss_path": f"oss://{settings.S3_BUCKET}/games/{g.id}/{g.current_version}/manifest.json",
+        "remixed_from_game_id": getattr(g, "remixed_from_game_id", None),
+        "remixed_from_version": getattr(g, "remixed_from_version", None),
     }
 
 
@@ -97,6 +109,21 @@ def game_detail(g) -> dict:
     d = game_card(g)
     d["prompt"] = g.prompt
     d["bundle_url"] = s3.public_url(f"games/{g.id}/{g.current_version}/index.html")
+    source = getattr(g, "remixed_from", None)
+    d["remixed_from"] = (
+        {
+            "id": source.id,
+            "title": source.title,
+            "author": source.author.display_name if source.author else "—",
+            "version": getattr(g, "remixed_from_version", None),
+        }
+        if source
+        else None
+    )
+    try:
+        d["remix_count"] = len(getattr(g, "remixes", []) or [])
+    except Exception:  # noqa: BLE001
+        d["remix_count"] = 0
     return d
 
 
@@ -144,6 +171,10 @@ def _dur(s):
 
 def _iso(dt):
     return dt.isoformat() if dt else None
+
+
+def _decimal_float(value):
+    return float(value) if value is not None else None
 
 
 def _latest_task_event_at(t, scan_logs: bool = True):
@@ -202,7 +233,8 @@ def task_out(t, include_details: bool = True) -> dict:
 
     step_summaries = []
     progress = 0
-    stages = _REVISION_STAGES if getattr(t, "task_kind", "generation") == "revision" else _STAGES
+    task_kind = getattr(t, "task_kind", "generation") or "generation"
+    stages = _REMIX_STAGES if task_kind == "remix" else _REVISION_STAGES if task_kind == "revision" else _STAGES
     for agent, key, title in stages:
         s = steps_by_agent.get(agent)
         status = _ST.get(s.status, "pending") if s else "pending"
@@ -231,7 +263,9 @@ def task_out(t, include_details: bool = True) -> dict:
         "feedback_brief": getattr(t, "feedback_brief", None),
         "repair_attempts": t.repair_attempts, "replan_attempts": t.replan_attempts,
         "max_repair_attempts": t.max_repair_attempts, "max_replan_attempts": t.max_replan_attempts,
-        "tokens": t.tokens_used, "error": t.error, "error_code": t.error_code, "idea": t.idea,
+        "tokens": t.tokens_used, "cost_usd": _decimal_float(getattr(t, "cost_usd", None)),
+        "error": t.error, "error_code": t.error_code,
+        "failed_stage": getattr(t, "failed_stage", None), "idea": t.idea,
         "dimension": getattr(t, "dimension", "2d") or "2d",
         "created_at": _iso(t.created_at), "started_at": _iso(t.started_at),
         "finished_at": _iso(t.finished_at), "updated_at": _iso(latest_event_at),
@@ -259,6 +293,8 @@ def task_out(t, include_details: bool = True) -> dict:
     ]
     out["steps"] = [
         {"seq": s.seq, "agent": s.agent, "name": s.name, "status": s.status,
+         "tokens": getattr(s, "tokens", 0), "attempt": getattr(s, "attempt", 1),
+         "caused_by_step_id": getattr(s, "caused_by_step_id", None),
          "logs": [log.line for log in s.logs]}
         for s in t.steps
     ]

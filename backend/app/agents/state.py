@@ -28,6 +28,7 @@ STEP_META: dict[str, tuple[str, str]] = {
     "code_revision": ("CodeRevisionAgent", "Revise Existing Code"),
     "revision_repair": ("CodeRevisionRepairAgent", "Repair Revision"),
     "publish_revision": ("PublishRevisionAgent", "Save Preview Version"),
+    "publish_remix": ("PublishRemixAgent", "Save Remix"),
     "memory_update": ("MemoryUpdateAgent", "Update Memory"),
 }
 
@@ -37,7 +38,7 @@ class GenerationState(TypedDict, total=False):
     user_id: str
     use_real: bool
     dimension: str  # "2d" | "3d"
-    task_kind: str  # "generation" | "revision"
+    task_kind: str  # "generation" | "revision" | "remix"
 
     status: str
     prompt: str

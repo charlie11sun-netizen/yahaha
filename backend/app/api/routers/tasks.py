@@ -1,16 +1,28 @@
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, rate_limit
 from app.core.config import settings
+from app.core.errors import TaskErrorCode
+from app.core.telemetry import current_request_id
 from app.db.session import get_db
-from app.models import Asset, GenerationTask
+from app.models import Asset, Game, GameVersion, GenerationTask
 from app.models.common import GameStatus, TaskStatus, now_utc
 from app.schemas import TaskCreateIn, TaskRevisionIn
 from app.services.serialize import task_out
 from app.tasks.generate import generate_game
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+
+def _enqueue_generation(task_id: str) -> None:
+    headers = {"request_id": current_request_id() or ""}
+    if hasattr(generate_game, "apply_async"):
+        generate_game.apply_async(args=[task_id], headers=headers)
+    else:
+        generate_game.delay(task_id)
 
 
 def _owned_task(task_id: str, user, db: Session) -> GenerationTask:
@@ -38,9 +50,87 @@ def _ensure_active_task_slot(user_id: str, db: Session) -> None:
         raise HTTPException(status_code=409, detail="TOO_MANY_ACTIVE_TASKS")
 
 
+def _source_spec_json(source: Game) -> str:
+    return json.dumps(
+        {
+            "title": f"{source.title} Remix",
+            "summary": source.summary,
+            "genre": source.genre.lower(),
+            "theme": "remix",
+            "core_loop": source.summary,
+            "tags": [tag.name for tag in source.tags[:4]] + ["remix"],
+        },
+        ensure_ascii=False,
+    )
+
+
+def _source_design_json(source: Game) -> str:
+    return json.dumps(
+        {
+            "archetype": "topdown_collect",
+            "source_game": {
+                "id": source.id,
+                "title": source.title,
+                "version": source.current_version,
+            },
+        },
+        ensure_ascii=False,
+    )
+
+
+def _copy_source_task_context(task: GenerationTask, version: GameVersion, source: Game, db: Session) -> None:
+    source_task = db.get(GenerationTask, version.source_task_id) if version.source_task_id else None
+    task.spec_json = source_task.spec_json if source_task and source_task.spec_json else _source_spec_json(source)
+    task.design_json = (
+        source_task.design_json if source_task and source_task.design_json else _source_design_json(source)
+    )
+
+
+def _create_remix_task(body: TaskCreateIn, user, db: Session) -> dict:
+    if not body.source_game_id:
+        raise HTTPException(status_code=422, detail="source_game_id is required for remix tasks")
+    source = db.get(Game, body.source_game_id)
+    if not source or (source.status != GameStatus.PUBLISHED and source.author_id != user.id):
+        raise HTTPException(status_code=404, detail="Source game not found")
+    source_version = (
+        db.query(GameVersion)
+        .filter_by(game_id=source.id, version=source.current_version)
+        .first()
+    )
+    if not source_version:
+        raise HTTPException(status_code=409, detail="Source game version is missing")
+    if not source_version.manifest_key or not source_version.bundle_key:
+        raise HTTPException(status_code=409, detail="Source game artifact metadata is incomplete")
+
+    task = GenerationTask(
+        user_id=user.id,
+        idea=body.idea,
+        task_kind="remix",
+        base_game_id=source.id,
+        base_version=source.current_version,
+        feedback_text=body.idea,
+        dimension=body.dimension,
+        status=TaskStatus.PENDING,
+    )
+    _copy_source_task_context(task, source_version, source, db)
+    if body.asset_ids:
+        task.assets = (
+            db.query(Asset)
+            .filter(Asset.id.in_(body.asset_ids), Asset.owner_id == user.id)
+            .all()
+        )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    _enqueue_generation(task.id)
+    return {"task_id": task.id}
+
+
 @router.post("", dependencies=[Depends(rate_limit(20, 3600, "task_create"))])
 def create_task(body: TaskCreateIn, user=Depends(get_current_user), db: Session = Depends(get_db)):
     _ensure_active_task_slot(user.id, db)
+    if body.task_kind == "remix":
+        return _create_remix_task(body, user, db)
     task = GenerationTask(user_id=user.id, idea=body.idea, status=TaskStatus.PENDING, dimension=body.dimension)
     if body.asset_ids:
         task.assets = (
@@ -51,7 +141,7 @@ def create_task(body: TaskCreateIn, user=Depends(get_current_user), db: Session 
     db.add(task)
     db.commit()
     db.refresh(task)
-    generate_game.delay(task.id)
+    _enqueue_generation(task.id)
     return {"task_id": task.id}
 
 
@@ -119,7 +209,7 @@ def revise_task(
     db.add(revision)
     db.commit()
     db.refresh(revision)
-    generate_game.delay(revision.id)
+    _enqueue_generation(revision.id)
     return {"task_id": revision.id}
 
 
@@ -133,10 +223,13 @@ def retry_task(task_id: str, user=Depends(get_current_user), db: Session = Depen
         db.delete(step)
     task.status = TaskStatus.PENDING
     task.error = None
+    task.error_code = None
+    task.failed_stage = None
     task.current_step = 0
     task.tokens_used = 0
+    task.cost_usd = None
     db.commit()
-    generate_game.delay(task.id)
+    _enqueue_generation(task.id)
     return {"task_id": task.id}
 
 
@@ -147,6 +240,8 @@ def cancel_task(task_id: str, user=Depends(get_current_user), db: Session = Depe
         raise HTTPException(status_code=400, detail="Only active tasks can be cancelled")
     task.status = TaskStatus.CANCELLED
     task.error = "Cancelled by user"
+    task.error_code = TaskErrorCode.CANCELLED.value
+    task.failed_stage = task.current_agent
     task.finished_at = now_utc()
     db.commit()
     db.refresh(task)

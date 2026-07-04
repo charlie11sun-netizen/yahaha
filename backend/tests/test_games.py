@@ -1,4 +1,5 @@
-from app.models import Game, User
+from app.core.config import settings
+from app.models import Game, GameVersion, User
 from app.models.common import GameSource, GameStatus, now_utc
 
 
@@ -21,6 +22,17 @@ def _seed_game(factory, title="Test Game", status=GameStatus.PUBLISHED, plays=5,
         published_at=now_utc(),
     )
     db.add(g)
+    db.flush()
+    db.add(
+        GameVersion(
+            game_id=g.id,
+            version="v1",
+            manifest_key=f"games/{g.id}/v1/manifest.json",
+            bundle_key=f"games/{g.id}/v1/index.html",
+            sha256="sha-v1",
+            size_bytes=111,
+        )
+    )
     db.commit()
     gid = g.id
     db.close()
@@ -84,3 +96,49 @@ def test_manifest_endpoint(client, db_session_factory):
     body = r.json()
     assert body["entry"] == "index.html"
     assert body["_source"] == "oss"
+
+
+def test_owner_can_list_and_activate_versions(client, db_session_factory):
+    h, uid = _auth(client, email="versions@x.com")
+    gid = _seed_game(db_session_factory, title="Versioned", author_id=uid)
+    db = db_session_factory()
+    db.add(
+        GameVersion(
+            game_id=gid,
+            version="v2",
+            manifest_key=f"games/{gid}/v2/manifest.json",
+            bundle_key=f"games/{gid}/v2/index.html",
+            sha256="sha-v2",
+            size_bytes=222,
+        )
+    )
+    db.commit()
+    db.close()
+
+    listed = client.get(f"/games/{gid}/versions", headers=h)
+    assert listed.status_code == 200
+    assert [item["version"] for item in listed.json()["items"]] == ["v2", "v1"]
+
+    activated = client.post(f"/games/{gid}/versions/v2/activate", headers=h)
+    assert activated.status_code == 200
+    assert activated.json()["version"] == "v2"
+    assert client.get(f"/games/{gid}/manifest?version=v1", headers=h).status_code == 200
+    assert client.get(f"/games/{gid}/manifest?version=v1").status_code == 403
+
+
+def test_non_owner_cannot_manage_versions(client, db_session_factory):
+    gid = _seed_game(db_session_factory, title="Foreign")
+    h, _ = _auth(client, email="stranger@x.com")
+    assert client.get(f"/games/{gid}/versions", headers=h).status_code == 403
+    assert client.post(f"/games/{gid}/versions/v1/activate", headers=h).status_code == 403
+
+
+def test_public_browse_gate_allows_read_and_play_only(client, db_session_factory, monkeypatch):
+    gid = _seed_game(db_session_factory, title="PublicBrowse")
+    monkeypatch.setattr(settings, "SITE_PASSWORD", "secret")
+    monkeypatch.setattr(settings, "GATE_PUBLIC_BROWSE", True)
+
+    assert client.get("/games").status_code == 200
+    assert client.get(f"/games/{gid}").status_code == 200
+    assert client.post(f"/games/{gid}/play").status_code == 200
+    assert client.get("/tasks").status_code == 401

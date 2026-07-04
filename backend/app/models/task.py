@@ -1,12 +1,15 @@
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     Column,
     DateTime,
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Table,
     Text,
@@ -58,8 +61,10 @@ class GenerationTask(PkMixin, TimestampMixin, Base):
     )
     version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     tokens_used: Mapped[int] = mapped_column(BigInteger, default=0)
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 6), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    failed_stage: Mapped[str | None] = mapped_column(String(80), nullable=True)
     repair_attempts: Mapped[int] = mapped_column(Integer, default=0)
     max_repair_attempts: Mapped[int] = mapped_column(Integer, default=2)
     replan_attempts: Mapped[int] = mapped_column(Integer, default=0)
@@ -85,6 +90,8 @@ class AgentStep(PkMixin, TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(20), default=StepStatus.PENDING)
     tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
+    caused_by_step_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -105,3 +112,21 @@ class AgentLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
     step: Mapped["AgentStep"] = relationship(back_populates="logs")
+
+
+class LLMCall(PkMixin, TimestampMixin, Base):
+    __tablename__ = "llm_calls"
+
+    task_id: Mapped[str | None] = mapped_column(
+        ForeignKey("generation_tasks.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    step_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_steps.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    model: Mapped[str] = mapped_column(String(120))
+    prompt_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    completion_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    total_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    retried: Mapped[bool] = mapped_column(Boolean, default=False)
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 6), nullable=True)

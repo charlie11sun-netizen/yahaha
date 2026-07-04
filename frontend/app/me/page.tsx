@@ -29,7 +29,7 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { fmt } from "@/lib/format";
 import { useToast } from "@/lib/toast";
-import type { Game, MemoryItem, MemoryProfile, MemorySettings, Task } from "@/lib/types";
+import type { Game, GameVersion, MemoryItem, MemoryProfile, MemorySettings, Task } from "@/lib/types";
 
 type Section = "overview" | "games" | "tasks" | "drafts" | "favorites" | "memory" | "settings";
 
@@ -670,7 +670,34 @@ function StudioGameCard({
   readonly: boolean;
 }) {
   const router = useRouter();
+  const queryClient = useQueryClient();
+  const flash = useToast();
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  const [activatingVersion, setActivatingVersion] = useState<string | null>(null);
   const isPublished = game.status === "published";
+  const versionsQ = useQuery({
+    queryKey: ["game-versions", game.id],
+    queryFn: () => api.gameVersions(game.id),
+    enabled: versionsOpen && !readonly,
+  });
+
+  const activateVersion = async (version: string) => {
+    try {
+      setActivatingVersion(version);
+      await api.activateVersion(game.id, version);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["me-games"] }),
+        queryClient.invalidateQueries({ queryKey: ["games"] }),
+        queryClient.invalidateQueries({ queryKey: ["game", game.id] }),
+        queryClient.invalidateQueries({ queryKey: ["game-versions", game.id] }),
+      ]);
+      flash(`${game.title} is now on ${version}`);
+    } catch (err) {
+      flash(err instanceof Error ? err.message : "Could not switch version");
+    } finally {
+      setActivatingVersion(null);
+    }
+  };
 
   return (
     <article className="pf-studio-game-card">
@@ -716,6 +743,12 @@ function StudioGameCard({
                 Unpublish
               </button>
             ) : null}
+            {!readonly ? (
+              <button className="is-muted" onClick={() => setVersionsOpen((current) => !current)} type="button">
+                Versions
+                <ChevronRight size={14} />
+              </button>
+            ) : null}
           </div>
           {!readonly && onDelete ? (
             <button
@@ -729,8 +762,59 @@ function StudioGameCard({
             </button>
           ) : null}
         </div>
+        {versionsOpen && !readonly ? (
+          <VersionPanel
+            activatingVersion={activatingVersion}
+            currentVersion={game.version}
+            loading={versionsQ.isLoading}
+            onActivate={activateVersion}
+            onPreview={(version) => router.push(`/play/${game.id}?version=${encodeURIComponent(version)}`)}
+            versions={versionsQ.data?.items ?? []}
+          />
+        ) : null}
       </div>
     </article>
+  );
+}
+
+function VersionPanel({
+  activatingVersion,
+  currentVersion,
+  loading,
+  onActivate,
+  onPreview,
+  versions,
+}: {
+  activatingVersion: string | null;
+  currentVersion: string;
+  loading: boolean;
+  onActivate: (version: string) => void;
+  onPreview: (version: string) => void;
+  versions: GameVersion[];
+}) {
+  if (loading) return <div className="pf-version-panel">Loading versions...</div>;
+  if (versions.length === 0) return <div className="pf-version-panel">No versions saved yet.</div>;
+  return (
+    <div className="pf-version-panel">
+      {versions.map((version) => (
+        <div className="pf-version-row" key={version.version}>
+          <div>
+            <strong>{version.version}</strong>
+            <span>{formatBytes(version.size_bytes)} · {version.sha256 ? version.sha256.slice(0, 10) : "no hash"}</span>
+          </div>
+          <button onClick={() => onPreview(version.version)} type="button">
+            Preview
+          </button>
+          <button
+            disabled={version.version === currentVersion || activatingVersion === version.version}
+            onClick={() => onActivate(version.version)}
+            type="button"
+          >
+            {version.version === currentVersion ? "Current" : activatingVersion === version.version ? "Switching" : "Activate"}
+          </button>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -999,6 +1083,13 @@ function joinedDate(value?: string | null) {
 
 function shortId(id: string) {
   return `GEN-${id.replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+}
+
+function formatBytes(value: number) {
+  if (!value) return "0 B";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function taskStatusLabel(status: string) {

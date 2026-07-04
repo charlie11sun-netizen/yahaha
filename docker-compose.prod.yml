@@ -221,14 +221,35 @@ services:
       # The front-door password. Read at runtime by middleware.ts; never exposed
       # to the client. Empty => site is OPEN, so it is required here.
       SITE_PASSWORD: ${SITE_PASSWORD:?set SITE_PASSWORD in .env — site must not be public}
+      GATE_PUBLIC_BROWSE: ${GATE_PUBLIC_BROWSE:-false}
     ports:
       - "3000:3000"
     depends_on:
       - api
 
+  edge:
+    image: caddy:2-alpine
+    profiles: ["edge"]
+    restart: unless-stopped
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    depends_on:
+      - web
+      - api
+      - minio
+
 volumes:
   pgdata:
   miniodata:
+  caddydata:
+  caddyconfig:
 
 networks:
   sandbox_net:

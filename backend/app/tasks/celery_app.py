@@ -1,6 +1,11 @@
 from celery import Celery
+from celery.signals import task_postrun, task_prerun
 
 from app.core.config import settings
+from app.core.telemetry import bind_context, clear_context, configure_logging, init_otel, init_sentry
+
+configure_logging()
+init_sentry("gameweave-worker")
 
 celery = Celery(
     "gameweave",
@@ -24,3 +29,19 @@ celery.conf.update(
         },
     },
 )
+init_otel(service_name="gameweave-worker")
+
+
+@task_prerun.connect
+def _bind_task_context(task_id=None, task=None, args=None, **_kwargs):
+    headers = getattr(getattr(task, "request", None), "headers", None) or {}
+    generation_task_id = str(args[0]) if args else None
+    bind_context(
+        request_id=headers.get("request_id") or headers.get("x-request-id") or str(task_id or ""),
+        task_id=generation_task_id,
+    )
+
+
+@task_postrun.connect
+def _clear_task_context(**_kwargs):
+    clear_context()

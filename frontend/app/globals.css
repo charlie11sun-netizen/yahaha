@@ -790,7 +790,7 @@ img {
 .pf-game-grid {
   display: grid;
   gap: 14px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .pf-game-card {
@@ -3893,6 +3893,57 @@ img {
   padding: 0;
 }
 
+.pf-version-panel {
+  border-top: 1px solid #e4e9f4;
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+}
+
+.pf-version-row {
+  align-items: center;
+  background: #f8faff;
+  border: 1px solid #e4e9f4;
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  min-height: 48px;
+  padding: 8px;
+}
+
+.pf-version-row strong {
+  color: #101844;
+  display: block;
+  font-size: 13px;
+}
+
+.pf-version-row span {
+  color: #66718d;
+  display: block;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  margin-top: 3px;
+}
+
+.pf-version-row button {
+  background: #fff;
+  border: 1px solid #cfd8ea;
+  border-radius: 8px;
+  color: #24346d;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  min-height: 32px;
+  padding: 0 10px;
+}
+
+.pf-version-row button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
 .pf-studio-task-table {
   border: 1px solid #edf0f5;
   border-radius: 12px;
@@ -4559,6 +4610,23 @@ img {
   font-size: 13.5px;
   line-height: 1.5;
   margin-top: 7px;
+}
+
+.pf-detail-remix-source {
+  align-items: center;
+  background: #f8faff;
+  border: 1px solid #dce4f2;
+  border-radius: 12px;
+  color: #24346d;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 800;
+  gap: 9px;
+  margin-top: 14px;
+  min-height: 42px;
+  padding: 0 14px;
+  text-align: left;
 }
 
 .pf-detail-lower {

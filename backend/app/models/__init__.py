@@ -29,6 +29,7 @@ from app.models.task import (
     AgentStep,
     Asset,
     GenerationTask,
+    LLMCall,
     task_assets,
 )
 from app.models.social import Comment, Follow, Score
@@ -67,4 +68,5 @@ __all__ = [
     "GenerationTask",
     "AgentStep",
     "AgentLog",
+    "LLMCall",
 ]

@@ -11,6 +11,7 @@ import re
 from app.agents import bundles, llm, prompts, smoke, templating, validation
 from app.agents.state import MAX_GAMEPLAY_REPAIR, MAX_REPAIR, MAX_REPLAN
 from app.core.config import settings
+from app.core.errors import TaskErrorCode
 from app.services import content_safety, sandbox_client
 from app.storage import s3
 
@@ -912,7 +913,7 @@ def _gameplay_qa(state: dict) -> dict:
                 simulate_input=True,
             )
         except sandbox_client.SandboxUnavailableError as exc:
-            sandbox_error_code = "SANDBOX_UNAVAILABLE"
+            sandbox_error_code = TaskErrorCode.SANDBOX_UNAVAILABLE.value
             issues.append(f"browser sandbox unavailable — {_clip(exc, 180)}")
         else:
             if browser_result.skipped:
@@ -1096,8 +1097,16 @@ def _generate_revision_code(
     ) or []
     source = _revision_file_map(source_files)
     if not state.get("use_real"):
-        files = [{"path": path, "content": source[path]} for path in ("index.html", "style.css", "game.js") if path in source]
-        return files, 0, [], "real model required for semantic revision"
+        merged = dict(source)
+        feedback = _clip(state.get("source_feedback") or state.get("prompt") or "", 180)
+        if "game.js" in merged:
+            marker = re.sub(r"[\r\n]+", " ", feedback)
+            merged["game.js"] = f"{merged['game.js']}\n// GameWeave offline {state.get('task_kind', 'revision')} note: {marker}\n"
+            changed = ["game.js"]
+        else:
+            changed = []
+        files = [{"path": path, "content": merged[path]} for path in ("index.html", "style.css", "game.js") if path in merged]
+        return files, 0, changed, f"offline deterministic {state.get('task_kind', 'revision')}"
 
     raw, tokens = llm.chat(
         prompts.CODE_REVISION_SYSTEM_PROMPT,
@@ -1129,7 +1138,7 @@ def safety_intake_node(state: dict) -> dict:
     if not prompt.strip():
         return {
             "status": "failed",
-            "error_code": "EMPTY_PROMPT",
+            "error_code": TaskErrorCode.VALIDATION_FAILED.value,
             "error_message": "Prompt cannot be empty",
             "_agent": "SafetyIntakeAgent",
             "_logs": ["prompt is empty -> rejected"],
@@ -1137,7 +1146,7 @@ def safety_intake_node(state: dict) -> dict:
     if len(prompt) > 2000:
         return {
             "status": "failed",
-            "error_code": "PROMPT_TOO_LONG",
+            "error_code": TaskErrorCode.PROMPT_TOO_LONG.value,
             "error_message": "Prompt too long (>2000 chars)",
             "_agent": "SafetyIntakeAgent",
             "_logs": ["prompt exceeds 2000 chars -> rejected"],
@@ -1151,7 +1160,13 @@ def safety_intake_node(state: dict) -> dict:
             decision = content_safety.moderate_and_record(
                 db,
                 text=prompt,
-                surface="task.idea" if state.get("task_kind") != "revision" else "task.revision_feedback",
+                surface=(
+                    "task.idea"
+                    if state.get("task_kind") == "generation"
+                    else "task.remix_prompt"
+                    if state.get("task_kind") == "remix"
+                    else "task.revision_feedback"
+                ),
                 user_id=state.get("user_id"),
                 object_id=state.get("task_id"),
             )
@@ -1179,7 +1194,7 @@ def safety_intake_node(state: dict) -> dict:
         if decision.blocked:
             return {
                 "status": "failed",
-                "error_code": "MODERATION_BLOCKED",
+                "error_code": TaskErrorCode.MODERATION_BLOCKED.value,
                 "error_message": "Prompt rejected by content moderation",
                 "_agent": "SafetyIntakeAgent",
                 "_logs": [moderation_log, "prompt blocked before generation"],
@@ -1189,7 +1204,7 @@ def safety_intake_node(state: dict) -> dict:
             asset_categories = ", ".join(asset_decision.categories.keys()) or "none"
             return {
                 "status": "failed",
-                "error_code": "MODERATION_BLOCKED",
+                "error_code": TaskErrorCode.MODERATION_BLOCKED.value,
                 "error_message": "Uploaded asset filename rejected by content moderation",
                 "_agent": "SafetyIntakeAgent",
                 "_logs": [
@@ -1222,7 +1237,7 @@ def memory_retrieval_node(state: dict) -> dict:
 
     user_id = state.get("user_id")
     query = state.get("source_feedback") or state.get("normalized_prompt") or state.get("prompt") or ""
-    game_id = state.get("base_game_id") if state.get("task_kind") == "revision" else None
+    game_id = state.get("base_game_id") if state.get("task_kind") in {"revision", "remix"} else None
     if not user_id:
         return {
             "retrieved_memory_profiles": [],
@@ -1233,7 +1248,7 @@ def memory_retrieval_node(state: dict) -> dict:
         }
     categories = (
         ["feedback", "controls", "difficulty", "constraints", "style", "mechanics"]
-        if state.get("task_kind") == "revision"
+        if state.get("task_kind") in {"revision", "remix"}
         else ["style", "mechanics", "controls", "difficulty", "constraints", "content"]
     )
     db = SessionLocal()
@@ -1562,15 +1577,22 @@ def code_generation_node(state: dict) -> dict:
 
 def build_validation_node(state: dict) -> dict:
     result = validation.validate_files(state.get("generated_files") or [])
-    if state.get("task_kind") == "revision" and not (state.get("revision_result") or {}).get("changed_files"):
+    if state.get("task_kind") in {"revision", "remix"} and not (state.get("revision_result") or {}).get("changed_files"):
         result = dict(result)
         result["valid"] = False
-        result["errors"] = list(result.get("errors") or []) + ["revision produced no file changes"]
+        result["errors"] = list(result.get("errors") or []) + [f"{state.get('task_kind')} produced no file changes"]
     if result["valid"]:
-        return {"validation_result": result, "_agent": "BuildValidateAgent", "_logs": _validation_log_lines(result) + ["validation passed"]}
+        return {
+            "validation_result": result,
+            "last_error": None,
+            "error_code": None,
+            "_agent": "BuildValidateAgent",
+            "_logs": _validation_log_lines(result) + ["validation passed"],
+        }
     return {
         "validation_result": result,
         "last_error": "; ".join(result["errors"]),
+        "error_code": TaskErrorCode.VALIDATION_FAILED.value,
         "_agent": "BuildValidateAgent",
         "_logs": _validation_log_lines(result) + ["validation failed:"] + result["errors"][:6],
     }
@@ -1581,15 +1603,17 @@ def gameplay_qa_node(state: dict) -> dict:
     failed = not result.get("passed")
     output = {
         "gameplay_qa_result": result,
+        "error_code": None,
         "_agent": "GameplayQAAgent",
         "_logs": _gameplay_qa_log_lines(result),
     }
     if failed:
         output["last_error"] = "; ".join(result.get("issues") or ["gameplay QA failed"])
         output["_step_failed"] = True
-        if result.get("error_code") == "SANDBOX_UNAVAILABLE":
+        output["error_code"] = result.get("error_code") or TaskErrorCode.QA_FAILED.value
+        if result.get("error_code") == TaskErrorCode.SANDBOX_UNAVAILABLE.value:
             output["status"] = "failed"
-            output["error_code"] = "SANDBOX_UNAVAILABLE"
+            output["error_code"] = TaskErrorCode.SANDBOX_UNAVAILABLE.value
             output["error_message"] = output["last_error"]
     return output
 
@@ -1745,6 +1769,26 @@ def publish_revision_node(state: dict) -> dict:
     }
 
 
+def publish_remix_node(state: dict) -> dict:
+    from app.services import packaging
+
+    game_id, version_id, manifest_url = packaging.publish_remix(state)
+    return {
+        "status": "succeeded",
+        "game_id": game_id,
+        "version_id": version_id,
+        "manifest_url": manifest_url,
+        "preview_url": f"/play/{game_id}",
+        "_agent": "PublishRemixAgent",
+        "_logs": [
+            f"source game: {state.get('base_game_id')}@{state.get('base_version')}",
+            f"remix files: {', '.join((state.get('revision_result') or {}).get('changed_files') or [])}",
+            f"manifest url: {manifest_url}",
+            "database saved: new remixed game + v1",
+        ],
+    }
+
+
 def memory_update_node(state: dict) -> dict:
     from app.db.session import SessionLocal
     from app.services import memory as memory_service
@@ -1792,7 +1836,7 @@ def failed_node(state: dict) -> dict:
     return {
         "status": "failed",
         "error_message": msg,
-        "error_code": state.get("error_code"),
+        "error_code": state.get("error_code") or TaskErrorCode.UNKNOWN.value,
         "_agent": "FailureHandler",
         "_logs": [
             f"task failed: {_clip(msg, 220)}",
@@ -1818,11 +1862,11 @@ def should_continue_after_safety(state: dict) -> str:
 
 
 def next_after_memory_retrieval(state: dict) -> str:
-    return "feedback_understanding" if state.get("task_kind") == "revision" else "intent_spec"
+    return "feedback_understanding" if state.get("task_kind") in {"revision", "remix"} else "intent_spec"
 
 
 def should_continue_after_validation(state: dict) -> str:
-    if state.get("task_kind") == "revision":
+    if state.get("task_kind") in {"revision", "remix"}:
         if (state.get("validation_result") or {}).get("valid"):
             return "gameplay_qa"
         return "revision_repair" if state.get("repair_attempts", 0) < MAX_REPAIR else "failed"
@@ -1841,6 +1885,10 @@ def should_continue_after_gameplay_qa(state: dict) -> str:
     if state.get("task_kind") == "revision":
         if (state.get("gameplay_qa_result") or {}).get("passed"):
             return "publish_revision"
+        return "revision_repair" if state.get("repair_attempts", 0) < MAX_REPAIR else "failed"
+    if state.get("task_kind") == "remix":
+        if (state.get("gameplay_qa_result") or {}).get("passed"):
+            return "publish_remix"
         return "revision_repair" if state.get("repair_attempts", 0) < MAX_REPAIR else "failed"
     if (state.get("gameplay_qa_result") or {}).get("passed"):
         return "publish_artifact"

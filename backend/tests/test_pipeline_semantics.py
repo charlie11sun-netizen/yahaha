@@ -47,6 +47,29 @@ def test_begin_step_aborts_cancelled_task(client, db_session_factory, monkeypatc
     db.close()
 
 
+def test_begin_step_aborts_when_token_budget_exceeded(client, db_session_factory, monkeypatch):
+    from app.agents import tracing
+    from app.core.config import settings
+    from app.models import AgentStep, GenerationTask
+
+    headers = _auth(client)
+    task_id = _make_task(client, headers)
+    db = db_session_factory()
+    task = db.get(GenerationTask, task_id)
+    task.tokens_used = 10
+    db.commit()
+    db.close()
+
+    monkeypatch.setattr("app.agents.tracing.SessionLocal", db_session_factory)
+    monkeypatch.setattr(settings, "TASK_TOKEN_BUDGET", 10)
+    with pytest.raises(tracing.TaskBudgetExceededError):
+        tracing.begin_step(task_id, "PlannerAgent", "Intent Spec")
+
+    db = db_session_factory()
+    assert db.query(AgentStep).filter_by(task_id=task_id).count() == 0
+    db.close()
+
+
 def test_run_generation_skips_terminal_task(client, db_session_factory, monkeypatch):
     from app.agents.pipeline import run_generation
     from app.models import GenerationTask

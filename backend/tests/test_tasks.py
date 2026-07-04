@@ -37,6 +37,101 @@ def test_create_task_dimension_invalid_rejected(client):
     assert r.status_code == 422
 
 
+def test_create_remix_task_from_published_source(client, db_session_factory):
+    from app.models import Game, GameVersion, GenerationTask, User
+    from app.models.common import GameSource, GameStatus
+
+    headers = _auth(client)
+    db = db_session_factory()
+    owner = User(email="remix-source@example.com", display_name="Source", avatar_initial="S")
+    db.add(owner)
+    db.flush()
+    source = Game(
+        author_id=owner.id,
+        title="Source Game",
+        summary="source summary",
+        genre="ARCADE",
+        cover="",
+        source=GameSource.SEED,
+        status=GameStatus.PUBLISHED,
+        current_version="v1",
+    )
+    db.add(source)
+    db.flush()
+    version = GameVersion(
+        game_id=source.id,
+        version="v1",
+        manifest_key=f"games/{source.id}/v1/manifest.json",
+        bundle_key=f"games/{source.id}/v1/index.html",
+        source_task_id=None,
+    )
+    db.add(version)
+    db.commit()
+    source_id = source.id
+    db.close()
+
+    response = client.post(
+        "/tasks",
+        json={
+            "idea": "make it faster and neon",
+            "asset_ids": [],
+            "task_kind": "remix",
+            "source_game_id": source_id,
+        },
+        headers=headers,
+    )
+    assert response.status_code == 200
+    db = db_session_factory()
+    task = db.get(GenerationTask, response.json()["task_id"])
+    assert task.task_kind == "remix"
+    assert task.base_game_id == source_id
+    assert task.base_version == "v1"
+    assert task.feedback_text == "make it faster and neon"
+    assert "Source Game Remix" in task.spec_json
+    db.close()
+
+
+def test_remix_private_source_requires_owner(client, db_session_factory):
+    from app.models import Game, GameVersion, User
+    from app.models.common import GameSource, GameStatus
+
+    headers = _auth(client)
+    db = db_session_factory()
+    owner = User(email="private-source@example.com", display_name="Source", avatar_initial="S")
+    db.add(owner)
+    db.flush()
+    source = Game(
+        author_id=owner.id,
+        title="Private Source",
+        summary="",
+        genre="ARCADE",
+        cover="",
+        source=GameSource.CREATE,
+        status=GameStatus.PREVIEW,
+        current_version="v1",
+    )
+    db.add(source)
+    db.flush()
+    db.add(
+        GameVersion(
+            game_id=source.id,
+            version="v1",
+            manifest_key=f"games/{source.id}/v1/manifest.json",
+            bundle_key=f"games/{source.id}/v1/index.html",
+        )
+    )
+    db.commit()
+    source_id = source.id
+    db.close()
+
+    response = client.post(
+        "/tasks",
+        json={"idea": "remix it", "asset_ids": [], "task_kind": "remix", "source_game_id": source_id},
+        headers=headers,
+    )
+    assert response.status_code == 404
+
+
 def test_third_active_task_for_same_user_rejected(client):
     h = _auth(client)
     assert client.post("/tasks", json={"idea": "one", "asset_ids": []}, headers=h).status_code == 200
@@ -251,4 +346,67 @@ def test_publish_revision_creates_immutable_next_version(client, db_session_fact
     game = db.get(Game, game_id)
     assert game.current_version == "v2"
     assert sorted(version.version for version in game.versions) == ["v1", "v2"]
+    db.close()
+
+
+def test_publish_remix_creates_new_game_with_source_pointer(client, db_session_factory, monkeypatch):
+    from app.models import Game, GameVersion, User
+    from app.models.common import GameSource, GameStatus
+    from app.services import packaging
+
+    db = db_session_factory()
+    user = User(email="remixer@example.com", display_name="Remixer", avatar_initial="R")
+    owner = User(email="original@example.com", display_name="Original", avatar_initial="O")
+    db.add_all([user, owner])
+    db.flush()
+    source = Game(
+        author_id=owner.id,
+        title="Original Game",
+        summary="source",
+        genre="ARCADE",
+        cover="linear-gradient(135deg,#000,#fff)",
+        source=GameSource.SEED,
+        status=GameStatus.PUBLISHED,
+        current_version="v1",
+    )
+    db.add(source)
+    db.flush()
+    db.add(
+        GameVersion(
+            game_id=source.id,
+            version="v1",
+            manifest_key=f"games/{source.id}/v1/manifest.json",
+            bundle_key=f"games/{source.id}/v1/index.html",
+        )
+    )
+    db.commit()
+    source_id = source.id
+    user_id = user.id
+    db.close()
+
+    monkeypatch.setattr("app.db.session.SessionLocal", db_session_factory)
+    files = [
+        {"path": "index.html", "content": '<link rel="stylesheet" href="style.css"><script src="game.js"></script>'},
+        {"path": "style.css", "content": "body{color:white}"},
+        {"path": "game.js", "content": "requestAnimationFrame(()=>{});"},
+    ]
+    game_id, version_id, _ = packaging.publish_remix({
+        "task_id": "remix-task",
+        "user_id": user_id,
+        "base_game_id": source_id,
+        "base_version": "v1",
+        "source_feedback": "make it neon",
+        "game_spec": {"title": "Neon Remix", "genre": "arcade", "tags": ["neon"]},
+        "dimension": "2d",
+        "generated_files": files,
+        "revision_result": {"changed_files": ["game.js"]},
+    })
+
+    db = db_session_factory()
+    remix = db.get(Game, game_id)
+    assert remix.id != source_id
+    assert remix.remixed_from_game_id == source_id
+    assert remix.remixed_from_version == "v1"
+    assert remix.current_version == "v1"
+    assert db.get(GameVersion, version_id).game_id == game_id
     db.close()

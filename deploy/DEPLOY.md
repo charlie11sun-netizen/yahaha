@@ -25,6 +25,7 @@ GameWeave 由 6 个服务组成:
 - **通过 Create 现场生成的游戏**只存在于当时那套 DB + 存储里,**不随仓库走**(换环境需迁移,见第六节)。
 
 **站点密码门:** 设了 `SITE_PASSWORD` 即整站需先输密码(前端 middleware 拦页面、后端校验 `X-Gate-Token`)。
+Demo 可设置 `GATE_PUBLIC_BROWSE=true`：首页、Explore、Game 详情和 Play 对匿名访客开放；Create、Studio、登录/注册入口仍在密码门后。
 
 ---
 
@@ -53,9 +54,31 @@ OPENAI_API_KEY=<模型 key>
 OPENAI_BASE_URL=<模型地址>
 MODEL_NAME=<模型名>
 USE_REAL_MODEL=true
+GATE_PUBLIC_BROWSE=false
 ```
 
 打开 `PUBLIC_WEB_URL` → 输密码 → 看到 3 个旗舰、可玩;Create 可现场生成(worker 随 compose 已起好)。
+
+公开 Demo 建议组合：
+
+```
+GATE_PUBLIC_BROWSE=true
+MAX_ACTIVE_TASKS_PER_USER=1
+TASK_TOKEN_BUDGET=300000
+USE_REAL_MODEL=false   # 只展示/试玩时最省预算；需要现场生成再改 true
+```
+
+如使用单域名 TLS 反代，可启用可选 edge profile：
+
+```sh
+PUBLIC_HOST=<your-domain>
+PUBLIC_WEB_URL=https://<your-domain>
+PUBLIC_API_URL=https://<your-domain>/api
+PUBLIC_S3_URL=https://<your-domain>/s3
+docker compose -f docker-compose.prod.yml --profile edge up -d --build
+```
+
+Caddy 会自动申请证书，并把 `/api/*` 转发到后端、`/s3/*` 转发到 MinIO，其余请求转发到 web。
 
 > 能一条命令搞定,是因为 compose 在**一台机器**上把 6 个容器 + 私有网络 + 持久卷一次拉起,服务间用服务名互连。
 
@@ -113,6 +136,7 @@ USE_REAL_MODEL=true
 ENABLE_OAUTH_DEMO=false
 OPENAI_TIMEOUT=600
 SITE_PASSWORD=<访问密码>
+GATE_PUBLIC_BROWSE=false
 CORS_ORIGINS=https://<WEB_DOMAIN>     # 仅 api 需要;等 web 有域名后回填
 ```
 
@@ -123,6 +147,7 @@ CORS_ORIGINS=https://<WEB_DOMAIN>     # 仅 api 需要;等 web 有域名后回�
 ```
 NEXT_PUBLIC_API_BASE_URL=https://<API_DOMAIN>
 SITE_PASSWORD=<访问密码,与 api 完全相同>
+GATE_PUBLIC_BROWSE=false
 ```
 
 ### 4. 连线心法(内网 vs 公网)

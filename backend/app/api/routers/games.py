@@ -8,7 +8,7 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from app.api.deps import get_current_user, get_optional_user, rate_limit
 from app.db.session import get_db
-from app.models import Comment, Favorite, Game, Like, PlayEvent, Score, Tag
+from app.models import Comment, Favorite, Game, GameVersion, Like, PlayEvent, Score, Tag
 from app.models.common import GameStatus, now_utc
 from app.schemas import CommentIn, GameUpdateIn, ScoreIn
 from app.services import content_safety
@@ -134,6 +134,47 @@ def preview_game(game_id: str, user=Depends(get_current_user), db: Session = Dep
         raise HTTPException(status_code=404, detail="Game not found")
     if g.author_id != user.id:
         raise HTTPException(status_code=403, detail="Not your game")
+    return game_detail(g)
+
+
+def _version_number(version: str) -> int:
+    value = str(version or "")
+    return int(value[1:]) if value.startswith("v") and value[1:].isdigit() else 0
+
+
+def _version_out(version: GameVersion, current_version: str) -> dict:
+    return {
+        "version": version.version,
+        "created_at": version.created_at.isoformat() if version.created_at else None,
+        "size_bytes": version.size_bytes,
+        "sha256": version.sha256,
+        "is_current": version.version == current_version,
+    }
+
+
+@router.get("/games/{game_id}/versions")
+def list_versions(game_id: str, user=Depends(get_current_user), db: Session = Depends(get_db)):
+    g = _owned_game(game_id, user, db)
+    rows = sorted(g.versions, key=lambda row: (_version_number(row.version), row.created_at), reverse=True)
+    return {"items": [_version_out(row, g.current_version) for row in rows]}
+
+
+@router.post("/games/{game_id}/versions/{version}/activate")
+def activate_version(
+    game_id: str,
+    version: str,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    g = _owned_game(game_id, user, db)
+    row = db.query(GameVersion).filter_by(game_id=g.id, version=version).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Version not found")
+    if not row.manifest_key or not row.bundle_key:
+        raise HTTPException(status_code=409, detail="Version artifact metadata is incomplete")
+    g.current_version = row.version
+    db.commit()
+    db.refresh(g)
     return game_detail(g)
 
 
@@ -392,14 +433,20 @@ def leaderboard(game_id: str, user=Depends(get_optional_user), db: Session = Dep
 
 
 @router.get("/games/{game_id}/manifest")
-def game_manifest(game_id: str, user=Depends(get_optional_user), db: Session = Depends(get_db)):
+def game_manifest(
+    game_id: str,
+    version: str | None = None,
+    user=Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
     """从对象存储真实读取 manifest.json（证明远端产物），失败回退 DB 版本元信息。"""
     import json as _json
 
-    from app.models import GameVersion
-
     g = _visible_game(game_id, user, db)
-    key = f"games/{g.id}/{g.current_version}/manifest.json"
+    selected_version = version or g.current_version
+    if version and (not user or user.id != g.author_id):
+        raise HTTPException(status_code=403, detail="Only the owner can preview a specific version")
+    key = f"games/{g.id}/{selected_version}/manifest.json"
     raw = s3.get_object(key)
     if raw:
         try:
@@ -409,7 +456,7 @@ def game_manifest(game_id: str, user=Depends(get_optional_user), db: Session = D
             return data
         except Exception:  # noqa: BLE001
             pass
-    v = db.query(GameVersion).filter_by(game_id=g.id, version=g.current_version).first()
+    v = db.query(GameVersion).filter_by(game_id=g.id, version=selected_version).first()
     if not v:
         raise HTTPException(status_code=404, detail="Manifest not found")
     return {

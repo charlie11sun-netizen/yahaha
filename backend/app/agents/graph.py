@@ -36,6 +36,7 @@ def build_graph():
     g.add_node("code_revision", logged("code_revision")(nodes.code_revision_node))
     g.add_node("revision_repair", logged("revision_repair")(nodes.revision_repair_node))
     g.add_node("publish_revision", logged("publish_revision")(nodes.publish_revision_node))
+    g.add_node("publish_remix", logged("publish_remix")(nodes.publish_remix_node))
     g.add_node("memory_update", logged("memory_update")(nodes.memory_update_node))
     g.add_node("failed", nodes.failed_node)
     g.add_node("done", nodes.done_node)
@@ -64,13 +65,15 @@ def build_graph():
     g.add_conditional_edges("gameplay_qa", nodes.should_continue_after_gameplay_qa,
                             {"publish_artifact": "publish_artifact", "gameplay_repair": "gameplay_repair",
                              "replan_game_design": "replan_game_design", "publish_revision": "publish_revision",
-                             "revision_repair": "revision_repair", "failed": "failed"})
+                             "publish_remix": "publish_remix", "revision_repair": "revision_repair",
+                             "failed": "failed"})
     g.add_edge("gameplay_repair", "code_generation")
     g.add_edge("publish_artifact", "memory_update")
     g.add_edge("feedback_understanding", "code_revision")
     g.add_edge("code_revision", "build_validation")
     g.add_edge("revision_repair", "build_validation")
     g.add_edge("publish_revision", "memory_update")
+    g.add_edge("publish_remix", "memory_update")
     g.add_edge("memory_update", "done")
     g.add_edge("done", END)
     g.add_edge("failed", END)
