@@ -16,6 +16,7 @@ _CONTENT_TYPE = {
     "style.css": "text/css; charset=utf-8",
     "game.js": "application/javascript; charset=utf-8",
     "three.min.js": "application/javascript; charset=utf-8",
+    "phaser.min.js": "application/javascript; charset=utf-8",
 }
 
 # iframe 的 sandbox 属性并不拦网络请求；manifest 承诺的 permissions.network=false
@@ -67,6 +68,37 @@ def _three_engine_bytes() -> bytes | None:
 def three_engine_bytes() -> bytes | None:
     """Public accessor for the vendored Three.js UMD (seed uploads it for 3D bundles)."""
     return _three_engine_bytes()
+
+
+# 自托管的 2D 引擎（vendored Phaser 4 UMD，暴露全局 Phaser）。PHASER_2D_ENABLED
+# 试点：2D 产物引用 <script src="phaser.min.js"> 时随 bundle 同源发布，同 three 模式。
+_PHASER_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "agents", "vendor", "phaser.min.js")
+_PHASER_CACHE: bytes | None = None
+
+
+def _phaser_engine_bytes() -> bytes | None:
+    global _PHASER_CACHE
+    if _PHASER_CACHE is None:
+        try:
+            with open(_PHASER_PATH, "rb") as fh:
+                _PHASER_CACHE = fh.read()
+        except OSError:
+            _PHASER_CACHE = b""
+    return _PHASER_CACHE or None
+
+
+def phaser_engine_bytes() -> bytes | None:
+    """Public accessor for the vendored Phaser 4 UMD (QA sandbox / seed reuse)."""
+    return _phaser_engine_bytes()
+
+
+def _bundle_references(files: list[dict], name: str) -> bool:
+    """产物 index.html 是否用相对路径引用了指定引擎文件（决定是否随包发布）。"""
+    index = next(
+        (str(f.get("content") or "") for f in files if str(f.get("path") or "") == "index.html"),
+        "",
+    )
+    return name in index
 
 
 def write_bundle(
@@ -158,7 +190,7 @@ def publish_generated(state: dict) -> tuple[str, str, str]:
                 "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
             })
 
-        # 3D：把自托管引擎放进同一前缀，bundle 内用相对路径加载（不进 validate_files）。
+        # 引擎随包发布：把自托管引擎放进同一前缀，bundle 内用相对路径加载（不进 validate_files）。
         if str(state.get("dimension")) == "3d":
             engine = _three_engine_bytes()
             if engine:
@@ -166,6 +198,15 @@ def publish_generated(state: dict) -> tuple[str, str, str]:
                 s3.put_object(ekey, engine, _CONTENT_TYPE["three.min.js"])
                 uploaded.append({
                     "path": "three.min.js", "url": s3.public_url(ekey),
+                    "sha256": hashlib.sha256(engine).hexdigest(),
+                })
+        elif _bundle_references(files, "phaser.min.js"):
+            engine = _phaser_engine_bytes()
+            if engine:
+                ekey = f"{prefix}/phaser.min.js"
+                s3.put_object(ekey, engine, _CONTENT_TYPE["phaser.min.js"])
+                uploaded.append({
+                    "path": "phaser.min.js", "url": s3.public_url(ekey),
                     "sha256": hashlib.sha256(engine).hexdigest(),
                 })
 
@@ -262,6 +303,16 @@ def publish_revision(state: dict) -> tuple[str, str, str, str]:
                 s3.put_object(engine_key, engine, _CONTENT_TYPE["three.min.js"])
                 uploaded.append({
                     "path": "three.min.js",
+                    "url": s3.public_url(engine_key),
+                    "sha256": hashlib.sha256(engine).hexdigest(),
+                })
+        elif _bundle_references(files, "phaser.min.js"):
+            engine = _phaser_engine_bytes()
+            if engine:
+                engine_key = f"{prefix}/phaser.min.js"
+                s3.put_object(engine_key, engine, _CONTENT_TYPE["phaser.min.js"])
+                uploaded.append({
+                    "path": "phaser.min.js",
                     "url": s3.public_url(engine_key),
                     "sha256": hashlib.sha256(engine).hexdigest(),
                 })
@@ -394,6 +445,16 @@ def publish_remix(state: dict) -> tuple[str, str, str]:
                 s3.put_object(key, engine, _CONTENT_TYPE["three.min.js"])
                 uploaded.append({
                     "path": "three.min.js",
+                    "url": s3.public_url(key),
+                    "sha256": hashlib.sha256(engine).hexdigest(),
+                })
+        elif _bundle_references(files, "phaser.min.js"):
+            engine = _phaser_engine_bytes()
+            if engine:
+                key = f"{prefix}/phaser.min.js"
+                s3.put_object(key, engine, _CONTENT_TYPE["phaser.min.js"])
+                uploaded.append({
+                    "path": "phaser.min.js",
                     "url": s3.public_url(key),
                     "sha256": hashlib.sha256(engine).hexdigest(),
                 })

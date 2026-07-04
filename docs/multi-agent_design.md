@@ -54,8 +54,10 @@ Create 链路是本系统的核心。它不能只是普通 CRUD，也不能只�
 
 | 维度 | 运行时 | 代码生成策略 |
 | --- | --- | --- |
-| `2d` | iframe-html + Canvas 2D（无外部依赖） | **模型优先**，确定性 Jinja 模板兜底 |
+| `2d` | iframe-html + Canvas 2D（无外部依赖）；`PHASER_2D_ENABLED=true` 试点切换为**自托管 Phaser 4**（全局 `Phaser`，vendored v4.2.0，与 3D 引擎同模式随包发布） | **模型优先**，确定性 Jinja 模板兜底（兜底始终是 Canvas） |
 | `3d` | iframe-html + WebGL（自托管 Three.js，全局 `THREE`） | **完全模型产出**，无模板兜底（失败交给 repair / replan） |
+
+Phaser 试点的接线与 3D 完全对称：`_assemble_bundle` 注入相对 `<script src="phaser.min.js">`、QA 沙箱与三个 publish 入口按 index 引用随包上传引擎、V8 冒烟桩加 `Phaser` 全局、`gameplay_qa` 识别引擎驱动的循环/输入惯用法（否则 Phaser 产物会被 Canvas 规则误杀）。`CODE_SYSTEM_PROMPT_PHASER` 内嵌从 phaser 官方仓库 `skills/` 蒸馏、按沙箱合同改写的 API 备忘单（禁 loader 文件路径，纹理程序化生成）；修复 agent 侧配套 `skills/phaser-runtime`、`skills/phaser-arcade-physics` 两份可 `read_skill` 的参考。
 
 ---
 

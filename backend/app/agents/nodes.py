@@ -325,15 +325,16 @@ _DEFAULT_CSS = (
 )
 
 
-def _assemble_bundle(bundle: dict, title: str, dimension: str = "2d") -> list[dict]:
+def _assemble_bundle(bundle: dict, title: str, dimension: str = "2d", runtime: str = "canvas") -> list[dict]:
     """Turn parsed model files into the canonical 3-file bundle; synthesize a
     minimal index.html / style.css when the model only returned game.js.
-    For 3D, ensure the self-hosted Three.js engine loads before game.js."""
+    Ensure the self-hosted engine (3D: three.min.js / 2D-phaser: phaser.min.js)
+    loads before game.js."""
     js = bundle.get("game.js", "")
     css = bundle.get("style.css") or _DEFAULT_CSS
     index = bundle.get("index.html")
-    needs_three = dimension == "3d"
-    three_tag = '<script src="three.min.js"></script>' if needs_three else ""
+    engine = "three.min.js" if dimension == "3d" else ("phaser.min.js" if runtime == "phaser" else None)
+    engine_tag = f'<script src="{engine}"></script>' if engine else ""
     if not index or "game.js" not in index:
         index = (
             '<!doctype html><html><head><meta charset="utf-8">'
@@ -341,14 +342,14 @@ def _assemble_bundle(bundle: dict, title: str, dimension: str = "2d") -> list[di
             f"<title>{title}</title>"
             '<link rel="stylesheet" href="style.css"></head><body>'
             '<canvas id="stage"></canvas>'
-            f'{three_tag}<script src="game.js"></script></body></html>'
+            f'{engine_tag}<script src="game.js"></script></body></html>'
         )
-    elif needs_three and "three.min.js" not in index:
+    elif engine and engine not in index:
         # 模型给了 index 但漏了引擎：插到 <head> 末尾，确保先于 game.js 执行。
         if "</head>" in index:
-            index = index.replace("</head>", '<script src="three.min.js"></script></head>', 1)
+            index = index.replace("</head>", f"{engine_tag}</head>", 1)
         else:
-            index = index.replace("<body>", '<body><script src="three.min.js"></script>', 1)
+            index = index.replace("<body>", f"<body>{engine_tag}", 1)
     return [
         {"path": "index.html", "content": index},
         {"path": "style.css", "content": css},
@@ -369,6 +370,17 @@ def _sandbox_files_for_qa(files: list[dict], dimension: str | None = None) -> li
         engine = packaging.three_engine_bytes()
         if engine:
             payload.append({"path": "three.min.js", "content": engine.decode("utf-8")})
+    has_phaser_reference = any(
+        file.get("path") == "index.html" and "phaser.min.js" in str(file.get("content") or "").lower()
+        for file in payload
+    )
+    has_phaser_file = any(file.get("path") == "phaser.min.js" for file in payload)
+    if has_phaser_reference and not has_phaser_file:
+        from app.services import packaging
+
+        engine = packaging.phaser_engine_bytes()
+        if engine:
+            payload.append({"path": "phaser.min.js", "content": engine.decode("utf-8")})
     return payload
 
 
@@ -880,14 +892,19 @@ def _gameplay_qa(state: dict) -> dict:
     issues: list[str] = []
     warnings: list[str] = []
 
+    # Phaser 产物的循环/输入都由引擎驱动：game.js 里不会出现字面 rAF / addEventListener，
+    # 按 Canvas 规则会被误杀。识别引擎特征后放行循环检查、补充 Phaser 输入惯用法。
+    uses_phaser = any(tok in low for tok in ["phaser.min.js", "new phaser", "phaser.game", "phaser.scene"])
+
     if not validation_result.get("valid"):
         issues.append("static validation must pass before gameplay QA")
     if len(js) < 400:
         issues.append("game.js is too small to be a real game")
-    if "requestanimationframe" not in low and "setinterval" not in low:
+    if "requestanimationframe" not in low and "setinterval" not in low and not uses_phaser:
         issues.append("no game loop (requestAnimationFrame/setInterval) found")
     has_input = any(tok in low for tok in [
         "addeventlistener", "onkeydown", "onkeyup", "onmousemove", "onpointer", "ontouch", "onclick",
+        "createcursorkeys", "keyboard.addkey", "input.on", "pointerdown", "keydown-",
     ])
     if not has_input:
         issues.append("no input handling found")
@@ -944,7 +961,10 @@ def _gameplay_qa(state: dict) -> dict:
         if archetype == "fps_arena" and not _has_any(low, ["raycaster", "pointerlock", "requestpointerlock"]):
             warnings.append("fps_arena has no raycaster / pointer-lock logic")
     else:
-        depth_metric = any(tok in low for tok in ["shadowblur", "createlineargradient", "createradialgradient"])
+        depth_tokens = ["shadowblur", "createlineargradient", "createradialgradient"]
+        if uses_phaser:
+            depth_tokens += ["generatetexture", "settint", "tweens.add", "particles", "setblendmode", "postfx"]
+        depth_metric = any(tok in low for tok in depth_tokens)
         if not depth_metric:
             warnings.append("art may look flat: no gradient/glow detected")
         if archetype == "vertical_shooter":
@@ -1057,16 +1077,21 @@ def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[d
     mode = "template"
 
     if state.get("use_real") and not state.get("use_template_code"):
+        # PHASER_2D_ENABLED 试点：2D 模型产出切换到 Phaser 4 运行时（提示词内嵌
+        # 官方 skills 蒸馏的 API 备忘单）；模板兜底与失败回退仍是 Canvas。
+        use_phaser = bool(settings.PHASER_2D_ENABLED)
+        runtime = "phaser" if use_phaser else "canvas"
         try:
             raw, tokens = llm.chat(
-                prompts.CODE_SYSTEM_PROMPT,
-                prompts.build_code_prompt(spec, design, _reference_for(spec), repair_error),
+                prompts.CODE_SYSTEM_PROMPT_PHASER if use_phaser else prompts.CODE_SYSTEM_PROMPT,
+                prompts.build_code_prompt(spec, design, _reference_for(spec), repair_error, runtime=runtime),
             )
             bundle = _extract_bundle(raw)
             js = bundle.get("game.js", "")
             if js and len(js) > 400:
-                files = _assemble_bundle(bundle, cfg.get("title") or "GameWeave Game")
-                mode = "model (full bundle)" if bundle.get("index.html") else "model (game.js)"
+                files = _assemble_bundle(bundle, cfg.get("title") or "GameWeave Game", runtime=runtime)
+                shape = "full bundle" if bundle.get("index.html") else "game.js"
+                mode = f"model (phaser {shape})" if use_phaser else f"model ({shape})"
             else:
                 mode = "template (model output too short)"
         except Exception as exc:  # noqa: BLE001

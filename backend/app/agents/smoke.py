@@ -72,6 +72,7 @@ g.innerWidth = 1280; g.innerHeight = 720; g.devicePixelRatio = 1;
 g.performance = { now: function(){ return 0; } };
 g.localStorage = STUB; g.sessionStorage = STUB;
 g.THREE = STUB;
+g.Phaser = STUB;
 """
 
 _WRAP_HEAD = "\n;(function(){\n'use strict';\n"

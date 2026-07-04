@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     CODE_AGENT_ENABLED: bool = False
     CODE_AGENT_MAX_TURNS: int = 8
     CODE_AGENT_MODEL: str = ""  # 留空复用 MODEL_NAME
+    # 2D 生成运行时试点：true 时 real 模式的 2D 代码生成改用自托管 Phaser 4
+    # （vendor/phaser.min.js，全局 Phaser，与 3D three.min.js 同模式随包发布）。
+    # 模板兜底仍是 Canvas；模型失败/过短的回退逻辑不变。默认关闭灰度。
+    PHASER_2D_ENABLED: bool = False
 
     # Observability. Empty DSN / OTLP endpoint keeps local development fully
     # offline. LOG_FORMAT=json is intended for production log aggregation.
