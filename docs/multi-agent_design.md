@@ -162,14 +162,23 @@ Observation: 再次 validate
 
 **② 玩法修复（gameplay_qa 之后）**
 
+`gameplay_repair` 先对 QA 失败分类（`_classify_gameplay_failure`）：
+
+* **浏览器运行时报错**（page/console error、V8 冒烟崩溃、沙箱拦截请求，如 Phaser API 误用）：这是局部代码 bug，`CODE_AGENT_ENABLED=true` 且 real 模式时优先走内层工具循环做**最小 patch**，保住已生成的玩法；patch 成功带产物回 `build_validation` 门禁复检，再进 QA。agent 不可用 / 不收敛 / 空编辑一律回落下面的重生成路径。
+* **玩法指标问题**（太难 / 无输入 / 无循环 / 文件过小）：调安全数值（更慢的障碍、更宽的刷新间隔、更低目标分、加命）→ 回 `code_generation` 整包重生成。
+
 ```text
-Action: gameplay QA（静态冒烟 + V8 运行时冒烟）
-Observation: 不是真游戏 / 一加载就崩
-Action: gameplay_repair 调安全数值（更慢的障碍、更宽的刷新间隔、更低目标分、加命）→ 回 code_generation 重生成
+Action: gameplay QA（静态冒烟 + V8 运行时冒烟 + 浏览器沙箱）
+Observation: 浏览器报错 this.enemies.children.iterate is not a function
+Action: gameplay_repair → 内层 agent read_file/write_file/run_checks 定点修 game.js → 回 build_validation
+Observation: 再次 validate + QA
+
+Observation: 玩法不达标（无输入反馈 / 太难）
+Action: gameplay_repair 调安全数值 → 回 code_generation 重生成
 Observation: 再次 validate + QA
 ```
 
-上限 `MAX_GAMEPLAY_REPAIR = 2`。
+上限 `MAX_GAMEPLAY_REPAIR = 2`（两条路径共用同一计数器）。
 
 两个循环都受次数限制，超限后进入 replan 或 failed。
 
@@ -179,7 +188,7 @@ Repair 和 Replan 是两个不同概念：
 
 | 类型     | 解决什么问题   | 是否改变设计方案 | 回到哪一步 |
 | ------ | -------- | -------- | --- |
-| Repair（构建 / 玩法） | 局部代码错误 / 数值过难 | 否（玩法修复只改数值） | `build_validation` / `code_generation` |
+| Repair（构建 / 玩法） | 局部代码错误 / 数值过难 | 否（运行时报错定点 patch；玩法指标只改数值） | `build_validation` / `code_generation`（玩法 patch 成功也回 `build_validation`） |
 | Replan | 设计方案在当前运行时不可实现 | 是 | **`balance_plan`** |
 
 `replan_game_design` 会重写 `game_design`、**重置全部修复计数器**（repair / gameplay_repair 归零），然后回到 `balance_plan` 重新落数值、重生成、重校验、重 QA。上限 `MAX_REPLAN = 1`。
@@ -264,7 +273,7 @@ flowchart TD
 | `repair_code`        | GameCodeAgentRepair         | 按校验错误重生成代码（≤2）          |
 | `replan_game_design` | GameDesignAgentReplan       | 设计不可实现时降级重规划（≤1）        |
 | `gameplay_qa`        | GameplayQAAgent             | 玩法冒烟 + V8 运行时冒烟         |
-| `gameplay_repair`    | GameplayRepairAgent         | 玩法不达标时调安全数值并重生成（≤2）     |
+| `gameplay_repair`    | GameplayRepairAgent         | 运行时报错先内层 agent 定点 patch，玩法指标调安全数值重生成（≤2） |
 | `publish_artifact`   | PublishArtifactAgent        | 上传产物，生成 manifest，写库     |
 | `memory_update`      | MemoryUpdateAgent           | 保存原始证据，验证 LLM claim，自动强化/晋升/取代 Profile，记录构建与玩法效用并写历史 |
 | `failed` / `done`    | FailureHandler / DoneHandler | 记录失败原因 / 标记成功           |
@@ -290,7 +299,8 @@ flowchart TD
 
   QA -->|passed| G[publish_artifact]
   QA -->|failed and gameplay_repair left| GR[gameplay_repair]
-  GR --> E
+  GR -->|runtime patch applied| F
+  GR -->|balance repair| E
   QA -->|failed and no gameplay_repair but replan left| RP
   QA -->|failed and no retry left| X
 
@@ -299,7 +309,7 @@ flowchart TD
   MU --> H[done]
 ```
 
-关键回边：`repair_code → build_validation`、`gameplay_repair → code_generation`、`replan_game_design → balance_plan`。
+关键回边：`repair_code → build_validation`、`gameplay_repair → build_validation`（运行时 patch）/ `gameplay_repair → code_generation`（数值重生成）、`replan_game_design → balance_plan`。
 
 ### 4.3 状态流转（前端可见的步骤序列）
 

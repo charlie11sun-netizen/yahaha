@@ -189,3 +189,117 @@ def test_revision_repair_node_uses_agent_outcome(monkeypatch):
 
 def test_run_repair_returns_none_for_empty_bundle():
     assert code_agent.run_repair([], error="whatever") is None
+
+
+def test_build_input_labels_failure_source():
+    default = code_agent._build_input(_files(), "boom", "2d", None)
+    assert default.startswith("Build validation failed with:")
+    qa = code_agent._build_input(_files(), "boom", "2d", None, failure_label="Browser gameplay QA")
+    assert qa.startswith("Browser gameplay QA failed with:")
+
+
+# ---- gameplay repair：运行时报错走最小 patch，玩法指标仍整包重生成 ----
+
+def _qa_result(issues):
+    return {"passed": False, "issues": issues, "warnings": [], "metrics": {}}
+
+
+def test_classify_gameplay_failure_runtime_vs_design():
+    runtime = ["browser page error: TypeError: this.enemies.children.iterate is not a function"]
+    kind, picked = nodes._classify_gameplay_failure(_qa_result(runtime))
+    assert kind == "runtime" and picked == runtime
+    # 崩溃伴随的零帧/超时是症状，不改变运行时判定
+    kind, picked = nodes._classify_gameplay_failure(
+        _qa_result(runtime + ["browser sandbox observed no game-loop activity"])
+    )
+    assert kind == "runtime" and picked == runtime
+    # 混入玩法指标问题 → 必须整包重生成
+    assert nodes._classify_gameplay_failure(_qa_result(runtime + ["no input handling found"]))[0] == "design"
+    assert nodes._classify_gameplay_failure(_qa_result(["no input handling found"])) == ("design", [])
+    # 只有症状没有报错，patch 无从下手
+    assert nodes._classify_gameplay_failure(_qa_result(["browser sandbox observed no game-loop activity"]))[0] == "design"
+    assert nodes._classify_gameplay_failure({})[0] == "design"
+
+
+def test_gameplay_repair_patches_runtime_error(monkeypatch):
+    monkeypatch.setattr(code_agent, "enabled", lambda state: True)
+    seen = {}
+
+    def fake_repair(files, **kw):
+        seen.update(kw)
+        return _outcome()
+
+    monkeypatch.setattr(code_agent, "run_repair", fake_repair)
+    out = nodes.gameplay_repair_node(
+        {
+            "gameplay_repair_attempts": 0,
+            "generated_files": _files(),
+            "use_real": True,
+            "dimension": "2d",
+            "balance_config": {"target_score": 100},
+            "gameplay_qa_result": _qa_result(
+                ["browser page error: TypeError: this.enemies.children.iterate is not a function"]
+            ),
+        }
+    )
+    assert seen["failure_label"] == "Browser gameplay QA"
+    assert "children.iterate" in seen["error"]
+    assert out["gameplay_repair_attempts"] == 1
+    assert out["generated_files"] == _files()
+    assert out["_tokens_delta"] == 321
+    assert out["validation_result"] == {} and out["gameplay_qa_result"] == {}
+    # patch 不动设计与难度
+    assert "balance_config" not in out and "game_design" not in out
+    # patch 产物回外层门禁复检，而不是重新生成
+    assert nodes.next_after_gameplay_repair(out) == "build_validation"
+
+
+def test_gameplay_repair_empty_edit_falls_back_to_regeneration(monkeypatch):
+    monkeypatch.setattr(code_agent, "enabled", lambda state: True)
+    monkeypatch.setattr(code_agent, "run_repair", lambda files, **kw: _outcome(changed=[]))
+    out = nodes.gameplay_repair_node(
+        {
+            "gameplay_repair_attempts": 0,
+            "generated_files": _files(),
+            "use_real": True,
+            "gameplay_qa_result": _qa_result(["browser console error: boom"]),
+        }
+    )
+    # 浏览器 bug 在 run_checks 里不复现，空编辑等于没修 → 回落整包重生成
+    assert out["generated_files"] == []
+    assert out["balance_config"]["repair_attempt"] == 1
+    assert out["_tokens_delta"] == 321  # agent 花掉的 tokens 仍记账
+    assert nodes.next_after_gameplay_repair(out) == "code_generation"
+
+
+def test_gameplay_repair_design_issue_skips_agent(monkeypatch):
+    monkeypatch.setattr(code_agent, "enabled", lambda state: True)
+    called = {"agent": False}
+    monkeypatch.setattr(code_agent, "run_repair", lambda *a, **kw: called.__setitem__("agent", True))
+    out = nodes.gameplay_repair_node(
+        {
+            "gameplay_repair_attempts": 0,
+            "generated_files": _files(),
+            "use_real": True,
+            "gameplay_qa_result": _qa_result(["no input handling found"]),
+        }
+    )
+    assert not called["agent"]  # 玩法指标问题不进 patch 路径
+    assert out["generated_files"] == []
+    assert out["balance_config"] and out["game_design"]
+    assert out["_tokens_delta"] == 0
+
+
+def test_gameplay_repair_legacy_path_when_disabled(monkeypatch):
+    called = {"agent": False}
+    monkeypatch.setattr(code_agent, "run_repair", lambda *a, **kw: called.__setitem__("agent", True))
+    out = nodes.gameplay_repair_node(
+        {
+            "gameplay_repair_attempts": 1,
+            "generated_files": _files(),
+            "gameplay_qa_result": _qa_result(["browser page error: TypeError: boom"]),
+        }
+    )
+    assert not called["agent"]  # 默认关闭：运行时报错也走旧的重生成路径
+    assert out["generated_files"] == []
+    assert out["gameplay_repair_attempts"] == 2

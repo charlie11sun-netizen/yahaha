@@ -2,6 +2,8 @@
 
 safety_intake → intent_spec → asset_processing → game_design → code_generation → build_validation
 build_validation 失败：repair_code（≤2）→ 仍失败则 replan_game_design（≤1）→ 仍失败则 failed。
+gameplay_qa 失败：gameplay_repair（≤2）——浏览器运行时报错先走内层 agent 最小 patch，
+patch 成功带产物回 build_validation 复检；玩法指标问题调 balance 后回 code_generation 重生成。
 顶层固定，保证安全检查/构建校验/上传不被跳过；智能发生在节点内部。
 """
 from langgraph.graph import END, START, StateGraph
@@ -67,7 +69,8 @@ def build_graph():
                              "replan_game_design": "replan_game_design", "publish_revision": "publish_revision",
                              "publish_remix": "publish_remix", "revision_repair": "revision_repair",
                              "failed": "failed"})
-    g.add_edge("gameplay_repair", "code_generation")
+    g.add_conditional_edges("gameplay_repair", nodes.next_after_gameplay_repair,
+                            {"build_validation": "build_validation", "code_generation": "code_generation"})
     g.add_edge("publish_artifact", "memory_update")
     g.add_edge("feedback_understanding", "code_revision")
     g.add_edge("code_revision", "build_validation")

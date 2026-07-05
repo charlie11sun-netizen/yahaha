@@ -23,7 +23,7 @@ _SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
 _EDITABLE = ("index.html", "style.css", "game.js")
 _MAX_ERRORS_SHOWN = 8
 
-_INSTRUCTIONS = """You repair a small self-contained HTML5 game bundle (index.html, style.css, game.js) that just failed GameWeave's build validation.
+_INSTRUCTIONS = """You repair a small self-contained HTML5 game bundle (index.html, style.css, game.js) that just failed one of GameWeave's quality gates — static build validation or browser gameplay QA (the task input states which).
 
 Hard sandbox contract (any violation fails validation again):
 - Forbidden everywhere: eval(), new Function, fetch(), XMLHttpRequest, WebSocket, EventSource, navigator.sendBeacon, dynamic import(), localStorage, sessionStorage, document.cookie, window.parent/window.top access (postMessage is the only exception), and any external http(s) URL including <script src="http...">.
@@ -157,11 +157,17 @@ def available_skills() -> list[str]:
         return []
 
 
-def _build_input(files: list[dict], error: str, dimension: str, task_note: str | None) -> str:
+def _build_input(
+    files: list[dict],
+    error: str,
+    dimension: str,
+    task_note: str | None,
+    failure_label: str = "Build validation",
+) -> str:
     listing = "\n".join(
         f"- {f.get('path')} ({len(str(f.get('content') or '').encode('utf-8'))}B)" for f in files
     )
-    parts = [f"Build validation failed with:\n{error}", f"Bundle files:\n{listing}"]
+    parts = [f"{failure_label} failed with:\n{error}", f"Bundle files:\n{listing}"]
     if dimension == "3d":
         parts.append(_3D_NOTE)
     if task_note:
@@ -211,6 +217,7 @@ def run_repair(
     error: str,
     dimension: str = "2d",
     task_note: str | None = None,
+    failure_label: str = "Build validation",
     max_turns: int | None = None,
 ) -> RepairOutcome | None:
     """跑一轮修复 agent。返回 None 表示 agent 路径不可用/异常（调用方回落旧路径）。
@@ -278,7 +285,7 @@ def run_repair(
     try:
         result = Runner.run_sync(
             agent,
-            _build_input(files, error, dimension, task_note),
+            _build_input(files, error, dimension, task_note, failure_label),
             max_turns=turns_limit,
             run_config=RunConfig(workflow_name="gameweave-repair", tracing_disabled=True),
         )

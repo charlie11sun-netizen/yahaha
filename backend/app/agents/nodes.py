@@ -1020,6 +1020,32 @@ def _gameplay_qa_log_lines(result: dict) -> list[str]:
     return lines + ["gameplay QA passed: runnable game loop with input and restart"]
 
 
+# Gameplay QA 失败分两类。前缀与 _gameplay_qa 生成的 issue 文案一一对应：改写
+# 那边的文案必须同步这里，否则运行时报错会静默落回整包重生成路径。
+_RUNTIME_QA_PATCHABLE = (
+    "runtime smoke test:",
+    "browser page error:",
+    "browser console error:",
+    "browser sandbox blocked request:",
+)
+_RUNTIME_QA_SYMPTOMS = (
+    "browser sandbox observed no game-loop activity",
+    "browser sandbox timed out",
+)
+
+
+def _classify_gameplay_failure(qa_result: dict) -> tuple[str, list[str]]:
+    """"runtime"：全部 issue 都是运行时报错或其伴随症状（崩溃后零帧/超时），且至少
+    一条报错——这是局部代码 bug（如 Phaser API 误用），适合最小 patch。其余（太难/
+    无输入/无循环等玩法指标）返回 "design"，走 balance 调参 + 整包重生成。"""
+    issues = [str(item) for item in (qa_result or {}).get("issues") or []]
+    patchable = [item for item in issues if item.startswith(_RUNTIME_QA_PATCHABLE)]
+    symptoms = [item for item in issues if item.startswith(_RUNTIME_QA_SYMPTOMS)]
+    if patchable and len(patchable) + len(symptoms) == len(issues):
+        return "runtime", patchable
+    return "design", patchable
+
+
 def _repair_balance(balance: dict, archetype: str, attempt: int) -> dict:
     repaired = dict(balance or {})
     repaired["round_seconds"] = min(90, int((repaired.get("round_seconds") or 55) + 8))
@@ -1755,11 +1781,61 @@ def revision_repair_node(state: dict) -> dict:
 
 def gameplay_repair_node(state: dict) -> dict:
     attempts = state.get("gameplay_repair_attempts", 0) + 1
+    qa_result = state.get("gameplay_qa_result") or {}
+    issues = qa_result.get("issues") or []
+    logs = [
+        f"gameplay repair attempt: {attempts}/{MAX_GAMEPLAY_REPAIR}",
+        "QA issues: " + ("; ".join(issues[:3]) if issues else "balance threshold miss"),
+    ]
+    # 运行时报错（页面崩溃/console error/Phaser API 误用）是局部 bug：优先内层
+    # 工具循环 agent 做最小 patch，保住已生成的玩法，避免整包重生把好的部分改坏。
+    # patch 成功回 build_validation 外层门禁复检（agent 自测不作数），再进
+    # gameplay_qa；玩法指标问题或 agent 不可用/不收敛，仍走 balance 调参 + 重生成。
+    agent_tokens = 0
+    failure_kind, runtime_issues = _classify_gameplay_failure(qa_result)
+    if failure_kind == "runtime" and code_agent.enabled(state):
+        outcome = code_agent.run_repair(
+            state.get("generated_files") or [],
+            error="; ".join(runtime_issues),
+            dimension=str(state.get("dimension") or "2d"),
+            failure_label="Browser gameplay QA",
+            task_note=(
+                "This bundle already passes static build validation and the V8 smoke test; the error(s) above "
+                "came from a real headless-browser run. run_checks may therefore report ALL CHECKS PASSED before "
+                "you change anything — that alone does NOT mean the bug is fixed. Locate the root cause of the "
+                "reported browser error (usually a wrong engine/API call in game.js), apply the smallest fix, "
+                "then re-verify with run_checks. Do not redesign gameplay, difficulty or balance."
+            ),
+        )
+        if outcome is not None:
+            agent_tokens = outcome.tokens
+            logs += [f"repair mode: agent tool loop ({outcome.turns} model turn(s))"] + outcome.logs
+            # 浏览器 bug 在 run_checks 里本就不复现，空编辑等于没修，必须有实际改动
+            if outcome.checks_ok and outcome.changed:
+                return {
+                    "generated_files": outcome.files,
+                    "validation_result": {},
+                    "gameplay_qa_result": {},
+                    "gameplay_repair_attempts": attempts,
+                    "last_error": None,
+                    "_agent": "GameplayRepairAgent",
+                    "_tokens_delta": agent_tokens,
+                    "_logs": logs
+                    + [
+                        "patched files: " + ", ".join(outcome.changed),
+                        "agent self-checks passed",
+                        "kept design and balance untouched; queued build validation recheck",
+                    ],
+                }
+            logs.append(
+                f"agent loop did not converge ({_clip(outcome.note, 120)}); falling back to balance repair + regeneration"
+            )
+        else:
+            logs.append("agent loop unavailable; falling back to balance repair + regeneration")
     spec = state.get("game_spec") or {}
     archetype = spec.get("archetype") or (state.get("game_design") or {}).get("archetype") or "topdown_collect"
     balance = _repair_balance(state.get("balance_config") or (state.get("game_design") or {}).get("balance") or {}, archetype, attempts)
     design = _merge_balance_into_design(state.get("game_design") or _heuristic_design(spec), archetype, balance)
-    issues = (state.get("gameplay_qa_result") or {}).get("issues") or []
     return {
         "balance_config": balance,
         "game_design": design,
@@ -1769,11 +1845,9 @@ def gameplay_repair_node(state: dict) -> dict:
         "gameplay_repair_attempts": attempts,
         "last_error": None,
         "_agent": "GameplayRepairAgent",
-        "_logs": [
-            f"gameplay repair attempt: {attempts}/{MAX_GAMEPLAY_REPAIR}",
-            "QA issues: " + ("; ".join(issues[:3]) if issues else "balance threshold miss"),
-            "applied safer balance: slower hazards, wider spawn interval, lower target, extra life",
-        ]
+        "_tokens_delta": agent_tokens,
+        "_logs": logs
+        + ["applied safer balance: slower hazards, wider spawn interval, lower target, extra life"]
         + _balance_log_lines(archetype, balance)
         + ["queued code regeneration"],
     }
@@ -1990,3 +2064,9 @@ def should_continue_after_gameplay_qa(state: dict) -> str:
     if state.get("replan_attempts", 0) < MAX_REPLAN:
         return "replan_game_design"
     return "failed"
+
+
+def next_after_gameplay_repair(state: dict) -> str:
+    # patch 路径带着修好的 bundle 回外层门禁复检；重生成路径已清空
+    # generated_files，回 code_generation 整包重做。
+    return "build_validation" if state.get("generated_files") else "code_generation"
