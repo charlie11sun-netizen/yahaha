@@ -214,23 +214,53 @@ def revise_task(
 
 
 @router.post("/{task_id}/retry")
-def retry_task(task_id: str, user=Depends(get_current_user), db: Session = Depends(get_db)):
+def retry_task(
+    task_id: str,
+    from_scratch: bool = False,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     task = _owned_task(task_id, user, db)
     if task.status != TaskStatus.FAILED:
         raise HTTPException(status_code=400, detail="Only failed tasks can be retried")
     _ensure_active_task_slot(user.id, db)
-    for step in list(task.steps):
-        db.delete(step)
+    # 默认断点续跑：state_json 里存着失败节点的输入快照（tracing.begin_step 写入），
+    # pipeline 会据此直跳失败节点。显式 from_scratch 或快照缺失/损坏则清场全重跑。
+    resume_payload = None
+    if not from_scratch and task.state_json:
+        try:
+            payload = json.loads(task.state_json)
+            if isinstance(payload, dict) and isinstance(payload.get("node"), str) and isinstance(payload.get("state"), dict):
+                resume_payload = payload
+        except Exception:  # noqa: BLE001
+            resume_payload = None
+    if resume_payload is None:
+        for step in list(task.steps):
+            db.delete(step)
+        task.current_step = 0
+        task.tokens_used = 0
+        task.cost_usd = None
+        task.state_json = None
+    else:
+        # 续跑保留步骤与 tokens（成本跨次累计），但重置修复预算——失败任务往往
+        # 停在预算耗尽处，不重置会在续跑后立刻再次失败；也清掉上次的失败痕迹。
+        state = resume_payload["state"]
+        for key in ("repair_attempts", "replan_attempts", "gameplay_repair_attempts"):
+            state[key] = 0
+        for key in ("last_error", "error_code", "error_message"):
+            state.pop(key, None)
+        state["status"] = "running"
+        task.state_json = json.dumps(resume_payload, ensure_ascii=False)
+    task.repair_attempts = 0
+    task.replan_attempts = 0
     task.status = TaskStatus.PENDING
     task.error = None
     task.error_code = None
     task.failed_stage = None
-    task.current_step = 0
-    task.tokens_used = 0
-    task.cost_usd = None
+    task.finished_at = None
     db.commit()
     _enqueue_generation(task.id)
-    return {"task_id": task.id}
+    return {"task_id": task.id, "mode": "restart" if resume_payload is None else "resume"}
 
 
 @router.post("/{task_id}/cancel")

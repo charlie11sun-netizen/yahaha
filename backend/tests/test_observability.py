@@ -37,15 +37,20 @@ def test_llm_chat_records_usage_and_cost(db_session_factory, monkeypatch):
     db.commit()
     db.close()
 
-    class _FakeCompletions:
+    class _FakeResponses:
         def create(self, **_kwargs):
-            return SimpleNamespace(
+            response = SimpleNamespace(
                 model="gpt-5.5",
-                choices=[SimpleNamespace(message=SimpleNamespace(content=" playable plan "))],
-                usage=SimpleNamespace(prompt_tokens=1000, completion_tokens=2000, total_tokens=3000),
+                output=[],
+                usage=SimpleNamespace(input_tokens=1000, output_tokens=2000, total_tokens=3000),
             )
+            return [
+                SimpleNamespace(type="response.output_text.delta", delta=" playable"),
+                SimpleNamespace(type="response.output_text.delta", delta=" plan "),
+                SimpleNamespace(type="response.completed", response=response),
+            ]
 
-    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=_FakeCompletions()))
+    fake_client = SimpleNamespace(responses=_FakeResponses())
     monkeypatch.setattr(llm, "SessionLocal", db_session_factory)
     monkeypatch.setattr(llm, "_client", lambda timeout=None: fake_client)
 

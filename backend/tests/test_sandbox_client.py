@@ -1,3 +1,8 @@
+import base64
+import sys
+from types import ModuleType
+
+import httpx
 import pytest
 
 
@@ -29,6 +34,64 @@ def test_sandbox_client_fails_closed_when_required_and_unavailable(monkeypatch):
     monkeypatch.setattr(settings, "SANDBOX_REQUIRED", True)
     with pytest.raises(sandbox_client.SandboxUnavailableError):
         sandbox_client.run_bundle(_files(), timeout_ms=500)
+
+
+def test_sandbox_client_reports_http_error_detail(monkeypatch):
+    from app.core.config import settings
+    from app.services import sandbox_client
+
+    response = httpx.Response(
+        413,
+        json={"detail": "phaser.min.js exceeds 1000000 bytes"},
+        request=httpx.Request("POST", "http://sandbox:8001/run"),
+    )
+
+    def fake_post(*_args, **_kwargs):
+        response.raise_for_status()
+
+    monkeypatch.setattr(settings, "SANDBOX_URL", "http://sandbox:8001")
+    monkeypatch.setattr(settings, "SANDBOX_REQUIRED", False)
+    monkeypatch.setattr(sandbox_client.httpx, "post", fake_post)
+
+    result = sandbox_client.run_bundle(_files(), timeout_ms=500)
+    assert result.skipped is True
+    assert "413" in result.detail
+    assert "phaser.min.js exceeds" in result.detail
+
+
+def test_sandbox_client_adds_http_timeout_headroom(monkeypatch):
+    from app.core.config import settings
+    from app.services import sandbox_client
+
+    captured: dict[str, object] = {}
+
+    def fake_post(*_args, **kwargs):
+        captured["timeout"] = kwargs["timeout"]
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "page_errors": [],
+                "console_errors": [],
+                "console_warnings": [],
+                "requests_aborted": [],
+                "frames_observed": 2,
+                "intervals_observed": 0,
+                "load_ms": 300,
+                "timed_out": False,
+            },
+            request=httpx.Request("POST", "http://sandbox:8001/run"),
+        )
+
+    monkeypatch.setattr(settings, "SANDBOX_URL", "http://sandbox:8001")
+    monkeypatch.setattr(settings, "SANDBOX_REQUIRED", True)
+    monkeypatch.setattr(settings, "SANDBOX_HTTP_TIMEOUT_OVERHEAD_MS", 7000)
+    monkeypatch.setattr(sandbox_client.httpx, "post", fake_post)
+
+    result = sandbox_client.run_bundle(_files(), timeout_ms=1500)
+
+    assert result.ok is True
+    assert captured["timeout"] == 8.5
 
 
 def test_gameplay_qa_marks_required_sandbox_unavailable(monkeypatch):
@@ -69,6 +132,36 @@ def test_3d_sandbox_payload_includes_vendored_three():
     by_path = {file["path"]: file["content"] for file in payload}
     assert "three.min.js" in by_path
     assert len(by_path["three.min.js"].encode("utf-8")) > 500_000
+
+
+def test_sandbox_default_limits_accept_vendored_phaser(monkeypatch):
+    from app.services import packaging
+
+    fake_playwright = ModuleType("playwright")
+    fake_async_api = ModuleType("playwright.async_api")
+    fake_async_api.Browser = object
+    fake_async_api.Error = Exception
+    fake_async_api.Page = object
+    fake_async_api.async_playwright = lambda: None
+    monkeypatch.setitem(sys.modules, "playwright", fake_playwright)
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake_async_api)
+    monkeypatch.delitem(sys.modules, "sandbox.app.main", raising=False)
+    from sandbox.app import main as sandbox_main
+
+    engine = packaging.phaser_engine_bytes()
+    assert engine
+    assert len(engine) > 1_000_000
+    assert len(engine) <= sandbox_main.settings.max_file_bytes
+
+    decoded = sandbox_main._decode_files(
+        [
+            sandbox_main.BundleFile(
+                path="phaser.min.js",
+                content_b64=base64.b64encode(engine).decode("ascii"),
+            )
+        ]
+    )
+    assert decoded["phaser.min.js"] == engine
 
 
 def test_setinterval_loop_is_valid_sandbox_activity(monkeypatch):

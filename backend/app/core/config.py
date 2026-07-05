@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     # Redis / Celery
     REDIS_URL: str = "redis://localhost:6379/0"
     WORKER_MAX_MEMORY_PER_CHILD: int = 500_000
+    CELERY_VISIBILITY_TIMEOUT: int = 7200
+    GENERATION_TASK_SOFT_TIME_LIMIT: int = 3600
+    GENERATION_TASK_TIME_LIMIT: int = 3900
 
     # Object storage (S3 compatible)
     S3_ENDPOINT: str = "http://localhost:9000"           # 服务端访问 OSS
@@ -32,7 +35,10 @@ class Settings(BaseSettings):
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     MODEL_NAME: str = "gpt-5.5"
     USE_REAL_MODEL: bool = False
+    REAL_MODEL_FALLBACK_ENABLED: bool = False
     MEMORY_VECTOR_ENABLED: bool = True
+    OPENAI_MAX_RETRIES: int = 2
+    OPENAI_RETRY_BACKOFF_SECONDS: float = 1.5
     MEMORY_EMBEDDING_MODEL: str = "text-embedding-3-small"
     MEMORY_VECTOR_DIMENSIONS: int = 1536
     MEMORY_ANN_CANDIDATES: int = 120
@@ -46,10 +52,14 @@ class Settings(BaseSettings):
     MEMORY_LEXICAL_MIN_SCORE: float = 0.10
     MEMORY_SEMANTIC_MIN_SCORE: float = 0.20
     OPENAI_TIMEOUT: int = 600  # 写整个 game.js 耗时长，给足超时
+    OPENAI_CODE_TIMEOUT: int = 1800
+    OPENAI_ALLOW_PARTIAL_CODE_STREAM: bool = True
+    OPENAI_PARTIAL_STREAM_MIN_CHARS: int = 2000
     MODEL_PRICING_JSON: str = ""
     # 修复回环内层 Agent（OpenAI Agents SDK 工具循环）。默认关闭：repair 节点沿用
-    # "错误塞回 prompt 整体重生成"。开启后改为 read/write/run_checks 最小修复 +
-    # 自测收敛，任何失败自动回落旧路径；仅 USE_REAL_MODEL=true 的任务生效。
+    # "错误塞回 prompt 整体重生成"。开启后 build/revision 修复改为 read/write/run_checks
+    # 最小修复 + 自测收敛；gameplay QA 的浏览器运行时报错也先走最小 patch 再回
+    # build_validation 门禁。任何失败自动回落旧路径；仅 USE_REAL_MODEL=true 的任务生效。
     CODE_AGENT_ENABLED: bool = False
     CODE_AGENT_MAX_TURNS: int = 8
     CODE_AGENT_MODEL: str = ""  # 留空复用 MODEL_NAME
@@ -85,6 +95,7 @@ class Settings(BaseSettings):
     SANDBOX_URL: str = ""
     SANDBOX_REQUIRED: bool = False
     SANDBOX_TIMEOUT_MS: int = 5000
+    SANDBOX_HTTP_TIMEOUT_OVERHEAD_MS: int = 10_000
     MAX_ACTIVE_TASKS_PER_USER: int = 2
     TASK_TOKEN_BUDGET: int = 0
 

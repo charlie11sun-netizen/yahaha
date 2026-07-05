@@ -268,6 +268,7 @@ def run_repair(
             api_key=settings.OPENAI_API_KEY,
             base_url=settings.OPENAI_BASE_URL,
             timeout=settings.OPENAI_TIMEOUT,
+            default_headers={"User-Agent": "GameWeave/1.0"},
         )
     except Exception:  # noqa: BLE001 —— 缺 key 等配置问题
         return None

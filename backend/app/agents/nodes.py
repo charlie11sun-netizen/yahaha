@@ -9,7 +9,7 @@ import json
 import re
 
 from app.agents import bundles, code_agent, llm, prompts, smoke, templating, validation
-from app.agents.state import MAX_GAMEPLAY_REPAIR, MAX_REPAIR, MAX_REPLAN
+from app.agents.state import MAX_GAMEPLAY_REPAIR, MAX_REPAIR, MAX_REPLAN, STEP_META
 from app.core.config import settings
 from app.core.errors import TaskErrorCode
 from app.services import content_safety, sandbox_client
@@ -24,6 +24,15 @@ _THEME_COVER = {
     "retro": "linear-gradient(135deg,#ff8a3d,#ff3ea5)",
     "ocean": "linear-gradient(135deg,#0ea5b7,#2563eb)",
 }
+
+
+def _real_model_fallback_or_raise(stage: str, detail: object, exc: Exception | None = None) -> None:
+    if settings.REAL_MODEL_FALLBACK_ENABLED:
+        return
+    message = f"{stage} real model failed; fallback disabled: {_clip(detail, 300)}"
+    if exc is not None:
+        raise RuntimeError(message) from exc
+    raise RuntimeError(message)
 
 _ARCHETYPES = {
     "vertical_shooter": {
@@ -296,6 +305,18 @@ def _extract_bundle(raw: str) -> dict:
         m = re.search(r"```[ \t]*" + lang + r"[^\n]*\n(.*?)```", raw, re.S | re.I)
         if m:
             out[path] = m.group(1).strip()
+    # A long streaming response can be interrupted after opening the final
+    # fenced block but before the closing fence arrives. Keep that partial block
+    # so validation/repair can decide whether it is usable instead of throwing
+    # away minutes of generated code.
+    for lang, content in re.findall(
+        r"```[ \t]*(html|css|javascript|js)[^\n]*\n(.*?)(?:```|\Z)",
+        raw,
+        re.S | re.I,
+    ):
+        path = "game.js" if lang.lower() in {"javascript", "js"} else ("style.css" if lang.lower() == "css" else "index.html")
+        if path not in out and content.strip():
+            out[path] = content.strip()
     if "game.js" in out:
         return out
     # Fallback: classify unlabeled fenced blocks by their content.
@@ -1075,18 +1096,23 @@ def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[d
             mode = "3D needs real model (offline mock cannot author 3D)"
         else:
             try:
-                raw, tokens = llm.chat(
+                result = llm.chat(
                     prompts.CODE_SYSTEM_PROMPT_3D,
                     prompts.build_code_prompt(spec, design, _reference_for(spec), repair_error, dimension="3d"),
+                    timeout=settings.OPENAI_CODE_TIMEOUT,
+                    allow_partial=settings.OPENAI_ALLOW_PARTIAL_CODE_STREAM,
                 )
+                raw, tokens = result
                 bundle = _extract_bundle(raw)
                 js = bundle.get("game.js", "")
                 files = _assemble_bundle(bundle, title, dimension="3d")
                 if js and len(js) > 400:
-                    mode = "model (full 3D bundle)" if bundle.get("index.html") else "model (3D game.js)"
+                    partial = "partial " if getattr(result, "partial", False) else ""
+                    mode = f"model ({partial}full 3D bundle)" if bundle.get("index.html") else f"model ({partial}3D game.js)"
                 else:
                     mode = "model 3D output too short -> QA/repair"
             except Exception as exc:  # noqa: BLE001
+                _real_model_fallback_or_raise("GameCodeAgent", exc, exc)
                 files = []
                 mode = f"model 3D failed: {_clip(exc, 120)}"
         if _should_inject(state):
@@ -1108,20 +1134,28 @@ def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[d
         use_phaser = bool(settings.PHASER_2D_ENABLED)
         runtime = "phaser" if use_phaser else "canvas"
         try:
-            raw, tokens = llm.chat(
+            result = llm.chat(
                 prompts.CODE_SYSTEM_PROMPT_PHASER if use_phaser else prompts.CODE_SYSTEM_PROMPT,
                 prompts.build_code_prompt(spec, design, _reference_for(spec), repair_error, runtime=runtime),
+                timeout=settings.OPENAI_CODE_TIMEOUT,
+                allow_partial=settings.OPENAI_ALLOW_PARTIAL_CODE_STREAM,
             )
+            raw, tokens = result
             bundle = _extract_bundle(raw)
             js = bundle.get("game.js", "")
             if js and len(js) > 400:
                 files = _assemble_bundle(bundle, cfg.get("title") or "GameWeave Game", runtime=runtime)
                 shape = "full bundle" if bundle.get("index.html") else "game.js"
-                mode = f"model (phaser {shape})" if use_phaser else f"model ({shape})"
+                partial = "partial " if getattr(result, "partial", False) else ""
+                mode = f"model ({partial}phaser {shape})" if use_phaser else f"model ({partial}{shape})"
             else:
+                _real_model_fallback_or_raise("GameCodeAgent", "model output too short")
                 mode = "template (model output too short)"
         except Exception as exc:  # noqa: BLE001
+            _real_model_fallback_or_raise("GameCodeAgent", exc, exc)
             mode = f"template (model failed: {_clip(exc, 120)})"
+    elif state.get("use_real") and state.get("use_template_code"):
+        _real_model_fallback_or_raise("GameCodeAgent", "template-code fallback requested")
 
     if _should_inject(state):
         for file in files:
@@ -1159,7 +1193,7 @@ def _generate_revision_code(
         files = [{"path": path, "content": merged[path]} for path in ("index.html", "style.css", "game.js") if path in merged]
         return files, 0, changed, f"offline deterministic {state.get('task_kind', 'revision')}"
 
-    raw, tokens = llm.chat(
+    result = llm.chat(
         prompts.CODE_REVISION_SYSTEM_PROMPT,
         prompts.build_code_revision_prompt(
             state.get("source_feedback") or state.get("prompt") or "",
@@ -1170,7 +1204,10 @@ def _generate_revision_code(
             repair_error,
             state.get("memory_context") or "",
         ),
+        timeout=settings.OPENAI_CODE_TIMEOUT,
+        allow_partial=settings.OPENAI_ALLOW_PARTIAL_CODE_STREAM,
     )
+    raw, tokens = result
     returned = _extract_bundle(raw)
     merged = dict(source)
     changed: list[str] = []
@@ -1181,7 +1218,8 @@ def _generate_revision_code(
         merged[path] = content
         changed.append(path)
     files = [{"path": path, "content": merged[path]} for path in ("index.html", "style.css", "game.js") if path in merged]
-    return files, tokens, changed, "model incremental revision"
+    partial = "partial " if getattr(result, "partial", False) else ""
+    return files, tokens, changed, f"model {partial}incremental revision"
 
 
 def safety_intake_node(state: dict) -> dict:
@@ -1373,6 +1411,7 @@ def intent_spec_node(state: dict) -> dict:
             spec = _coerce_spec(_parse_json(raw), prompt)
             return {"game_spec": spec, "_agent": "IntentSpecAgent", "_tokens_delta": tokens, "_logs": _spec_log_lines(spec, "model GameSpec JSON")}
         except Exception as exc:  # noqa: BLE001
+            _real_model_fallback_or_raise("IntentSpecAgent", exc, exc)
             spec = _heuristic_spec(prompt)
             return {"game_spec": spec, "_agent": "IntentSpecAgent", "_logs": [f"model failed: {_clip(exc, 120)}"] + _spec_log_lines(spec, "heuristic fallback")}
     spec = _heuristic_spec(prompt)
@@ -1395,6 +1434,7 @@ def brief_expansion_node(state: dict) -> dict:
             brief = _coerce_brief(_parse_json(raw), prompt, spec)
             return {"expanded_brief": brief, "_agent": "BriefExpansionAgent", "_tokens_delta": tokens, "_logs": _brief_log_lines(brief, "model brief expansion")}
         except Exception as exc:  # noqa: BLE001
+            _real_model_fallback_or_raise("BriefExpansionAgent", exc, exc)
             brief = _heuristic_brief(prompt, spec)
             return {"expanded_brief": brief, "_agent": "BriefExpansionAgent", "_logs": [f"model failed: {_clip(exc, 120)}"] + _brief_log_lines(brief, "heuristic fallback")}
     brief = _heuristic_brief(prompt, spec)
@@ -1418,6 +1458,7 @@ def mechanic_planner_node(state: dict) -> dict:
             plan = _coerce_mechanic_plan(_parse_json(raw), spec, brief, prompt)
             return {"mechanic_plan": plan, "_agent": "MechanicPlannerAgent", "_tokens_delta": tokens, "_logs": _mechanic_log_lines(plan, "model mechanic plan")}
         except Exception as exc:  # noqa: BLE001
+            _real_model_fallback_or_raise("MechanicPlannerAgent", exc, exc)
             plan = _heuristic_mechanic_plan(spec, brief, prompt)
             return {"mechanic_plan": plan, "_agent": "MechanicPlannerAgent", "_logs": [f"model failed: {_clip(exc, 120)}"] + _mechanic_log_lines(plan, "heuristic fallback")}
     plan = _heuristic_mechanic_plan(spec, brief, prompt)
@@ -1508,6 +1549,7 @@ def game_design_node(state: dict) -> dict:
                     out["_logs"].append(f"3D archetype reconciled from design camera -> {new_arch}")
             return out
         except Exception as exc:  # noqa: BLE001
+            _real_model_fallback_or_raise("GameDesignAgent", exc, exc)
             design = _heuristic_design(spec)
             return {"game_design": design, "_agent": "GameDesignAgent", "_logs": [f"model failed: {_clip(exc, 120)}", "source: heuristic fallback"] + _design_log_lines(design)}
     design = _heuristic_design(spec)
@@ -1565,6 +1607,7 @@ def feedback_understanding_node(state: dict) -> dict:
                 ),
             )
         except Exception as exc:  # noqa: BLE001
+            _real_model_fallback_or_raise("FeedbackUnderstandingAgent", exc, exc)
             brief = f"Change goal\n{feedback}\n\nPreserve\nAll behavior not mentioned by the player.\n\nUncertainties\nModel interpretation failed: {_clip(exc, 120)}"
     else:
         brief = f"Change goal\n{feedback}\n\nPreserve\nAll behavior not mentioned by the player.\n\nUncertainties\nNone inferred in offline mode."
@@ -1583,6 +1626,8 @@ def code_revision_node(state: dict) -> dict:
     try:
         files, tokens, changed, mode = _generate_revision_code(state)
     except Exception as exc:  # noqa: BLE001
+        if state.get("use_real"):
+            _real_model_fallback_or_raise("CodeRevisionAgent", exc, exc)
         files, tokens, changed, mode = state.get("existing_files") or [], 0, [], f"revision failed: {_clip(exc, 160)}"
     return {
         "generated_files": files,
@@ -1761,6 +1806,8 @@ def revision_repair_node(state: dict) -> dict:
     try:
         files, tokens, changed, mode = _generate_revision_code(state, repair_error=state.get("last_error"))
     except Exception as exc:  # noqa: BLE001
+        if state.get("use_real"):
+            _real_model_fallback_or_raise("CodeRevisionRepairAgent", exc, exc)
         files, tokens, changed, mode = state.get("generated_files") or state.get("existing_files") or [], 0, [], f"revision repair failed: {_clip(exc, 160)}"
     return {
         "generated_files": files,
@@ -1863,7 +1910,8 @@ def replan_game_design_node(state: dict) -> dict:
             raw, tokens = llm.chat(sys_prompt, prompts.build_replan_prompt(state.get("game_spec"), state.get("game_design"), state.get("last_error")))
             design = _coerce_design(_parse_json(raw), state.get("game_spec"))
             extra = {"_tokens_delta": tokens}
-        except Exception:
+        except Exception as exc:
+            _real_model_fallback_or_raise("GameDesignAgentReplan", exc, exc)
             design = _simplify_design_3d(state.get("game_design")) if is_3d else _simplify_design(state.get("game_design"))
     else:
         design = _simplify_design_3d(state.get("game_design")) if is_3d else _simplify_design(state.get("game_design"))
@@ -1890,7 +1938,7 @@ def replan_game_design_node(state: dict) -> dict:
         + ["reset repair counters; queued balance planning"],
         **extra,
     }
-    if not is_3d:
+    if not is_3d and settings.REAL_MODEL_FALLBACK_ENABLED:
         out["use_template_code"] = True  # 仅 2D 回退稳定模板；3D 保持模型优先
     return out
 
@@ -2070,3 +2118,12 @@ def next_after_gameplay_repair(state: dict) -> str:
     # patch 路径带着修好的 bundle 回外层门禁复检；重生成路径已清空
     # generated_files，回 code_generation 整包重做。
     return "build_validation" if state.get("generated_files") else "code_generation"
+
+
+def entry_node_router(state: dict) -> str:
+    # 断点续跑入口：pipeline 从 state_json 快照恢复时注入 _resume_node，直接跳到
+    # 失败节点重跑（同一任务行输入不可变，原次 safety_result 已在快照里，安检
+    # 结论仍然有效）；正常任务照旧从 safety_intake 全链路开始。未知节点名一律
+    # 回落全新跑，绝不比旧路径更差。
+    node = state.get("_resume_node")
+    return node if node in STEP_META else "safety_intake"

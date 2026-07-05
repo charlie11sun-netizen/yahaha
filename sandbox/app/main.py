@@ -15,8 +15,6 @@ from playwright.async_api import Browser, Error as PlaywrightError, Page, async_
 
 ORIGIN_HOST = "bundle.sandbox"
 ORIGIN = f"https://{ORIGIN_HOST}"
-MAX_FILE_BYTES = 1_000_000
-MAX_TOTAL_BYTES = 2_500_000
 
 
 class Settings(BaseSettings):
@@ -27,6 +25,8 @@ class Settings(BaseSettings):
     default_timeout_ms: int = 5000
     screenshot_on_failure: bool = False
     chromium_no_sandbox: bool = False
+    max_file_bytes: int = 2_000_000
+    max_total_bytes: int = 5_000_000
 
 
 settings = Settings()
@@ -100,11 +100,11 @@ def _decode_files(files: list[BundleFile]) -> dict[str, bytes]:
             content = base64.b64decode(item.content_b64, validate=True)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=422, detail=f"invalid base64 for {path}") from exc
-        if len(content) > MAX_FILE_BYTES:
-            raise HTTPException(status_code=413, detail=f"{path} exceeds {MAX_FILE_BYTES} bytes")
+        if len(content) > settings.max_file_bytes:
+            raise HTTPException(status_code=413, detail=f"{path} exceeds {settings.max_file_bytes} bytes")
         total += len(content)
-        if total > MAX_TOTAL_BYTES:
-            raise HTTPException(status_code=413, detail=f"bundle exceeds {MAX_TOTAL_BYTES} bytes")
+        if total > settings.max_total_bytes:
+            raise HTTPException(status_code=413, detail=f"bundle exceeds {settings.max_total_bytes} bytes")
         decoded[path] = content
     return decoded
 

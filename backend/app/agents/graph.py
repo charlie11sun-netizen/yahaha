@@ -9,7 +9,7 @@ patch 成功带产物回 build_validation 复检；玩法指标问题调 balance
 from langgraph.graph import END, START, StateGraph
 
 from app.agents import nodes
-from app.agents.state import GenerationState
+from app.agents.state import STEP_META, GenerationState
 from app.agents.tracing import logged
 
 
@@ -43,7 +43,9 @@ def build_graph():
     g.add_node("failed", nodes.failed_node)
     g.add_node("done", nodes.done_node)
 
-    g.add_edge(START, "safety_intake")
+    # 断点续跑：正常任务从 safety_intake 全链路开始；带 _resume_node 的恢复任务
+    # 直接跳到失败节点（快照 = 该节点的输入，见 tracing.begin_step / pipeline）。
+    g.add_conditional_edges(START, nodes.entry_node_router, {name: name for name in STEP_META})
     g.add_conditional_edges("safety_intake", nodes.should_continue_after_safety,
                             {"memory_retrieval": "memory_retrieval",
                              "failed": "failed"})

@@ -56,6 +56,24 @@ def _unavailable(detail: str) -> SandboxResult:
     return _skipped(detail)
 
 
+def _http_error_detail(exc: httpx.HTTPStatusError) -> str:
+    response = exc.response
+    detail = ""
+    try:
+        data = response.json()
+        if isinstance(data, dict):
+            detail = str(data.get("detail") or "")
+    except ValueError:
+        detail = response.text.strip()
+    suffix = f": {detail[:240]}" if detail else ""
+    return f"{response.status_code} {response.reason_phrase}{suffix}"
+
+
+def _request_timeout_seconds(run_timeout_ms: int) -> float:
+    overhead_ms = max(1000, int(settings.SANDBOX_HTTP_TIMEOUT_OVERHEAD_MS))
+    return (run_timeout_ms + overhead_ms) / 1000
+
+
 def run_bundle(
     files: list[dict],
     *,
@@ -72,11 +90,13 @@ def run_bundle(
         response = httpx.post(
             f"{url}/run",
             json=_payload(files, entry, timeout, simulate_input),
-            timeout=(timeout + 1000) / 1000,
+            timeout=_request_timeout_seconds(timeout),
         )
         response.raise_for_status()
         data = response.json()
-    except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as exc:
+    except httpx.HTTPStatusError as exc:
+        return _unavailable(f"sandbox unavailable: {_http_error_detail(exc)}")
+    except (httpx.RequestError, ValueError) as exc:
         return _unavailable(f"sandbox unavailable: {exc}")
 
     return SandboxResult(

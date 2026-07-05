@@ -59,6 +59,7 @@ def embed_texts(texts: list[str]) -> list[list[float]] | None:
             api_key=api_key,
             base_url=base_url,
             timeout=max(1, settings.MEMORY_EMBEDDING_TIMEOUT),
+            default_headers={"User-Agent": "GameWeave/1.0"},
         )
         response = client.embeddings.create(model=model, input=clean)
         ordered = sorted(response.data, key=lambda item: item.index)

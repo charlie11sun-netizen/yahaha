@@ -175,6 +175,7 @@ def test_generate_code_switches_to_phaser_prompt(monkeypatch):
 
 
 def test_generate_code_canvas_default_unchanged(monkeypatch):
+    monkeypatch.setattr(nodes.settings, "PHASER_2D_ENABLED", False)
     monkeypatch.setattr(nodes.templating, "select_template", lambda spec, design: "t")
     monkeypatch.setattr(nodes.templating, "build_config", lambda *a, **kw: {"title": "T"})
     monkeypatch.setattr(nodes.templating, "render_files", lambda *a, **kw: [])

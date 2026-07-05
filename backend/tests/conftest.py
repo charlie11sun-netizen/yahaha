@@ -14,7 +14,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+_TESTS_DIR = Path(__file__).resolve().parent
+_BACKEND_DIR = _TESTS_DIR.parent
+_REPO_ROOT = _BACKEND_DIR.parent
+sys.path.insert(0, str(_REPO_ROOT))
+sys.path.insert(0, str(_BACKEND_DIR))
 
 import app.models  # noqa: E402,F401
 from app.api import deps  # noqa: E402

@@ -37,6 +37,7 @@ import type { AgentLogItem, StepSummary, Task, UploadedAsset } from "@/lib/types
 const DRAFT_KEY = "pf_create_draft_v2";
 const LAST_TASK_KEY = "pf_last_create_task";
 const GAMEPLAY_STEP_KEYS = ["gameplay_qa", "gameplay_repair"] as const;
+const STREAM_TOKEN_RE = /^stream_tokens=(\d+)$/;
 
 type UserStep = { key: string; label: string; backendKeys?: readonly string[]; optional?: boolean };
 
@@ -718,6 +719,7 @@ function ProgressCard({
   const statusTitle = getProgressTitle(task);
   const lastUpdated = formatRelative(task?.updated_at || task?.created_at, now) || "Waiting";
   const elapsed = formatElapsed(task?.created_at, now);
+  const liveTokens = getLiveStreamTokens(task);
 
   return (
     <article className="pf-create-card pf-progress-card">
@@ -753,6 +755,13 @@ function ProgressCard({
           Elapsed {elapsed}
         </span>
       </div>
+
+      {liveTokens !== null && isActiveTask(task?.status) && (
+        <div className="pf-live-token-row" aria-label="Live output tokens">
+          <span>tokens</span>
+          <strong key={liveTokens}>{liveTokens.toLocaleString()}</strong>
+        </div>
+      )}
 
       <div className="pf-step-list">
         {rows.map((step, index) => {
@@ -962,7 +971,7 @@ function designField(task: Task | undefined, label: string) {
 }
 
 function ActivityDrawer({ onClose, task }: { onClose: () => void; task?: Task }) {
-  const logs = task?.logs ?? [];
+  const logs = visibleAgentLogs(task);
   const gameplayStatus = getGameplayQaStatus(task);
   const archetype = designField(task, "玩法原型");
   const mechanic = designField(task, "核心机制");
@@ -1144,9 +1153,9 @@ function mergedStepStatus(summaries: StepSummary[]): StepState {
 
 function displayStepSummary(summaries: StepSummary[]) {
   return (
-    summaries.find((summary) => normalizeStatus(summary.status) === "running")?.summary ||
-    summaries.find((summary) => normalizeStatus(summary.status) === "failed")?.summary ||
-    [...summaries].reverse().find((summary) => summary.summary)?.summary ||
+    cleanStreamLine(summaries.find((summary) => normalizeStatus(summary.status) === "running")?.summary) ||
+    cleanStreamLine(summaries.find((summary) => normalizeStatus(summary.status) === "failed")?.summary) ||
+    cleanStreamLine([...summaries].reverse().find((summary) => summary.summary)?.summary) ||
     null
   );
 }
@@ -1255,7 +1264,7 @@ function getCurrentIssue(task: Task | undefined, activeStep?: StepRow) {
 }
 
 function latestReadableLog(task?: Task) {
-  const logs = task?.logs ?? [];
+  const logs = visibleAgentLogs(task);
   for (let index = logs.length - 1; index >= 0; index -= 1) {
     const line = logs[index].message || logs[index].lines.at(-1);
     if (line) return friendlyMessage(line);
@@ -1264,7 +1273,7 @@ function latestReadableLog(task?: Task) {
 }
 
 function getRecentUpdates(task: Task | undefined, now: number) {
-  const logs = task?.logs ?? [];
+  const logs = visibleAgentLogs(task);
   const updates = logs
     .filter((log) => log.message || log.lines.length)
     .slice(-3)
@@ -1294,6 +1303,7 @@ function getRecentUpdates(task: Task | undefined, now: number) {
 
 function friendlyMessage(message: string) {
   const compact = message.replace(/\s+/g, " ").trim();
+  if (isStreamTokenLine(compact)) return "";
   const lower = compact.toLowerCase();
   if (lower.includes("repair")) return "Repair attempt started";
   if (lower.includes("playtest") || lower.includes("gameplay") || lower.includes("qa")) return "Gameplay playtest updated";
@@ -1305,6 +1315,42 @@ function friendlyMessage(message: string) {
   if (lower.includes("design")) return "Game designed";
   if (lower.includes("code")) return "Files generated";
   return compact.length > 86 ? `${compact.slice(0, 83)}...` : compact || "Task updated";
+}
+
+function isStreamTokenLine(line: string | null | undefined) {
+  return Boolean(line && STREAM_TOKEN_RE.test(line.trim()));
+}
+
+function cleanStreamLine(line: string | null | undefined) {
+  if (!line || isStreamTokenLine(line)) return null;
+  return line;
+}
+
+function parseStreamTokens(line: string | null | undefined) {
+  const match = line?.trim().match(STREAM_TOKEN_RE);
+  return match ? Number(match[1]) : null;
+}
+
+function getLiveStreamTokens(task?: Task) {
+  const logs = task?.logs ?? [];
+  for (let logIndex = logs.length - 1; logIndex >= 0; logIndex -= 1) {
+    const lines = logs[logIndex].lines.length ? logs[logIndex].lines : [logs[logIndex].message];
+    for (let lineIndex = lines.length - 1; lineIndex >= 0; lineIndex -= 1) {
+      const value = parseStreamTokens(lines[lineIndex]);
+      if (value !== null) return value;
+    }
+  }
+  return null;
+}
+
+function visibleAgentLogs(task?: Task): AgentLogItem[] {
+  return (task?.logs ?? [])
+    .map((log) => {
+      const lines = log.lines.filter((line) => !isStreamTokenLine(line));
+      const message = isStreamTokenLine(log.message) ? (lines.at(-1) ?? "") : log.message;
+      return { ...log, message, lines };
+    })
+    .filter((log) => log.message || log.lines.length);
 }
 
 function getGameplayQaStatus(task?: Task): StepState | null {
