@@ -131,16 +131,16 @@ def test_gameplay_qa_canvas_rules_unchanged(monkeypatch):
 
 # ---- QA 沙箱与发布：引擎随包 ----
 
-def test_phaser_player_overlap_lint_flags_reversed_callbacks():
+def test_phaser_player_overlap_lint_flags_group_vs_player_first_arg_callbacks():
     bad = """
 class PlayScene extends Phaser.Scene {
   create(){
     this.physics.add.overlap(this.enemyBullets, this.player, this.enemyBulletHitsPlayer, null, this);
-    this.physics.add.overlap(this.rockets, this.player, (p,r)=>this.explode(r.x,r.y,52,18,true,r), null, this);
+    this.physics.add.overlap(this.rockets, this.player, (r,p)=>this.explode(r.x,r.y,52,18,true,r), null, this);
     this.physics.add.overlap(this.enemies, this.player, this.enemyTouchPlayer, null, this);
   }
-  enemyBulletHitsPlayer(p,b){ this.killObj(b); this.damagePlayer(b.getData('dmg')||8); }
-  enemyTouchPlayer(p,e){ this.damagePlayer(ENEMY[e.getData('type')].touch); p.setVelocity(1,1); }
+  enemyBulletHitsPlayer(b,p){ this.killObj(b); this.damagePlayer(b.getData('dmg')||8); }
+  enemyTouchPlayer(e,p){ this.damagePlayer(ENEMY[e.getData('type')].touch); p.setVelocity(1,1); }
 }
 """
     issues = nodes._phaser_player_overlap_issues(bad)
@@ -155,11 +155,11 @@ def test_phaser_player_overlap_lint_accepts_registration_order():
 class PlayScene extends Phaser.Scene {
   create(){
     this.physics.add.overlap(this.enemyBullets, this.player, this.enemyBulletHitsPlayer, null, this);
-    this.physics.add.overlap(this.rockets, this.player, (rocket,player)=>this.explode(rocket.x,rocket.y,52,18,true,rocket), null, this);
+    this.physics.add.overlap(this.rockets, this.player, (player,rocket)=>this.explode(rocket.x,rocket.y,52,18,true,rocket), null, this);
     this.physics.add.overlap(this.enemies, this.player, this.enemyTouchPlayer, null, this);
   }
-  enemyBulletHitsPlayer(bullet,player){ this.killObj(bullet); this.damagePlayer(bullet.getData('dmg')||8); }
-  enemyTouchPlayer(enemy,player){ this.damagePlayer(ENEMY[enemy.getData('type')].touch); player.setVelocity(1,1); }
+  enemyBulletHitsPlayer(player,bullet){ this.killObj(bullet); this.damagePlayer(bullet.getData('dmg')||8); }
+  enemyTouchPlayer(player,enemy){ this.damagePlayer(ENEMY[enemy.getData('type')].touch); player.setVelocity(1,1); }
 }
 """
     assert nodes._phaser_player_overlap_issues(good) == []

