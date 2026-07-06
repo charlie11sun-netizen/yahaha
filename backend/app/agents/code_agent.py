@@ -34,7 +34,7 @@ Hard sandbox contract (any violation fails validation again):
 
 Method — work in small verified steps:
 1. read_file the files implicated by the error (start with game.js).
-2. Make the smallest edit that fixes the reported errors; keep gameplay and structure intact. Use apply_patch with a unified diff for the exact changed lines only. Never rewrite a whole file.
+2. Make the smallest edit that fixes the reported errors; keep gameplay and structure intact. Edit via apply_patch in V4A format (*** Update File: + @@ locators + context lines, no line numbers), touching only the lines that must change. Never rewrite a whole file.
 3. run_checks after every patch. Repeat until it reports ALL CHECKS PASSED.
 4. Finish with exactly one line: "FIXED: <what you changed>". If genuinely impossible, finish with "GIVEUP: <why>".
 Never rewrite the game from scratch; repair causes, not symptoms."""
@@ -44,117 +44,246 @@ _3D_NOTE = (
     "before game.js, and game.js uses the global THREE. Keep that script tag and never switch to a CDN."
 )
 
-_HUNK_RE = re.compile(
-    r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? "
-    r"\+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@"
+# ---- V4A 补丁解析/应用。改编自 OpenAI GPT-4.1 prompting guide 的 apply_patch 参考
+#      实现（openai-cookbook，MIT）——模型被专门训练过这个格式，解析算法保持与官方
+#      一致（@@ 锚点、上下文匹配的 fuzz 级联、EOF 段）。适配点：只支持 Update（bundle
+#      文件集固定）、目标是内存文件字典而非磁盘、全部文件应用成功才原子提交、保留
+#      原文件的 CRLF。----
+
+_BEGIN_PATCH = "*** Begin Patch"
+_END_PATCH = "*** End Patch"
+_UPDATE_PREFIX = "*** Update File: "
+_EOF_MARK = "*** End of File"
+_SECTION_STOPS = (_END_PATCH, "*** Update File:", "*** Delete File:", "*** Add File:", _EOF_MARK)
+
+_FORMAT_HINT = (
+    "*** Begin Patch\n"
+    "*** Update File: game.js\n"
+    "@@ function update()\n"
+    " context line\n"
+    "-old line\n"
+    "+new line\n"
+    "*** End Patch"
 )
 
 
+class _PatchError(ValueError):
+    """解析/应用失败。消息原样回给模型，所以写成可执行的重试指引。"""
+
+
 @dataclass
-class _PatchHunk:
-    old_start: int
-    old_count: int
-    new_start: int
-    new_count: int
-    lines: list[str]
+class _Chunk:
+    orig_index: int = -1
+    del_lines: list[str] = field(default_factory=list)
+    ins_lines: list[str] = field(default_factory=list)
 
 
 def _strip_patch_fence(patch: str) -> str:
     text = str(patch or "").strip()
-    fenced = re.search(r"```[ \t]*(?:diff|patch)?[^\n]*\n(.*?)```", text, re.S | re.I)
-    if fenced and "@@" in fenced.group(1):
-        return fenced.group(1).strip("\n")
+    if text.startswith("```"):
+        fenced = re.match(r"```[^\n]*\n(.*?)\n?```\s*$", text, re.S)
+        if fenced:
+            return fenced.group(1)
     return text
 
 
-def _declared_patch_paths(patch: str) -> set[str]:
-    paths: set[str] = set()
-    for line in _strip_patch_fence(patch).splitlines():
-        if not line.startswith("+++ "):
-            continue
-        raw = line[4:].strip().split("\t", 1)[0].strip().strip('"')
-        if raw == "/dev/null":
-            continue
-        if raw.startswith(("a/", "b/")):
-            raw = raw[2:]
-        paths.add(raw.replace("\\", "/"))
-    return paths
+def _prepare_patch_lines(patch: str) -> list[str]:
+    text = _strip_patch_fence(patch).replace("\r\n", "\n").replace("\r", "\n").strip("\n")
+    if not text.strip():
+        raise _PatchError("empty patch; expected V4A format:\n" + _FORMAT_HINT)
+    if _UPDATE_PREFIX not in text and re.search(r"^@@ -\d+(?:,\d+)? \+\d+", text, re.M):
+        raise _PatchError("this is a unified diff; use the V4A patch format instead:\n" + _FORMAT_HINT)
+    lines = text.split("\n")
+    if not lines[0].startswith(_BEGIN_PATCH):
+        if any(line.startswith(_UPDATE_PREFIX) for line in lines):
+            lines.insert(0, _BEGIN_PATCH)  # 信封缺失但结构完整：补上，省一个重试回合
+        else:
+            raise _PatchError("not a V4A patch; start with '*** Begin Patch', e.g.:\n" + _FORMAT_HINT)
+    return lines
 
 
-def _parse_unified_patch(patch: str) -> tuple[list[_PatchHunk], str | None]:
-    lines = _strip_patch_fence(patch).splitlines()
-    hunks: list[_PatchHunk] = []
-    i = 0
-    while i < len(lines):
-        match = _HUNK_RE.match(lines[i])
-        if not match:
-            i += 1
-            continue
-        old_count = int(match.group("old_count") or "1")
-        new_count = int(match.group("new_count") or "1")
-        hunk_lines: list[str] = []
-        i += 1
-        while i < len(lines):
-            line = lines[i]
-            if _HUNK_RE.match(line) or line.startswith("diff --git "):
-                break
-            if line.startswith("\\ No newline at end of file"):
-                i += 1
-                continue
-            if not line or line[0] not in " +-":
-                return [], f"invalid hunk line: {line[:80]!r}"
-            hunk_lines.append(line)
-            i += 1
-        hunks.append(
-            _PatchHunk(
-                old_start=int(match.group("old_start")),
-                old_count=old_count,
-                new_start=int(match.group("new_start")),
-                new_count=new_count,
-                lines=hunk_lines,
-            )
-        )
-    if not hunks:
-        return [], "patch contains no unified diff hunks"
-    return hunks, None
+def _resolve_bundle_path(raw: str, files: dict[str, str]) -> str:
+    path = raw.strip().strip('"').replace("\\", "/")
+    if path.startswith("./"):
+        path = path[2:]
+    if path.startswith(("a/", "b/")):
+        path = path[2:]
+    if path not in files and os.path.basename(path) in files:
+        path = os.path.basename(path)  # bundle 是平铺的，容忍模型多写目录前缀
+    if path not in _EDITABLE:
+        raise _PatchError(f"{raw!r} is not editable; only {', '.join(_EDITABLE)} are")
+    if path not in files:
+        raise _PatchError(f"no such file {raw!r}; bundle has: {', '.join(files)}")
+    return path
 
 
-def _find_sequence(lines: list[str], needle: list[str], start: int) -> int:
-    if not needle:
-        return max(0, min(start, len(lines)))
-    if 0 <= start <= len(lines) and lines[start : start + len(needle)] == needle:
-        return start
-    matches = [
-        i
-        for i in range(0, len(lines) - len(needle) + 1)
-        if lines[i : i + len(needle)] == needle
-    ]
-    return matches[0] if len(matches) == 1 else -1
+def _peek_section(lines: list[str], index: int) -> tuple[list[str], list[_Chunk], int, bool]:
+    """读一个 @@ 小节的补丁行，产出（旧文上下文, chunks, 新游标, 是否 EOF 段）。"""
+    old: list[str] = []
+    del_lines: list[str] = []
+    ins_lines: list[str] = []
+    chunks: list[_Chunk] = []
+    mode = "keep"
+    start_index = index
+    while index < len(lines):
+        s = lines[index]
+        if s.startswith(("@@",) + _SECTION_STOPS) or s == "***":
+            break
+        if s.startswith("***"):
+            raise _PatchError(f"invalid patch line: {s[:60]!r}")
+        index += 1
+        last_mode = mode
+        if s == "":
+            s = " "
+        if s[0] == "+":
+            mode = "add"
+        elif s[0] == "-":
+            mode = "delete"
+        elif s[0] == " ":
+            mode = "keep"
+        else:
+            raise _PatchError(f"invalid patch line {s[:60]!r}; every line must start with ' ', '+' or '-'")
+        s = s[1:]
+        if mode == "keep" and last_mode != mode:
+            if ins_lines or del_lines:
+                chunks.append(_Chunk(orig_index=len(old) - len(del_lines), del_lines=del_lines, ins_lines=ins_lines))
+            del_lines, ins_lines = [], []
+        if mode == "delete":
+            del_lines.append(s)
+            old.append(s)
+        elif mode == "add":
+            ins_lines.append(s)
+        else:
+            old.append(s)
+    if ins_lines or del_lines:
+        chunks.append(_Chunk(orig_index=len(old) - len(del_lines), del_lines=del_lines, ins_lines=ins_lines))
+    if index < len(lines) and lines[index] == _EOF_MARK:
+        index += 1
+        return old, chunks, index, True
+    if index == start_index:
+        raise _PatchError("empty '@@' section in patch")
+    return old, chunks, index, False
 
 
-def _apply_unified_hunks(content: str, hunks: list[_PatchHunk]) -> tuple[str | None, str | None]:
-    newline = "\r\n" if "\r\n" in content else "\n"
-    had_final_newline = content.endswith(("\n", "\r"))
-    lines = content.splitlines()
-    offset = 0
-    for hunk in hunks:
-        old_lines = [line[1:] for line in hunk.lines if line and line[0] in " -"]
-        new_lines = [line[1:] for line in hunk.lines if line and line[0] in " +"]
-        hint = max(0, hunk.old_start - 1 + offset)
-        pos = _find_sequence(lines, old_lines, hint)
-        if pos < 0:
-            return None, f"hunk starting at -{hunk.old_start} did not match current file"
-        lines[pos : pos + len(old_lines)] = new_lines
-        offset += len(new_lines) - len(old_lines)
-    output = newline.join(lines)
-    if had_final_newline and output:
-        output += newline
-    return output, None
+def _find_context_core(lines: list[str], context: list[str], start: int) -> tuple[int, int]:
+    if not context:
+        return start, 0
+    for i in range(start, len(lines)):
+        if lines[i : i + len(context)] == context:
+            return i, 0
+    for i in range(start, len(lines)):
+        if [s.rstrip() for s in lines[i : i + len(context)]] == [s.rstrip() for s in context]:
+            return i, 1
+    for i in range(start, len(lines)):
+        if [s.strip() for s in lines[i : i + len(context)]] == [s.strip() for s in context]:
+            return i, 100
+    return -1, 0
 
 
-def _path_matches_declared(path: str, declared: set[str]) -> bool:
-    wanted = path.replace("\\", "/")
-    return any(candidate == wanted or os.path.basename(candidate) == wanted for candidate in declared)
+def _find_context(lines: list[str], context: list[str], start: int, eof: bool) -> tuple[int, int]:
+    if eof:
+        new_index, fuzz = _find_context_core(lines, context, max(0, len(lines) - len(context)))
+        if new_index != -1:
+            return new_index, fuzz
+        new_index, fuzz = _find_context_core(lines, context, start)
+        return new_index, fuzz + 10_000
+    return _find_context_core(lines, context, start)
+
+
+@dataclass
+class _V4AParser:
+    patch_lines: list[str]
+    files: dict[str, str]
+    index: int = 0
+    fuzz: int = 0
+    updates: dict[str, list[_Chunk]] = field(default_factory=dict)
+
+    def _cur(self) -> str:
+        if self.index >= len(self.patch_lines):
+            raise _PatchError("patch ended without '*** End Patch' — if it was cut off, resend the complete patch")
+        return self.patch_lines[self.index]
+
+    def parse(self) -> None:
+        while not self._cur().startswith(_END_PATCH):
+            line = self._cur()
+            if line.startswith(("*** Add File:", "*** Delete File:", "*** Move to:")):
+                raise _PatchError(
+                    "only '*** Update File:' is supported — the bundle always has exactly "
+                    f"{', '.join(_EDITABLE)}; got: {line[:60]!r}"
+                )
+            if not line.startswith(_UPDATE_PREFIX):
+                raise _PatchError(f"unexpected patch line {line[:60]!r}; expected '*** Update File: <path>'")
+            self.index += 1
+            path = _resolve_bundle_path(line[len(_UPDATE_PREFIX):], self.files)
+            if path in self.updates:
+                raise _PatchError(f"duplicate '*** Update File: {path}'; merge the sections into one block")
+            self.updates[path] = self._parse_update_section(path)
+        self.index += 1
+
+    def _parse_update_section(self, path: str) -> list[_Chunk]:
+        file_lines = self.files[path].split("\n")
+        chunks: list[_Chunk] = []
+        index = 0
+        while self.index < len(self.patch_lines) and not self._cur().startswith(_SECTION_STOPS):
+            cur = self._cur()
+            anchor = ""
+            bare_at = False
+            if cur.startswith("@@ "):
+                anchor = cur[3:]
+                self.index += 1
+            elif cur.strip() == "@@":
+                bare_at = True
+                self.index += 1
+            if not (anchor or bare_at or index == 0):
+                raise _PatchError(
+                    f"invalid line in update section: {cur[:60]!r}; each block after the first needs an '@@' locator"
+                )
+            if anchor.strip():
+                index = self._seek_anchor(file_lines, index, anchor)
+            context, section_chunks, end_index, eof = _peek_section(self.patch_lines, self.index)
+            new_index, fuzz = _find_context(file_lines, context, index, eof)
+            if new_index == -1:
+                shown = "\n".join(context[:8])
+                raise _PatchError(
+                    f"context not found in {path}{' at end of file' if eof else ''}:\n{shown}\n"
+                    "-> read_file again, copy the context lines exactly, and keep sections in file order"
+                )
+            self.fuzz += fuzz
+            for chunk in section_chunks:
+                chunk.orig_index += new_index
+                chunks.append(chunk)
+            index = new_index + len(context)
+            self.index = end_index
+        return chunks
+
+    def _seek_anchor(self, file_lines: list[str], index: int, anchor: str) -> int:
+        if anchor not in file_lines[:index]:
+            for i in range(index, len(file_lines)):
+                if file_lines[i] == anchor:
+                    return i + 1
+        if anchor.strip() not in [s.strip() for s in file_lines[:index]]:
+            for i in range(index, len(file_lines)):
+                if file_lines[i].strip() == anchor.strip():
+                    self.fuzz += 1
+                    return i + 1
+        return index  # 锚点找不到时与官方一致：不报错，退回靠上下文匹配
+
+
+def _apply_chunks(text: str, chunks: list[_Chunk], path: str) -> str:
+    orig_lines = text.split("\n")
+    dest: list[str] = []
+    at = 0
+    for chunk in chunks:
+        if chunk.orig_index > len(orig_lines):
+            raise _PatchError(f"{path}: patch refers past end of file")
+        if at > chunk.orig_index:
+            raise _PatchError(f"{path}: overlapping patch sections; merge them and resend")
+        dest.extend(orig_lines[at : chunk.orig_index])
+        at = chunk.orig_index
+        dest.extend(chunk.ins_lines)
+        at += len(chunk.del_lines)
+    dest.extend(orig_lines[at:])
+    return "\n".join(dest)
 
 
 def enabled(state: dict) -> bool:
@@ -207,33 +336,40 @@ class RepairSession:
         self._log(f"agent read {path} ({len(body.encode('utf-8'))}B)")
         return body
 
-    def apply_patch(self, path: str, patch: str) -> str:
-        if path not in _EDITABLE:
-            return f"error: {path!r} is not editable; only {', '.join(_EDITABLE)} are"
-        if path not in self.contents:
-            return f"error: no such file {path!r}; bundle has: {', '.join(self.order)}"
-        declared = _declared_patch_paths(patch)
-        if declared and not all(_path_matches_declared(path, {candidate}) for candidate in declared):
-            return f"error: patch targets {sorted(declared)}, not {path!r}"
-        hunks, parse_error = _parse_unified_patch(patch)
-        if parse_error:
-            return f"error: {parse_error}"
-        content, apply_error = _apply_unified_hunks(self.contents[path], hunks)
-        if apply_error:
-            return f"error: patch did not apply: {apply_error}"
-        if content == self.contents[path]:
+    def apply_patch(self, patch: str) -> str:
+        try:
+            patch_lines = _prepare_patch_lines(patch)
+            normalized = {p: c.replace("\r\n", "\n") for p, c in self.contents.items()}
+            parser = _V4AParser(patch_lines=patch_lines, files=normalized, index=1)
+            parser.parse()
+            staged: dict[str, tuple[str, int, int]] = {}  # path -> (新内容, chunk 数, 字节数)
+            for path, chunks in parser.updates.items():
+                new_text = _apply_chunks(normalized[path], chunks, path)
+                if "\r\n" in self.contents[path]:
+                    new_text = new_text.replace("\n", "\r\n")
+                if new_text == self.contents[path]:
+                    continue
+                size = len(new_text.encode("utf-8"))
+                if size > validation.MAX_FILE_BYTES:
+                    raise _PatchError(
+                        f"{path} exceeds the {validation.MAX_FILE_BYTES // 1000}KB limit after this patch "
+                        f"({size}B); apply a smaller patch"
+                    )
+                staged[path] = (new_text, len(chunks), size)
+        except _PatchError as exc:
+            return f"error: {exc}"
+        if not staged:
             return "error: patch made no changes"
-        size = len(content.encode("utf-8"))
-        if size > validation.MAX_FILE_BYTES:
-            return (
-                f"error: content exceeds {validation.MAX_FILE_BYTES // 1000}KB limit ({size}B); "
-                "apply a smaller patch"
-            )
-        self.contents[path] = content
-        self.changed.add(path)
+        summaries = []
+        for path, (content, chunk_count, size) in staged.items():
+            self.contents[path] = content
+            self.changed.add(path)
+            self._log(f"agent patched {path} ({chunk_count} chunk(s), {size}B)")
+            summaries.append(f"{path} ({chunk_count} chunk(s), {size}B)")
+        if parser.fuzz:
+            self._log(f"agent patch matched with fuzz {parser.fuzz}")
         self.checks_ok = False
-        self._log(f"agent patched {path} ({len(hunks)} hunk(s), {size}B)")
-        return f"patched {path} with {len(hunks)} hunk(s) ({size}B). Now call run_checks to verify."
+        return f"patched {', '.join(summaries)}. Now call run_checks to verify."
 
     def run_checks(self) -> str:
         result = validation.validate_files(self.to_files())
@@ -368,9 +504,17 @@ def run_repair(
         return session.read_file(path)
 
     @function_tool
-    def apply_patch(path: str, patch: str) -> str:
-        """Apply a unified diff patch to one editable bundle file. Use exact context and changed lines only."""
-        return session.apply_patch(path, patch)
+    def apply_patch(patch: str) -> str:
+        """Edit bundle files with a V4A patch (no line numbers):
+*** Begin Patch
+*** Update File: game.js
+@@ function update()
+ unchanged context line
+-removed line
++added line
+*** End Patch
+Keep ~3 context lines around each change; use '@@ <copied source line>' to locate a block when context repeats; several @@ blocks per file and several files per patch are allowed. Patch only the changed lines — never rewrite a file."""
+        return session.apply_patch(patch)
 
     @function_tool
     def run_checks() -> str:

