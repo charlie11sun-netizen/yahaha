@@ -38,6 +38,7 @@ const DRAFT_KEY = "pf_create_draft_v2";
 const LAST_TASK_KEY = "pf_last_create_task";
 const GAMEPLAY_STEP_KEYS = ["gameplay_qa", "gameplay_repair"] as const;
 const STREAM_TOKEN_RE = /^stream_tokens=(\d+)$/;
+const AGENT_WAIT_RE = /^agent (authoring|repairing) waiting on model response: (\d+)s elapsed, (\d+)s since last tool, bundle=(\d+) file\(s\), changed=(\d+), checks=(\w+)$/;
 
 type UserStep = { key: string; label: string; backendKeys?: readonly string[]; optional?: boolean };
 
@@ -73,6 +74,14 @@ const USER_REMIX_STEPS: UserStep[] = [
 
 type StepState = "pending" | "running" | "completed" | "failed";
 type StepRow = { key: string; label: string; status: StepState; summary?: string | null };
+type FileChange = {
+  action: "created" | "modified" | "deleted";
+  added: number;
+  deleted: number;
+  detail?: string;
+  line: string;
+  path: string;
+};
 
 export default function CreatePage() {
   return (
@@ -719,7 +728,10 @@ function ProgressCard({
   const statusTitle = getProgressTitle(task);
   const lastUpdated = formatRelative(task?.updated_at || task?.created_at, now) || "Waiting";
   const elapsed = formatElapsed(task?.created_at, now);
+  const taskActive = isActiveTask(task?.status);
   const liveTokens = getLiveStreamTokens(task);
+  const liveActivity = liveTokens === null && taskActive ? getLiveAgentActivity(task) : "";
+  const liveFileChanges = getLiveFileChanges(task).slice(-4);
 
   return (
     <article className="pf-create-card pf-progress-card">
@@ -756,10 +768,27 @@ function ProgressCard({
         </span>
       </div>
 
-      {liveTokens !== null && isActiveTask(task?.status) && (
+      {liveTokens !== null && taskActive && (
         <div className="pf-live-token-row" aria-label="Live output tokens">
           <span>tokens</span>
           <strong key={liveTokens}>{liveTokens.toLocaleString()}</strong>
+        </div>
+      )}
+
+      {liveActivity && (
+        <div className="pf-live-activity-row" aria-label="Live agent activity">
+          <span>activity</span>
+          <strong>{liveActivity}</strong>
+        </div>
+      )}
+
+      {liveFileChanges.length > 0 && (
+        <div className="pf-file-change-panel" aria-label="Live file changes">
+          <div className="pf-file-change-list">
+            {liveFileChanges.map((change) => (
+              <FileChangeRow change={change} key={`${change.action}-${change.path}-${change.line}`} />
+            ))}
+          </div>
         </div>
       )}
 
@@ -1013,24 +1042,51 @@ function ActivityDrawer({ onClose, task }: { onClose: () => void; task?: Task })
           {logs.length === 0 ? (
             <p className="pf-empty-state">No activity yet.</p>
           ) : (
-            logs.map((log, index) => (
-              <div className={`pf-log-block is-${log.status}`} key={`${log.agent_name}-${index}`}>
-                <div className="pf-log-head">
-                  <span />
-                  <strong>{log.agent_name}</strong>
-                  <em>{log.step}</em>
-                  {log.duration && <time>{log.duration}</time>}
+            logs.map((log, index) => {
+              const changes = getLogFileChanges(log);
+              const changeLines = new Set(changes.map((change) => change.line));
+              const visibleLines = (log.lines.length ? log.lines : [log.message]).filter((line) => !changeLines.has(line));
+              return (
+                <div className={`pf-log-block is-${log.status}`} key={`${log.agent_name}-${index}`}>
+                  <div className="pf-log-head">
+                    <span />
+                    <strong>{log.agent_name}</strong>
+                    <em>{log.step}</em>
+                    {log.duration && <time>{log.duration}</time>}
+                  </div>
+                  {changes.length > 0 && (
+                    <div className="pf-log-file-changes">
+                      {changes.map((change) => (
+                        <FileChangeRow change={change} key={`${change.action}-${change.path}-${change.line}`} />
+                      ))}
+                    </div>
+                  )}
+                  {visibleLines.length > 0 && (
+                    <div className="pf-log-lines">
+                      {visibleLines.map((line, lineIndex) => (
+                        <p key={`${line}-${lineIndex}`}>{line}</p>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <div className="pf-log-lines">
-                  {(log.lines.length ? log.lines : [log.message]).map((line, lineIndex) => (
-                    <p key={`${line}-${lineIndex}`}>{line}</p>
-                  ))}
-                </div>
-              </div>
-            ))
+              );
+            })
           )}
         </section>
       </aside>
+    </div>
+  );
+}
+
+function FileChangeRow({ change }: { change: FileChange }) {
+  return (
+    <div className={`pf-file-change-row is-${change.action}`}>
+      <Edit3 size={14} />
+      <span className="pf-file-change-action">{fileChangeLabel(change.action)}</span>
+      <strong>{change.path}</strong>
+      <b className="pf-file-change-plus">+{change.added}</b>
+      <b className="pf-file-change-minus">-{change.deleted}</b>
+      {change.detail && <em>{change.detail}</em>}
     </div>
   );
 }
@@ -1331,8 +1387,14 @@ function parseStreamTokens(line: string | null | undefined) {
   return match ? Number(match[1]) : null;
 }
 
-function getLiveStreamTokens(task?: Task) {
+function activeTaskLogs(task?: Task) {
   const logs = task?.logs ?? [];
+  const running = logs.filter((log) => log.status === "running");
+  return running.length ? running : logs.slice(-1);
+}
+
+function getLiveStreamTokens(task?: Task) {
+  const logs = activeTaskLogs(task);
   for (let logIndex = logs.length - 1; logIndex >= 0; logIndex -= 1) {
     const lines = logs[logIndex].lines.length ? logs[logIndex].lines : [logs[logIndex].message];
     for (let lineIndex = lines.length - 1; lineIndex >= 0; lineIndex -= 1) {
@@ -1341,6 +1403,55 @@ function getLiveStreamTokens(task?: Task) {
     }
   }
   return null;
+}
+
+function getLiveAgentActivity(task?: Task) {
+  const logs = activeTaskLogs(task)
+    .map((log) => {
+      const lines = log.lines.filter((line) => !isStreamTokenLine(line));
+      const message = isStreamTokenLine(log.message) ? (lines.at(-1) ?? "") : log.message;
+      return { ...log, message, lines };
+    })
+    .filter((log) => log.message || log.lines.length);
+  for (let logIndex = logs.length - 1; logIndex >= 0; logIndex -= 1) {
+    const lines = logs[logIndex].lines.length ? logs[logIndex].lines : [logs[logIndex].message];
+    for (let lineIndex = lines.length - 1; lineIndex >= 0; lineIndex -= 1) {
+      const compact = lines[lineIndex]?.replace(/\s+/g, " ").trim();
+      if (compact) return compact.length > 104 ? `${compact.slice(0, 101)}...` : compact;
+    }
+  }
+  return "";
+}
+
+function parseFileChange(line: string | null | undefined): FileChange | null {
+  const compact = line?.replace(/\s+/g, " ").trim();
+  if (!compact) return null;
+  const match = compact.match(/^agent (wrote|patched|added|deleted) ([^\s]+) \(\+(\d+) -(\d+)(?:,\s*([^)]+))?\)$/);
+  if (!match) return null;
+  const verb = match[1];
+  return {
+    action: verb === "added" ? "created" : verb === "deleted" ? "deleted" : "modified",
+    added: Number(match[3]),
+    deleted: Number(match[4]),
+    detail: match[5],
+    line: compact,
+    path: match[2],
+  };
+}
+
+function getLogFileChanges(log: AgentLogItem): FileChange[] {
+  const lines = log.lines.length ? log.lines : [log.message];
+  return lines.map(parseFileChange).filter((change): change is FileChange => Boolean(change));
+}
+
+function getLiveFileChanges(task?: Task): FileChange[] {
+  return activeTaskLogs(task).flatMap(getLogFileChanges);
+}
+
+function fileChangeLabel(action: FileChange["action"]) {
+  if (action === "created") return "已创建";
+  if (action === "deleted") return "已删除";
+  return "正在编辑";
 }
 
 function visibleAgentLogs(task?: Task): AgentLogItem[] {

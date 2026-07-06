@@ -15,7 +15,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
+from difflib import SequenceMatcher
 from dataclasses import dataclass, field
 
 from app.agents import llm, smoke, tracing, validation
@@ -26,6 +28,28 @@ _PROTECTED_FILES = ("index.html", "style.css", "game.js")  # 入口三件套：�
 # 新建文件：平铺文件名（天然排除 / 与 ..），只允许 .js/.css 模块
 _NEW_PATH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.(?:js|css)$")
 _MAX_ERRORS_SHOWN = 8
+_HEARTBEAT_INTERVAL_SECONDS = 12.0
+
+
+def _line_count(text: str) -> int:
+    return len(text.splitlines()) if text else 0
+
+
+def _line_delta(old: str, new: str) -> tuple[int, int]:
+    old_lines = old.splitlines()
+    new_lines = new.splitlines()
+    added = 0
+    deleted = 0
+    for tag, i1, i2, j1, j2 in SequenceMatcher(a=old_lines, b=new_lines).get_opcodes():
+        if tag in {"replace", "delete"}:
+            deleted += i2 - i1
+        if tag in {"replace", "insert"}:
+            added += j2 - j1
+    return added, deleted
+
+
+def _delta_text(added: int, deleted: int) -> str:
+    return f"+{max(0, added)} -{max(0, deleted)}"
 
 _INSTRUCTIONS = """You repair a small self-contained HTML5 game bundle (index.html, style.css, game.js) that just failed one of GameWeave's quality gates — static build validation or browser gameplay QA (the task input states which).
 
@@ -388,6 +412,7 @@ class RepairSession:
     log_lines: list = field(default_factory=list)
     checks_ok: bool = False
     live_step_id: str | None = None
+    last_tool_at: float = field(default_factory=time.perf_counter)
 
     @classmethod
     def from_files(cls, files: list[dict], *, live_step_id: str | None = None) -> "RepairSession":
@@ -402,7 +427,9 @@ class RepairSession:
     def to_files(self) -> list[dict]:
         return [{"path": p, "content": self.contents[p]} for p in self.order]
 
-    def _log(self, line: str) -> None:
+    def _log(self, line: str, *, heartbeat: bool = False) -> None:
+        if not heartbeat:
+            self.last_tool_at = time.perf_counter()
         self.log_lines.append(line)
         tracing.record_step_log(line, step_id=self.live_step_id)
 
@@ -429,12 +456,16 @@ class RepairSession:
             return f"error: bundle already has {len(self.contents)} files (max {validation.MAX_BUNDLE_FILES})"
         if not created and body == self.contents[name]:
             return f"error: {name} already has exactly this content"
+        added_lines, deleted_lines = _line_delta(self.contents.get(name, ""), body)
         self.contents[name] = body
         if created:
             self.order.append(name)
         self.changed.add(name)
         self.checks_ok = False
-        self._log(f"agent wrote {name} ({size}B{', new file' if created else ''})")
+        self._log(
+            f"agent wrote {name} ({_delta_text(added_lines, deleted_lines)}, "
+            f"{size}B{', new file' if created else ''})"
+        )
         wiring = " Wire it into index.html with a <script src> tag next." if created and name.endswith(".js") else ""
         return f"wrote {name} ({size}B).{wiring} Then run_checks."
 
@@ -457,7 +488,9 @@ class RepairSession:
                         f"{path} exceeds the {validation.MAX_FILE_BYTES // 1000}KB limit after this patch "
                         f"({size}B); apply a smaller patch"
                     )
-                staged[path] = (new_text, len(chunks), size)
+                added_lines = sum(len(chunk.ins_lines) for chunk in chunks)
+                deleted_lines = sum(len(chunk.del_lines) for chunk in chunks)
+                staged[path] = (new_text, len(chunks), size, added_lines, deleted_lines)
             added: dict[str, tuple[str, int]] = {}  # path -> (内容, 字节数)
             for path, content in parser.adds.items():
                 size = len(content.encode("utf-8"))
@@ -478,23 +511,26 @@ class RepairSession:
         if not staged and not added and not parser.deletes:
             return "error: patch made no changes"
         summaries = []
-        for path, (content, chunk_count, size) in staged.items():
+        for path, (content, chunk_count, size, added_lines, deleted_lines) in staged.items():
             self.contents[path] = content
             self.changed.add(path)
-            self._log(f"agent patched {path} ({chunk_count} chunk(s), {size}B)")
-            summaries.append(f"{path} ({chunk_count} chunk(s), {size}B)")
+            delta = _delta_text(added_lines, deleted_lines)
+            self._log(f"agent patched {path} ({delta}, {chunk_count} chunk(s), {size}B)")
+            summaries.append(f"{path} ({delta}, {chunk_count} chunk(s), {size}B)")
         for path in parser.deletes:
+            deleted_lines = _line_count(self.contents[path])
             del self.contents[path]
             self.order.remove(path)
             self.changed.add(path)
-            self._log(f"agent deleted {path}")
+            self._log(f"agent deleted {path} (+0 -{deleted_lines})")
             summaries.append(f"deleted {path}")
         for path, (content, size) in added.items():
             self.contents[path] = content
             self.order.append(path)
             self.changed.add(path)
-            self._log(f"agent added {path} ({size}B)")
-            summaries.append(f"added {path} ({size}B)")
+            added_lines = _line_count(content)
+            self._log(f"agent added {path} (+{added_lines} -0, {size}B)")
+            summaries.append(f"added {path} (+{added_lines} -0, {size}B)")
         if parser.fuzz:
             self._log(f"agent patch matched with fuzz {parser.fuzz}")
         self.checks_ok = False
@@ -646,6 +682,43 @@ def _close_client(client) -> None:
         pass
 
 
+def _heartbeat_status(session: RepairSession) -> str:
+    checks = "ok" if session.checks_ok else "pending"
+    idle = int(time.perf_counter() - session.last_tool_at)
+    return f"{idle}s since last tool, bundle={len(session.contents)} file(s), changed={len(session.changed)}, checks={checks}"
+
+
+def _start_heartbeat(
+    session: RepairSession,
+    *,
+    agent_name: str,
+    interval: float = _HEARTBEAT_INTERVAL_SECONDS,
+) -> tuple[threading.Event, threading.Thread | None]:
+    stop = threading.Event()
+    if not session.live_step_id or interval <= 0:
+        return stop, None
+    verb = "authoring" if "Author" in agent_name else "repairing"
+    started = time.perf_counter()
+
+    def run() -> None:
+        while not stop.wait(interval):
+            elapsed = int(time.perf_counter() - started)
+            session._log(
+                f"agent {verb} waiting on model response: {elapsed}s elapsed, {_heartbeat_status(session)}",
+                heartbeat=True,
+            )
+
+    thread = threading.Thread(target=run, name=f"{agent_name}Heartbeat", daemon=True)
+    thread.start()
+    return stop, thread
+
+
+def _stop_heartbeat(stop: threading.Event, thread: threading.Thread | None) -> None:
+    stop.set()
+    if thread is not None:
+        thread.join(timeout=1.0)
+
+
 def _make_tools(session: RepairSession, *, author: bool = False):
     """工具面固定顺序构建：工具 schema 是每轮请求前缀的一部分，顺序/文案稳定是
     prompt cache 命中的前提。author 额外拿 write_file（整文件写入，修复 agent 不给，
@@ -711,7 +784,7 @@ def _execute_agent(
     进历史后同样被缓存复用）。整跑命中率由 _log_cache_hit 落日志。
     """
     try:
-        from agents import Agent, OpenAIChatCompletionsModel, RunConfig, Runner
+        from agents import Agent, OpenAIResponsesModel, RunConfig, Runner
         from agents.exceptions import AgentsException, MaxTurnsExceeded
         from openai import AsyncOpenAI
     except Exception:  # pragma: no cover —— SDK 未安装
@@ -733,13 +806,14 @@ def _execute_agent(
     agent = Agent(
         name=agent_name,
         instructions=instructions,
-        model=OpenAIChatCompletionsModel(model=model_name, openai_client=client),
+        model=OpenAIResponsesModel(model=model_name, openai_client=client),
         tools=tools,
     )
 
     start = time.perf_counter()
     result = None
     hit_limit = False
+    heartbeat_stop, heartbeat_thread = _start_heartbeat(session, agent_name=agent_name)
     try:
         result = Runner.run_sync(
             agent,
@@ -752,14 +826,14 @@ def _execute_agent(
         hit_limit = True
         note = f"max turns ({turns_limit}) exhausted"
     except AgentsException as exc:
-        _close_client(client)
         session._log(f"agent aborted: {str(exc)[:160]}")
         return None
     except Exception as exc:  # noqa: BLE001 —— 网络/供应商异常，一律回落旧路径
-        _close_client(client)
         session._log(f"agent failed: {str(exc)[:160]}")
         return None
-    _close_client(client)
+    finally:
+        _stop_heartbeat(heartbeat_stop, heartbeat_thread)
+        _close_client(client)
 
     latency_ms = int((time.perf_counter() - start) * 1000)
     tokens = _record(result, model_name, latency_ms)

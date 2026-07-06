@@ -1540,6 +1540,100 @@ img {
   line-height: 1;
 }
 
+.pf-live-activity-row {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  margin-left: 94px;
+  margin-top: 12px;
+  max-width: min(620px, calc(100% - 94px));
+}
+
+.pf-live-activity-row span {
+  color: #64748b;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.pf-live-activity-row strong {
+  color: #334155;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1.35;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pf-file-change-panel {
+  margin-left: 94px;
+  margin-top: 12px;
+  max-width: min(620px, calc(100% - 94px));
+}
+
+.pf-file-change-list,
+.pf-log-file-changes {
+  display: grid;
+  gap: 8px;
+}
+
+.pf-file-change-row {
+  align-items: center;
+  color: #94a3b8;
+  display: flex;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 14px;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pf-file-change-row svg {
+  color: #94a3b8;
+  flex: 0 0 auto;
+}
+
+.pf-file-change-action {
+  color: #94a3b8;
+  flex: 0 0 auto;
+  font-family: "Albert Sans", sans-serif;
+  font-weight: 700;
+}
+
+.pf-file-change-row strong {
+  color: #2383e2;
+  font-weight: 800;
+  letter-spacing: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pf-file-change-row b {
+  flex: 0 0 auto;
+  font-weight: 900;
+}
+
+.pf-file-change-plus {
+  color: #16a34a;
+}
+
+.pf-file-change-minus {
+  color: #dc2626;
+}
+
+.pf-file-change-row em {
+  color: #94a3b8;
+  font-style: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @keyframes pf-token-pop {
   0% { opacity: 0.65; transform: translateY(4px) scale(0.94); }
   55% { opacity: 1; transform: translateY(-2px) scale(1.06); }
@@ -2478,8 +2572,16 @@ img {
   }
 
   .pf-status-pills,
+  .pf-live-token-row,
+  .pf-live-activity-row,
+  .pf-file-change-panel,
   .pf-step-list {
     margin-left: 0;
+  }
+
+  .pf-live-activity-row,
+  .pf-file-change-panel {
+    max-width: 100%;
   }
 
   .pf-leave-note {
