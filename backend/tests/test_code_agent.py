@@ -1,4 +1,6 @@
 """repair 内层 agent：会话工具语义 + 节点接线/回退（全部离线，不触网不依赖 SDK）。"""
+import pytest
+
 from app.agents import code_agent, nodes
 
 
@@ -63,6 +65,21 @@ def test_session_read_patch_checks_roundtrip():
     files = s.to_files()
     assert [f["path"] for f in files] == ["index.html", "style.css", "game.js"]
     assert "fetch" not in files[2]["content"]
+
+
+def test_session_logs_to_live_step(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        code_agent.tracing,
+        "record_step_log",
+        lambda line, *, step_id=None: calls.append((line, step_id)) or True,
+    )
+    s = code_agent.RepairSession.from_files(_files(), live_step_id="step-1")
+
+    s.read_file("game.js")
+
+    assert s.log_lines[0].startswith("agent read game.js")
+    assert calls == [(s.log_lines[0], "step-1")]
 
 
 def test_session_patch_resets_checks_flag():
@@ -542,7 +559,26 @@ def test_generate_code_uses_author_agent(monkeypatch):
     assert any("agent wrote game.js" in line for line in agent_logs)
 
 
-def test_generate_code_author_falls_back_to_oneshot(monkeypatch):
+def test_generate_code_author_failure_stops_when_fallback_disabled(monkeypatch):
+    monkeypatch.setattr(nodes.settings, "REAL_MODEL_FALLBACK_ENABLED", False)
+    monkeypatch.setattr(nodes.settings, "PHASER_2D_ENABLED", False)
+    monkeypatch.setattr(nodes.templating, "select_template", lambda spec, design: "t")
+    monkeypatch.setattr(nodes.templating, "build_config", lambda *a, **kw: {"title": "T"})
+    monkeypatch.setattr(nodes.templating, "render_files", lambda *a, **kw: [])
+    monkeypatch.setattr(nodes.code_agent, "author_enabled", lambda state: True)
+    monkeypatch.setattr(nodes.code_agent, "run_author", lambda files, **kw: None)
+
+    def fail_chat(*args, **kwargs):
+        raise AssertionError("one-shot fallback should not run")
+
+    monkeypatch.setattr(nodes.llm, "chat", fail_chat)
+
+    with pytest.raises(RuntimeError, match="GameCodeAuthor real model failed; fallback disabled"):
+        nodes._generate_code({"use_real": True, "game_spec": {}, "game_design": {}})
+
+
+def test_generate_code_author_can_fall_back_when_enabled(monkeypatch):
+    monkeypatch.setattr(nodes.settings, "REAL_MODEL_FALLBACK_ENABLED", True)
     monkeypatch.setattr(nodes.settings, "PHASER_2D_ENABLED", False)
     monkeypatch.setattr(nodes.templating, "select_template", lambda spec, design: "t")
     monkeypatch.setattr(nodes.templating, "build_config", lambda *a, **kw: {"title": "T"})

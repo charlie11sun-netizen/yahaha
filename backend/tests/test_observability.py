@@ -120,3 +120,38 @@ def test_tracing_tracks_attempts_tokens_and_failure_chain(db_session_factory, mo
     assert second_repair_step.caused_by_step_id == failed_step_id
     db.close()
     clear_context()
+
+
+def test_tracing_records_live_step_logs_without_finish_duplicates(db_session_factory, monkeypatch):
+    from app.agents import tracing
+    from app.core.telemetry import clear_context
+    from app.models import AgentLog, GenerationTask
+
+    db = db_session_factory()
+    user = _user()
+    db.add(user)
+    db.flush()
+    task = GenerationTask(user_id=user.id, idea="make a game")
+    db.add(task)
+    db.commit()
+    task_id = task.id
+    db.close()
+
+    monkeypatch.setattr(tracing, "SessionLocal", db_session_factory)
+
+    step_id = tracing.begin_step(task_id, "GameCodeAgent", "Code Generation")
+    assert tracing.record_step_log("agent wrote game.js (1200B)", step_id=step_id)
+
+    db = db_session_factory()
+    live_lines = [log.line for log in db.query(AgentLog).filter(AgentLog.step_id == step_id).order_by(AgentLog.seq)]
+    assert "agent wrote game.js (1200B)" in live_lines
+    db.close()
+
+    tracing.finish_step(task_id, step_id, ["agent wrote game.js (1200B)", "generated files: game.js (1 file(s))"])
+
+    db = db_session_factory()
+    final_lines = [log.line for log in db.query(AgentLog).filter(AgentLog.step_id == step_id).order_by(AgentLog.seq)]
+    assert final_lines.count("agent wrote game.js (1200B)") == 1
+    assert final_lines[-1] == "generated files: game.js (1 file(s))"
+    db.close()
+    clear_context()

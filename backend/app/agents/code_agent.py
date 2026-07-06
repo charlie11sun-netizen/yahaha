@@ -18,7 +18,7 @@ import re
 import time
 from dataclasses import dataclass, field
 
-from app.agents import llm, smoke, validation
+from app.agents import llm, smoke, tracing, validation
 from app.core.config import settings
 
 _SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
@@ -387,22 +387,24 @@ class RepairSession:
     changed: set = field(default_factory=set)
     log_lines: list = field(default_factory=list)
     checks_ok: bool = False
+    live_step_id: str | None = None
 
     @classmethod
-    def from_files(cls, files: list[dict]) -> "RepairSession":
+    def from_files(cls, files: list[dict], *, live_step_id: str | None = None) -> "RepairSession":
         contents: dict[str, str] = {}
         order: list[str] = []
         for f in files or []:
             path = str(f.get("path"))
             contents[path] = str(f.get("content") or "")
             order.append(path)
-        return cls(contents=contents, order=order)
+        return cls(contents=contents, order=order, live_step_id=live_step_id)
 
     def to_files(self) -> list[dict]:
         return [{"path": p, "content": self.contents[p]} for p in self.order]
 
     def _log(self, line: str) -> None:
         self.log_lines.append(line)
+        tracing.record_step_log(line, step_id=self.live_step_id)
 
     # ---- 工具实现（SDK 包装见 run_repair；保持纯函数便于离线单测）----
     def read_file(self, path: str) -> str:
@@ -787,7 +789,7 @@ def run_repair(
     """跑一轮修复 agent。返回 None 表示 agent 路径不可用/异常（调用方回落旧路径）。"""
     if not files:
         return None
-    session = RepairSession.from_files(files)
+    session = RepairSession.from_files(files, live_step_id=tracing.current_step_id())
     return _execute_agent(
         session,
         agent_name="GameCodeRepair",
@@ -816,7 +818,7 @@ def run_author(
     """
     if not files:
         return None
-    session = RepairSession.from_files(files)
+    session = RepairSession.from_files(files, live_step_id=tracing.current_step_id())
     return _execute_agent(
         session,
         agent_name="GameCodeAuthor",

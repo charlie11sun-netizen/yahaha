@@ -8,10 +8,11 @@ import time
 
 from app.agents.state import STEP_META
 from app.core.config import settings
-from app.core.telemetry import agent_span, bind_context
+from app.core.telemetry import agent_span, bind_context, get_context
 from app.db.session import SessionLocal
 from app.models import AgentLog, AgentStep, GenerationTask
 from app.models.common import StepStatus, TaskStatus, now_utc
+from sqlalchemy import func
 
 
 class TaskCancelledError(Exception):
@@ -113,6 +114,32 @@ def begin_step(task_id: str, agent: str, display: str,
         db.close()
 
 
+def current_step_id() -> str | None:
+    return get_context().get("step_id")
+
+
+def record_step_log(line: str, *, step_id: str | None = None, level: str = "info") -> bool:
+    target_step_id = step_id or current_step_id()
+    if not target_step_id:
+        return False
+    db = SessionLocal()
+    try:
+        seq = (
+            db.query(func.count(AgentLog.id))
+            .filter(AgentLog.step_id == target_step_id)
+            .scalar()
+            or 0
+        )
+        db.add(AgentLog(step_id=target_step_id, seq=int(seq), line=str(line), level=level))
+        db.commit()
+        return True
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        return False
+    finally:
+        db.close()
+
+
 def finish_step(task_id, step_id, logs, tokens=0, repair=None, replan=None, failed=False,
                 spec=None, design=None) -> None:
     db = SessionLocal()
@@ -123,9 +150,15 @@ def finish_step(task_id, step_id, logs, tokens=0, repair=None, replan=None, fail
                 step.status = StepStatus.FAILED if failed else StepStatus.DONE
                 step.tokens = (step.tokens or 0) + int(tokens or 0)
                 step.finished_at = now_utc()
-                base_seq = len(step.logs or [])
-                for i, line in enumerate(logs or []):
-                    db.add(AgentLog(step_id=step_id, seq=base_seq + i, line=str(line)))
+                existing_lines = {log.line for log in (step.logs or [])}
+                next_seq = len(step.logs or [])
+                for line in logs or []:
+                    text = str(line)
+                    if text in existing_lines:
+                        continue
+                    db.add(AgentLog(step_id=step_id, seq=next_seq, line=text))
+                    existing_lines.add(text)
+                    next_seq += 1
         task = db.get(GenerationTask, task_id)
         if task:
             task.tokens_used = (task.tokens_used or 0) + int(tokens or 0)

@@ -30,8 +30,8 @@
     "semantic_hash": ""
   },
   "backend/app/agents/nodes.py": {
-    "mtime": 1783319976.947322,
-    "ast_hash": "28d91ef90b62f25d4defb1a7b24bd5f7",
+    "mtime": 1783326342.9456017,
+    "ast_hash": "ec48342954ce683293e51d83ad01e629",
     "semantic_hash": ""
   },
   "backend/app/agents/pipeline.py": {
@@ -40,13 +40,13 @@
     "semantic_hash": ""
   },
   "backend/app/agents/prompts.py": {
-    "mtime": 1783317396.66963,
+    "mtime": 1783320638.5971863,
     "ast_hash": "f42cb2099b6b53a483c3889c4859b285",
     "semantic_hash": ""
   },
   "backend/app/agents/smoke.py": {
-    "mtime": 1783316980.7864807,
-    "ast_hash": "e143c5dca4e54eb8e94bac2041aa5bba",
+    "mtime": 1783320638.598186,
+    "ast_hash": "17ed5f38aef1239a297cebbe0b1394cc",
     "semantic_hash": ""
   },
   "backend/app/agents/state.py": {
@@ -60,13 +60,13 @@
     "semantic_hash": "e36f58d4eed1cbbb20a6533f74d8b3b2"
   },
   "backend/app/agents/tracing.py": {
-    "mtime": 1783301149.0608613,
-    "ast_hash": "93dd24b6930c9bf69dde1adee6f13eb4",
+    "mtime": 1783327376.5223153,
+    "ast_hash": "adf511770a7b1125dab5e7fd04d5a806",
     "semantic_hash": ""
   },
   "backend/app/agents/validation.py": {
-    "mtime": 1783316958.992438,
-    "ast_hash": "ce7d95d24f3a9612ed131ae3d669d0ce",
+    "mtime": 1783320638.6001992,
+    "ast_hash": "63cb1bc423d31738be8c7bccf53b35da",
     "semantic_hash": ""
   },
   "backend/app/agents/vendor/three.min.js": {
@@ -130,7 +130,7 @@
     "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
   "backend/app/core/config.py": {
-    "mtime": 1783317346.5125775,
+    "mtime": 1783320638.6001992,
     "ast_hash": "228adbed1057f3db01dbfcf0700fc45d",
     "semantic_hash": ""
   },
@@ -255,7 +255,7 @@
     "semantic_hash": "8546b73c4aa45898774c0d1211151a25"
   },
   "backend/app/services/packaging.py": {
-    "mtime": 1783319973.4319637,
+    "mtime": 1783320638.6017761,
     "ast_hash": "0d51c3c579ce1a6c115ac47fb0b48e28",
     "semantic_hash": ""
   },
@@ -400,8 +400,8 @@
     "semantic_hash": "b62db52ac4a3e7839e280677a87d76e4"
   },
   "backend/tests/test_observability.py": {
-    "mtime": 1783301149.0808628,
-    "ast_hash": "e4ffc74f38d5a8bdb34fccb07d472f05",
+    "mtime": 1783327464.8061638,
+    "ast_hash": "63ceb2f3f2aa45676ec39ef1add43435",
     "semantic_hash": ""
   },
   "backend/tests/test_pipeline_semantics.py": {
@@ -420,8 +420,8 @@
     "semantic_hash": ""
   },
   "backend/tests/test_sandbox_enforcement.py": {
-    "mtime": 1783304822.990882,
-    "ast_hash": "672c38619ad2d63028f6c6de32904ee9",
+    "mtime": 1783320638.6048286,
+    "ast_hash": "04db5450166a4de86787b904d6844c28",
     "semantic_hash": ""
   },
   "backend/tests/test_sandbox_runner_integration.py": {
@@ -530,8 +530,8 @@
     "semantic_hash": "3cb56ee3a7a42d964915c81692644cbd"
   },
   "frontend/app/games/[id]/page.tsx": {
-    "mtime": 1783320050.718932,
-    "ast_hash": "89dedd172dc4b797bdca6087f64c9628",
+    "mtime": 1783320638.6058347,
+    "ast_hash": "5dc4373446035ec217b1c796781f9e50",
     "semantic_hash": ""
   },
   "frontend/app/gate/page.tsx": {
@@ -570,8 +570,8 @@
     "semantic_hash": "beee95fc38f908b5cd369a1e5fc106b0"
   },
   "frontend/app/play/[id]/page.tsx": {
-    "mtime": 1783320057.015203,
-    "ast_hash": "bd8e07e4407ef9142b1b22f5d3529f16",
+    "mtime": 1783320638.6088252,
+    "ast_hash": "997447fe19f857ae232262ee19cc7641",
     "semantic_hash": ""
   },
   "frontend/app/privacy/page.tsx": {
@@ -650,7 +650,7 @@
     "semantic_hash": "4d620605f26dc0b251654e96033f657d"
   },
   "frontend/lib/api.ts": {
-    "mtime": 1783320034.6202571,
+    "mtime": 1783320638.609829,
     "ast_hash": "db25a6cd56363c706743764941c9df60",
     "semantic_hash": ""
   },
@@ -675,7 +675,7 @@
     "semantic_hash": "87a1899b744e6a181a84d6667b467861"
   },
   "frontend/lib/types.ts": {
-    "mtime": 1783320029.093365,
+    "mtime": 1783320638.6108267,
     "ast_hash": "75e6d188a32367071a33457c813b669f",
     "semantic_hash": ""
   },
@@ -1055,13 +1055,13 @@
     "semantic_hash": ""
   },
   "backend/app/agents/code_agent.py": {
-    "mtime": 1783317310.3771894,
-    "ast_hash": "67d0570e9b7650766a4b68d12914ec52",
+    "mtime": 1783327445.317247,
+    "ast_hash": "43e120d411a787dc593d81a37d00a6aa",
     "semantic_hash": ""
   },
   "backend/tests/test_code_agent.py": {
-    "mtime": 1783317823.4164715,
-    "ast_hash": "9dbb20436ce127fd1030dab5d738658b",
+    "mtime": 1783327490.8742704,
+    "ast_hash": "c24d0476757cf5fea287ca84665e36cd",
     "semantic_hash": ""
   },
   "AGENTS.md": {
@@ -1085,8 +1085,8 @@
     "semantic_hash": ""
   },
   "backend/tests/test_phaser_runtime.py": {
-    "mtime": 1783317792.0553482,
-    "ast_hash": "f7514eb0cbe69cad6c238c46a5609a93",
+    "mtime": 1783326207.2957246,
+    "ast_hash": "72d4426e1cf2e5e293335edb64cdc593",
     "semantic_hash": ""
   },
   "backend/app/agents/skills/phaser-arcade-physics/SKILL.md": {

@@ -1315,9 +1315,9 @@ def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[d
         runtime = "phaser" if use_phaser else "canvas"
         authored = False
         if repair_error is None and code_agent.author_enabled(state):
-            # 作者模式：从骨架起步，agent 自定文件结构逐文件成稿（每轮一个小 patch，
-            # 绕开单请求超时墙）。不可用/产出过短落回下方单次整包生成；产物照常过
-            # build_validation / gameplay QA 门禁。
+            # Author mode starts from the skeleton and writes through the tool loop.
+            # REAL_MODEL_FALLBACK_ENABLED controls whether author failure may use
+            # the legacy one-shot generation path; disabled stops the task here.
             skeleton = _assemble_bundle({}, cfg.get("title") or "GameWeave Game", runtime=runtime)
             outcome = code_agent.run_author(skeleton, spec=spec, design=design, runtime=runtime)
             author_js = ""
@@ -1333,7 +1333,9 @@ def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[d
                 )
                 authored = True
             else:
-                agent_logs.append("author agent unavailable or output too short; falling back to one-shot generation")
+                detail = "author agent unavailable or output too short"
+                _real_model_fallback_or_raise("GameCodeAuthor", detail)
+                agent_logs.append(f"{detail}; falling back to one-shot generation")
         if not authored:
             try:
                 result = llm.chat(
