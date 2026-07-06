@@ -17,8 +17,9 @@ import os
 import re
 import threading
 import time
-from difflib import SequenceMatcher
+from difflib import SequenceMatcher, unified_diff
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 
 from app.agents import llm, smoke, tracing, validation
 from app.core.config import settings
@@ -27,8 +28,11 @@ _SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
 _PROTECTED_FILES = ("index.html", "style.css", "game.js")  # 入口三件套：可改不可删
 # 新建文件：平铺文件名（天然排除 / 与 ..），只允许 .js/.css 模块
 _NEW_PATH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.(?:js|css)$")
+_SCRIPT_SRC_RE = re.compile(r"<script\b[^>]*\bsrc=[\"']([^\"']+)[\"']", re.I)
 _MAX_ERRORS_SHOWN = 8
 _HEARTBEAT_INTERVAL_SECONDS = 12.0
+_MAX_SEARCH_MATCHES = 24
+_MAX_DIFF_CHARS = 12000
 
 
 def _line_count(text: str) -> int:
@@ -50,6 +54,82 @@ def _line_delta(old: str, new: str) -> tuple[int, int]:
 
 def _delta_text(added: int, deleted: int) -> str:
     return f"+{max(0, added)} -{max(0, deleted)}"
+
+
+def _script_refs(html: str) -> list[str]:
+    refs: list[str] = []
+    for raw in _SCRIPT_SRC_RE.findall(html or ""):
+        path = raw.strip().split("?", 1)[0].split("#", 1)[0].replace("\\", "/")
+        if path.startswith("./"):
+            path = path[2:]
+        if path and "://" not in path:
+            refs.append(path)
+    return refs
+
+
+def _file_kind(path: str) -> str:
+    if path.endswith(".html"):
+        return "html"
+    if path.endswith(".css"):
+        return "css"
+    if path.endswith(".js"):
+        return "script"
+    return "asset"
+
+
+def _bundle_file_rows(contents: dict[str, str], order: list[str]) -> list[dict]:
+    refs = set(_script_refs(contents.get("index.html", "")))
+    rows = []
+    for path in order:
+        body = contents.get(path, "")
+        rows.append(
+            {
+                "path": path,
+                "bytes": len(body.encode("utf-8")),
+                "lines": _line_count(body),
+                "kind": _file_kind(path),
+                "referenced": path in _PROTECTED_FILES or path in refs,
+            }
+        )
+    return rows
+
+
+def _bundle_context_text(files: list[dict]) -> str:
+    contents = {str(f.get("path")): str(f.get("content") or "") for f in files or []}
+    order = [str(f.get("path")) for f in files or [] if f.get("path")]
+    rows = _bundle_file_rows(contents, order)
+    refs = _script_refs(contents.get("index.html", ""))
+    lines = [
+        "Workspace is the generated game bundle only; do not assume access to the GameWeave platform repository.",
+        "Bundle files:",
+    ]
+    lines.extend(
+        f"- {row['path']} ({row['kind']}, {row['bytes']}B, {row['lines']} line(s), "
+        f"{'referenced' if row['referenced'] else 'unreferenced'})"
+        for row in rows
+    )
+    if refs:
+        lines.append("index.html script order: " + " -> ".join(refs))
+    return "\n".join(lines)
+
+
+def _compact_diff(path: str, old: str, new: str) -> tuple[str | None, str]:
+    if old == new:
+        return None, "empty"
+    diff = "".join(
+        unified_diff(
+            old.splitlines(keepends=True),
+            new.splitlines(keepends=True),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+            n=3,
+        )
+    )
+    if not diff:
+        return None, "empty"
+    if len(diff) > _MAX_DIFF_CHARS:
+        return None, "omitted_large"
+    return diff, "unified"
 
 _INSTRUCTIONS = """You repair a small self-contained HTML5 game bundle (index.html, style.css, game.js) that just failed one of GameWeave's quality gates — static build validation or browser gameplay QA (the task input states which).
 
@@ -413,6 +493,8 @@ class RepairSession:
     checks_ok: bool = False
     live_step_id: str | None = None
     last_tool_at: float = field(default_factory=time.perf_counter)
+    context_files: dict[str, dict] = field(default_factory=dict)
+    event_seq: int = 0
 
     @classmethod
     def from_files(cls, files: list[dict], *, live_step_id: str | None = None) -> "RepairSession":
@@ -433,17 +515,129 @@ class RepairSession:
         self.log_lines.append(line)
         tracing.record_step_log(line, step_id=self.live_step_id, payload=event)
 
+    def _next_event_seq(self) -> int:
+        self.event_seq += 1
+        return self.event_seq
+
+    def _event(self, event_type: str, **payload) -> dict:
+        return {"type": event_type, "seq": self._next_event_seq(), **payload}
+
+    def _turn(self, phase: str, message: str, **payload) -> None:
+        self._log(
+            f"agent state: {phase} - {message}",
+            event=self._event("turn_state", phase=phase, message=message, **payload),
+        )
+
+    def _track_file_context(self, path: str, source: str) -> None:
+        now_ms = int(time.time() * 1000)
+        exists = path in self.contents
+        entry = dict(self.context_files.get(path) or {})
+        entry.update(
+            {
+                "path": path,
+                "record_state": "active" if exists else "stale",
+                "record_source": source,
+                "bytes": len(self.contents.get(path, "").encode("utf-8")),
+                "lines": _line_count(self.contents.get(path, "")),
+                "deleted": not exists,
+                "updated_at": now_ms,
+            }
+        )
+        if source == "read_tool":
+            entry["cline_read_date"] = now_ms
+        elif source == "cline_edited":
+            entry["cline_edit_date"] = now_ms
+        self.context_files[path] = entry
+
+    def context_snapshot(self) -> list[dict]:
+        return [self.context_files[path] for path in sorted(self.context_files)]
+
+    def bundle_metadata(self) -> dict:
+        return {
+            "files": _bundle_file_rows(self.contents, self.order),
+            "script_refs": _script_refs(self.contents.get("index.html", "")),
+            "files_in_context": self.context_snapshot(),
+        }
+
     # ---- 工具实现（SDK 包装见 run_repair；保持纯函数便于离线单测）----
+    def list_files(self) -> str:
+        metadata = self.bundle_metadata()
+        rows = metadata["files"]
+        self._log(
+            f"agent listed files ({len(rows)} file(s))",
+            event=self._event(
+                "tool",
+                tool="list_files",
+                cline_tool="listFilesTopLevel",
+                status="done",
+                files=rows,
+                script_refs=metadata["script_refs"],
+                files_in_context=metadata["files_in_context"],
+            ),
+        )
+        lines = []
+        for row in rows:
+            lines.append(
+                f"- {row['path']} ({row['kind']}, {row['bytes']}B, {row['lines']} line(s), "
+                f"{'referenced' if row['referenced'] else 'unreferenced'})"
+            )
+        if metadata["script_refs"]:
+            lines.append("script order: " + " -> ".join(metadata["script_refs"]))
+        return "\n".join(lines) if lines else "bundle is empty"
+
     def read_file(self, path: str) -> str:
         if path not in self.contents:
             return f"error: no such file {path!r}; bundle has: {', '.join(self.order)}"
         body = self.contents[path]
         size = len(body.encode("utf-8"))
+        self._track_file_context(path, "read_tool")
         self._log(
             f"agent read {path} ({size}B)",
-            event={"type": "tool", "tool": "read_file", "path": path, "bytes": size, "status": "done"},
+            event=self._event(
+                "tool",
+                tool="read_file",
+                cline_tool="readFile",
+                path=path,
+                bytes=size,
+                status="done",
+                files_in_context=self.context_snapshot(),
+            ),
         )
         return body
+
+    def search_files(self, query: str, file_pattern: str = "") -> str:
+        needle = str(query or "").strip()
+        if len(needle) < 2:
+            return "error: query must be at least 2 characters"
+        pattern = str(file_pattern or "*").strip() or "*"
+        matches = []
+        lower = needle.lower()
+        for path in self.order:
+            if not fnmatch(path, pattern):
+                continue
+            body = self.contents.get(path, "")
+            for line_no, line in enumerate(body.splitlines(), start=1):
+                if lower in line.lower():
+                    matches.append({"path": path, "line": line_no, "text": line.strip()[:220]})
+                    if len(matches) >= _MAX_SEARCH_MATCHES:
+                        break
+            if len(matches) >= _MAX_SEARCH_MATCHES:
+                break
+        self._log(
+            f"agent searched files for {needle!r} ({len(matches)} match(es))",
+            event=self._event(
+                "tool",
+                tool="search_files",
+                cline_tool="searchFiles",
+                query=needle,
+                file_pattern=pattern,
+                matches=matches,
+                status="done",
+            ),
+        )
+        if not matches:
+            return f"no matches for {needle!r}"
+        return "\n".join(f"{m['path']}:{m['line']}: {m['text']}" for m in matches)
 
     def write_file(self, path: str, content: str) -> str:
         name = str(path or "").strip().strip('"').replace("\\", "/")
@@ -460,27 +654,34 @@ class RepairSession:
             return f"error: bundle already has {len(self.contents)} files (max {validation.MAX_BUNDLE_FILES})"
         if not created and body == self.contents[name]:
             return f"error: {name} already has exactly this content"
-        added_lines, deleted_lines = _line_delta(self.contents.get(name, ""), body)
+        old_body = self.contents.get(name, "")
+        added_lines, deleted_lines = _line_delta(old_body, body)
+        diff, diff_format = _compact_diff(name, old_body, body)
         self.contents[name] = body
         if created:
             self.order.append(name)
         self.changed.add(name)
+        self._track_file_context(name, "cline_edited")
         self.checks_ok = False
         action = "created" if created else "modified"
         detail = f"{size}B{', new file' if created else ''}"
         self._log(
             f"agent wrote {name} ({_delta_text(added_lines, deleted_lines)}, {detail})",
-            event={
-                "type": "file_change",
-                "tool": "write_file",
-                "action": action,
-                "path": name,
-                "added": added_lines,
-                "deleted": deleted_lines,
-                "bytes": size,
-                "detail": detail,
-                "status": "done",
-            },
+            event=self._event(
+                "file_change",
+                tool="write_file",
+                cline_tool="newFileCreated" if created else "editedExistingFile",
+                action=action,
+                path=name,
+                added=added_lines,
+                deleted=deleted_lines,
+                bytes=size,
+                detail=detail,
+                diff=diff,
+                diff_format=diff_format,
+                files_in_context=self.context_snapshot(),
+                status="done",
+            ),
         )
         wiring = " Wire it into index.html with a <script src> tag next." if created and name.endswith(".js") else ""
         return f"wrote {name} ({size}B).{wiring} Then run_checks."
@@ -528,63 +729,83 @@ class RepairSession:
             return "error: patch made no changes"
         summaries = []
         for path, (content, chunk_count, size, added_lines, deleted_lines) in staged.items():
+            old_body = self.contents[path]
+            diff, diff_format = _compact_diff(path, old_body, content)
             self.contents[path] = content
             self.changed.add(path)
+            self._track_file_context(path, "cline_edited")
             delta = _delta_text(added_lines, deleted_lines)
             detail = f"{chunk_count} chunk(s), {size}B"
             self._log(
                 f"agent patched {path} ({delta}, {detail})",
-                event={
-                    "type": "file_change",
-                    "tool": "apply_patch",
-                    "action": "modified",
-                    "path": path,
-                    "added": added_lines,
-                    "deleted": deleted_lines,
-                    "bytes": size,
-                    "chunks": chunk_count,
-                    "detail": detail,
-                    "status": "done",
-                },
+                event=self._event(
+                    "file_change",
+                    tool="apply_patch",
+                    cline_tool="editedExistingFile",
+                    action="modified",
+                    path=path,
+                    added=added_lines,
+                    deleted=deleted_lines,
+                    bytes=size,
+                    chunks=chunk_count,
+                    detail=detail,
+                    diff=diff,
+                    diff_format=diff_format,
+                    files_in_context=self.context_snapshot(),
+                    status="done",
+                ),
             )
             summaries.append(f"{path} ({delta}, {chunk_count} chunk(s), {size}B)")
         for path in parser.deletes:
+            old_body = self.contents[path]
+            diff, diff_format = _compact_diff(path, old_body, "")
             deleted_lines = _line_count(self.contents[path])
             del self.contents[path]
             self.order.remove(path)
             self.changed.add(path)
+            self._track_file_context(path, "cline_edited")
             self._log(
                 f"agent deleted {path} (+0 -{deleted_lines})",
-                event={
-                    "type": "file_change",
-                    "tool": "apply_patch",
-                    "action": "deleted",
-                    "path": path,
-                    "added": 0,
-                    "deleted": deleted_lines,
-                    "status": "done",
-                },
+                event=self._event(
+                    "file_change",
+                    tool="apply_patch",
+                    cline_tool="fileDeleted",
+                    action="deleted",
+                    path=path,
+                    added=0,
+                    deleted=deleted_lines,
+                    diff=diff,
+                    diff_format=diff_format,
+                    files_in_context=self.context_snapshot(),
+                    status="done",
+                ),
             )
             summaries.append(f"deleted {path}")
         for path, (content, size) in added.items():
+            diff, diff_format = _compact_diff(path, "", content)
             self.contents[path] = content
             self.order.append(path)
             self.changed.add(path)
+            self._track_file_context(path, "cline_edited")
             added_lines = _line_count(content)
             detail = f"{size}B"
             self._log(
                 f"agent added {path} (+{added_lines} -0, {detail})",
-                event={
-                    "type": "file_change",
-                    "tool": "apply_patch",
-                    "action": "created",
-                    "path": path,
-                    "added": added_lines,
-                    "deleted": 0,
-                    "bytes": size,
-                    "detail": detail,
-                    "status": "done",
-                },
+                event=self._event(
+                    "file_change",
+                    tool="apply_patch",
+                    cline_tool="newFileCreated",
+                    action="created",
+                    path=path,
+                    added=added_lines,
+                    deleted=0,
+                    bytes=size,
+                    detail=detail,
+                    diff=diff,
+                    diff_format=diff_format,
+                    files_in_context=self.context_snapshot(),
+                    status="done",
+                ),
             )
             summaries.append(f"added {path} (+{added_lines} -0, {size}B)")
         if parser.fuzz:
@@ -602,15 +823,16 @@ class RepairSession:
             + ("OK" if result.get("valid") else f"{len(result.get('errors') or [])} error(s)")
             + " · smoke "
             + ("ok" if ok_smoke else "crashed"),
-            event={
-                "type": "check",
-                "tool": "run_checks",
-                "static_ok": bool(result.get("valid")),
-                "static_errors": len(result.get("errors") or []),
-                "smoke_ok": ok_smoke,
-                "checks_ok": self.checks_ok,
-                "status": "done",
-            },
+            event=self._event(
+                "check",
+                tool="run_checks",
+                static_ok=bool(result.get("valid")),
+                static_errors=len(result.get("errors") or []),
+                smoke_ok=ok_smoke,
+                checks_ok=self.checks_ok,
+                bundle=self.bundle_metadata(),
+                status="done",
+            ),
         )
         static_line = "OK" if result.get("valid") else "; ".join(errors)
         smoke_line = smoke_detail if ok_smoke else f"crashed: {smoke_detail}"
@@ -629,7 +851,7 @@ class RepairSession:
             return f"unknown skill {name!r}; available: {self.list_skills()}"
         self._log(
             f"agent read skill {name}",
-            event={"type": "tool", "tool": "read_skill", "name": name, "status": "done"},
+            event=self._event("tool", tool="read_skill", cline_tool="useSkill", name=name, status="done"),
         )
         with open(path, encoding="utf-8") as fh:
             return fh.read()
@@ -660,7 +882,11 @@ def _build_input(
     listing = "\n".join(
         f"- {f.get('path')} ({len(str(f.get('content') or '').encode('utf-8'))}B)" for f in files
     )
-    parts = [f"{failure_label} failed with:\n{error}", f"Bundle files:\n{listing}"]
+    parts = [
+        f"{failure_label} failed with:\n{error}",
+        f"Bundle files:\n{listing}",
+        f"Bundle workspace context:\n{_bundle_context_text(files)}",
+    ]
     if dimension == "3d":
         parts.append(_3D_NOTE)
     if task_note:
@@ -668,7 +894,7 @@ def _build_input(
     skills = available_skills()
     if skills:
         parts.append("Reference skills available via read_skill: " + ", ".join(skills))
-    parts.append("Begin by reading the offending file(s), then fix with apply_patch and verify with run_checks.")
+    parts.append("Begin by calling list_files, then read or search the offending file(s), fix with apply_patch, and verify with run_checks.")
     return "\n\n".join(parts)
 
 
@@ -683,6 +909,7 @@ def _build_author_input(files: list[dict], spec: dict, design: dict, runtime: st
         f"GameSpec:\n{json.dumps(spec, ensure_ascii=False)}",
         f"GameDesign to implement (entities, mechanics, balance):\n{json.dumps(design, ensure_ascii=False)}",
         f"Skeleton bundle already in place:\n{listing}",
+        f"Bundle workspace context:\n{_bundle_context_text(files)}",
     ]
     if dimension == "3d":
         parts.append(_3D_NOTE)
@@ -698,7 +925,7 @@ def _build_author_input(files: list[dict], spec: dict, design: dict, runtime: st
     if skills:
         parts.append("Reference skills available via read_skill: " + ", ".join(skills))
     parts.append(
-        "Begin now: read index.html, write the core game.js, then grow one system per file with run_checks between steps."
+        "Begin now: call list_files, read index.html, write the core game.js, then grow one system per file with run_checks between steps."
     )
     return "\n\n".join(parts)
 
@@ -724,7 +951,17 @@ def _log_cache_hit(session: RepairSession, result) -> None:
     if u["input"]:
         pct = u["cached"] * 100 // u["input"]
         session._log(
-            f"agent prompt cache: {u['cached']}/{u['input']} input tokens cached ({pct}%) over {u['requests']} request(s)"
+            f"agent prompt cache: {u['cached']}/{u['input']} input tokens cached ({pct}%) over {u['requests']} request(s)",
+            event=session._event(
+                "usage",
+                input_tokens=u["input"],
+                output_tokens=u["output"],
+                total_tokens=u["total"],
+                cached_tokens=u["cached"],
+                requests=u["requests"],
+                cache_percent=pct,
+                status="done",
+            ),
         )
 
 
@@ -776,16 +1013,17 @@ def _start_heartbeat(
             session._log(
                 f"agent {verb} waiting on model response: {elapsed}s elapsed, {_heartbeat_status(session)}",
                 heartbeat=True,
-                event={
-                    "type": "heartbeat",
-                    "phase": verb,
-                    "elapsed_seconds": elapsed,
-                    "idle_seconds": idle,
-                    "file_count": len(session.contents),
-                    "changed_count": len(session.changed),
-                    "checks": checks,
-                    "status": "waiting",
-                },
+                event=session._event(
+                    "heartbeat",
+                    phase=verb,
+                    elapsed_seconds=elapsed,
+                    idle_seconds=idle,
+                    file_count=len(session.contents),
+                    changed_count=len(session.changed),
+                    checks=checks,
+                    files_in_context=session.context_snapshot(),
+                    status="waiting",
+                ),
             )
 
     thread = threading.Thread(target=run, name=f"{agent_name}Heartbeat", daemon=True)
@@ -806,9 +1044,19 @@ def _make_tools(session: RepairSession, *, author: bool = False):
     from agents import function_tool
 
     @function_tool
+    def list_files() -> str:
+        """List the current game bundle files, file sizes, script order, and whether each module is referenced."""
+        return session.list_files()
+
+    @function_tool
     def read_file(path: str) -> str:
         """Read one file from the game bundle. path is a bundle file name, e.g. "game.js"."""
         return session.read_file(path)
+
+    @function_tool
+    def search_files(query: str, file_pattern: str = "") -> str:
+        """Search current game bundle files for a literal text query. Optional file_pattern is a glob like "*.js"."""
+        return session.search_files(query, file_pattern)
 
     @function_tool
     def apply_patch(patch: str) -> str:
@@ -833,7 +1081,11 @@ Keep ~3 context lines around each change; use '@@ <copied source line>' to locat
         """Run GameWeave's static validation plus the V8 smoke test on the current bundle."""
         return session.run_checks()
 
-    tools = [read_file, apply_patch, write_file, run_checks] if author else [read_file, apply_patch, run_checks]
+    tools = (
+        [list_files, read_file, search_files, apply_patch, write_file, run_checks]
+        if author
+        else [list_files, read_file, search_files, apply_patch, run_checks]
+    )
     if available_skills():
 
         @function_tool
@@ -868,6 +1120,7 @@ def _execute_agent(
         from agents.exceptions import AgentsException, MaxTurnsExceeded
         from openai import AsyncOpenAI
     except Exception:  # pragma: no cover —— SDK 未安装
+        session._turn("error", "agent runtime unavailable", source="sdk", status="failed")
         return None
 
     model_name = settings.CODE_AGENT_MODEL or settings.MODEL_NAME
@@ -881,6 +1134,7 @@ def _execute_agent(
             default_headers={"User-Agent": "GameWeave/1.0"},
         )
     except Exception:  # noqa: BLE001 —— 缺 key 等配置问题
+        session._turn("error", "OpenAI client unavailable", source="client", status="failed")
         return None
 
     agent = Agent(
@@ -893,6 +1147,14 @@ def _execute_agent(
     start = time.perf_counter()
     result = None
     hit_limit = False
+    session._turn(
+        "streaming",
+        f"{agent_name} running with {len(tools)} tool(s)",
+        agent=agent_name,
+        tool_count=len(tools),
+        bundle=session.bundle_metadata(),
+        status="running",
+    )
     heartbeat_stop, heartbeat_thread = _start_heartbeat(session, agent_name=agent_name)
     try:
         result = Runner.run_sync(
@@ -907,16 +1169,18 @@ def _execute_agent(
         note = f"max turns ({turns_limit}) exhausted"
     except AgentsException as exc:
         message = str(exc)[:160]
+        session._turn("error", message, source="agent", status="failed")
         session._log(
             f"agent aborted: {message}",
-            event={"type": "error", "source": "agent", "message": message, "status": "failed"},
+            event=session._event("error", source="agent", message=message, status="failed"),
         )
         return None
     except Exception as exc:  # noqa: BLE001 —— 网络/供应商异常，一律回落旧路径
         message = str(exc)[:160]
+        session._turn("error", message, source="model", status="failed")
         session._log(
             f"agent failed: {message}",
-            event={"type": "error", "source": "model", "message": message, "status": "failed"},
+            event=session._event("error", source="model", message=message, status="failed"),
         )
         return None
     finally:
@@ -927,9 +1191,20 @@ def _execute_agent(
     tokens = _record(result, model_name, latency_ms)
     _log_cache_hit(session, result)
     if hit_limit:
+        session._turn("error", note, reason="max_turns", status="stopped")
         session._log(
             f"agent stopped: {note}",
-            event={"type": "notice", "reason": "max_turns", "message": note, "status": "stopped"},
+            event=session._event("notice", reason="max_turns", message=note, status="stopped"),
+        )
+    else:
+        session._turn(
+            "completed",
+            note or f"{agent_name} finished",
+            agent=agent_name,
+            checks_ok=session.checks_ok,
+            changed=sorted(session.changed),
+            bundle=session.bundle_metadata(),
+            status="done",
         )
     return RepairOutcome(
         files=session.to_files(),

@@ -1582,16 +1582,22 @@ img {
 }
 
 .pf-file-change-row {
-  align-items: center;
   color: #94a3b8;
-  display: flex;
+  display: grid;
   font-family: "IBM Plex Mono", monospace;
   font-size: 14px;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pf-file-change-summary {
+  align-items: center;
+  display: flex;
   gap: 8px;
   min-width: 0;
 }
 
-.pf-file-change-row svg {
+.pf-file-change-summary svg {
   color: #94a3b8;
   flex: 0 0 auto;
 }
@@ -1632,6 +1638,34 @@ img {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.pf-file-diff {
+  border-left: 2px solid #dbeafe;
+  margin-left: 22px;
+  padding-left: 10px;
+}
+
+.pf-file-diff summary {
+  color: #2563eb;
+  cursor: pointer;
+  font-family: "Albert Sans", sans-serif;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.pf-file-diff pre {
+  background: #0f172a;
+  border-radius: 8px;
+  color: #dbeafe;
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 8px 0 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px;
+  white-space: pre;
 }
 
 @keyframes pf-token-pop {
@@ -2353,6 +2387,84 @@ img {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.pf-agent-context,
+.pf-agent-context-group,
+.pf-agent-file-list,
+.pf-agent-context-list {
+  display: grid;
+  gap: 8px;
+}
+
+.pf-agent-context-subhead {
+  align-items: center;
+  color: #475569;
+  display: flex;
+  font-size: 12px;
+  font-weight: 800;
+  gap: 6px;
+  text-transform: uppercase;
+}
+
+.pf-agent-file-row,
+.pf-agent-context-row {
+  align-items: center;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  min-width: 0;
+  padding: 8px 10px;
+}
+
+.pf-agent-context-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.pf-agent-context-row.is-deleted {
+  opacity: 0.72;
+}
+
+.pf-agent-file-row strong,
+.pf-agent-context-row strong,
+.pf-agent-script-order strong {
+  color: #0f172a;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pf-agent-file-row span,
+.pf-agent-context-row span,
+.pf-agent-file-row em,
+.pf-agent-context-row em,
+.pf-agent-file-row b,
+.pf-agent-script-order span {
+  color: #64748b;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.pf-agent-file-row b {
+  color: #2383e2;
+}
+
+.pf-agent-script-order {
+  align-items: center;
+  background: #eff6ff;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 8px 10px;
 }
 
 .pf-log-block {

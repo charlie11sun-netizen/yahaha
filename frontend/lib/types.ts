@@ -104,8 +104,24 @@ export type AgentLogEvent =
       bytes?: number;
       chunks?: number;
       detail?: string;
+      diff?: string | null;
+      diff_format?: "unified" | "omitted_large" | "empty" | string;
+      cline_tool?: string;
+      files_in_context?: AgentFileContext[];
       status?: string;
       tool?: string;
+    }
+  | {
+      type: "turn_state";
+      phase: "idle" | "streaming" | "awaiting_approval" | "awaiting_followup" | "completed" | "error" | "resumable" | string;
+      message?: string;
+      status?: string;
+      source?: string;
+      reason?: string;
+      tool_count?: number;
+      bundle?: AgentBundleMetadata;
+      checks_ok?: boolean;
+      changed?: string[];
     }
   | {
       type: "heartbeat";
@@ -115,6 +131,7 @@ export type AgentLogEvent =
       file_count?: number;
       changed_count?: number;
       checks?: string;
+      files_in_context?: AgentFileContext[];
       status?: string;
     }
   | {
@@ -123,15 +140,33 @@ export type AgentLogEvent =
       smoke_ok?: boolean;
       static_errors?: number;
       static_ok?: boolean;
+      bundle?: AgentBundleMetadata;
       status?: string;
       tool?: string;
     }
   | {
       type: "tool";
       tool?: string;
+      cline_tool?: string;
       path?: string;
       name?: string;
       bytes?: number;
+      query?: string;
+      file_pattern?: string;
+      files?: AgentBundleFile[];
+      script_refs?: string[];
+      files_in_context?: AgentFileContext[];
+      matches?: Array<{ path?: string; line?: number; text?: string }>;
+      status?: string;
+    }
+  | {
+      type: "usage";
+      input_tokens?: number;
+      output_tokens?: number;
+      total_tokens?: number;
+      cached_tokens?: number;
+      requests?: number;
+      cache_percent?: number;
       status?: string;
     }
   | {
@@ -147,6 +182,32 @@ export type AgentLogEvent =
       status?: string;
     }
   | Record<string, unknown>;
+
+export interface AgentBundleFile {
+  path: string;
+  bytes?: number;
+  lines?: number;
+  kind?: string;
+  referenced?: boolean;
+}
+
+export interface AgentFileContext {
+  path: string;
+  record_state?: "active" | "stale" | string;
+  record_source?: "read_tool" | "cline_edited" | "file_mentioned" | "user_edited" | string;
+  bytes?: number;
+  lines?: number;
+  deleted?: boolean;
+  updated_at?: number;
+  cline_read_date?: number | null;
+  cline_edit_date?: number | null;
+}
+
+export interface AgentBundleMetadata {
+  files?: AgentBundleFile[];
+  script_refs?: string[];
+  files_in_context?: AgentFileContext[];
+}
 
 export interface AgentLogEntry {
   line: string;

@@ -117,8 +117,31 @@ def test_session_edit_logs_include_line_delta(monkeypatch):
         and payload.get("path") == "game.js"
         and payload.get("added") == 2
         and payload.get("deleted") == 1
+        and payload.get("cline_tool") == "editedExistingFile"
+        and payload.get("diff_format") == "unified"
+        and "files_in_context" in payload
         for _line, payload in calls
     )
+
+
+def test_session_lists_and_searches_bundle_with_structured_events(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        code_agent.tracing,
+        "record_step_log",
+        lambda line, *, step_id=None, payload=None: calls.append((line, payload)) or True,
+    )
+    s = code_agent.RepairSession.from_files(_files(), live_step_id="step-1")
+
+    listed = s.list_files()
+    found = s.search_files("score", "*.js")
+
+    assert "game.js" in listed and "script order: game.js" in listed
+    assert "game.js:1:" in found
+    assert any(payload and payload.get("cline_tool") == "listFilesTopLevel" for _line, payload in calls)
+    search_payload = next(payload for _line, payload in calls if payload and payload.get("tool") == "search_files")
+    assert search_payload["cline_tool"] == "searchFiles"
+    assert search_payload["matches"][0]["path"] == "game.js"
 
 
 def test_agent_heartbeat_logs_bundle_activity(monkeypatch):

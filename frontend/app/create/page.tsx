@@ -32,7 +32,7 @@ import type { ReactNode } from "react";
 import { api, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/lib/toast";
-import type { AgentLogItem, StepSummary, Task, UploadedAsset } from "@/lib/types";
+import type { AgentBundleFile, AgentFileContext, AgentLogItem, StepSummary, Task, UploadedAsset } from "@/lib/types";
 
 const DRAFT_KEY = "pf_create_draft_v2";
 const LAST_TASK_KEY = "pf_last_create_task";
@@ -79,8 +79,15 @@ type FileChange = {
   added: number;
   deleted: number;
   detail?: string;
+  diff?: string | null;
+  diffFormat?: string;
   line: string;
   path: string;
+};
+type AgentContextSummary = {
+  files: AgentBundleFile[];
+  filesInContext: AgentFileContext[];
+  scriptRefs: string[];
 };
 
 export default function CreatePage() {
@@ -1001,6 +1008,7 @@ function designField(task: Task | undefined, label: string) {
 
 function ActivityDrawer({ onClose, task }: { onClose: () => void; task?: Task }) {
   const logs = visibleAgentLogs(task);
+  const agentContext = latestAgentContext(logs);
   const gameplayStatus = getGameplayQaStatus(task);
   const archetype = designField(task, "玩法原型");
   const mechanic = designField(task, "核心机制");
@@ -1038,6 +1046,11 @@ function ActivityDrawer({ onClose, task }: { onClose: () => void; task?: Task })
         </section>
 
         <section className="pf-drawer-section">
+          <h3>Agent context</h3>
+          <AgentContextPanel context={agentContext} />
+        </section>
+
+        <section className="pf-drawer-section">
           <h3>Agent activity</h3>
           {logs.length === 0 ? (
             <p className="pf-empty-state">No activity yet.</p>
@@ -1057,7 +1070,7 @@ function ActivityDrawer({ onClose, task }: { onClose: () => void; task?: Task })
                   {changes.length > 0 && (
                     <div className="pf-log-file-changes">
                       {changes.map((change) => (
-                        <FileChangeRow change={change} key={`${change.action}-${change.path}-${change.line}`} />
+                        <FileChangeRow change={change} key={`${change.action}-${change.path}-${change.line}`} showDiff />
                       ))}
                     </div>
                   )}
@@ -1078,15 +1091,76 @@ function ActivityDrawer({ onClose, task }: { onClose: () => void; task?: Task })
   );
 }
 
-function FileChangeRow({ change }: { change: FileChange }) {
+function AgentContextPanel({ context }: { context: AgentContextSummary }) {
+  if (context.files.length === 0 && context.filesInContext.length === 0) {
+    return <p className="pf-empty-state">No agent context yet.</p>;
+  }
+
+  return (
+    <div className="pf-agent-context">
+      {context.files.length > 0 && (
+        <div className="pf-agent-context-group">
+          <div className="pf-agent-context-subhead">
+            <FileText size={14} />
+            <span>Bundle</span>
+          </div>
+          <div className="pf-agent-file-list">
+            {context.files.map((file) => (
+              <div className="pf-agent-file-row" key={file.path}>
+                <strong>{file.path}</strong>
+                <span>{file.kind || "file"}</span>
+                <em>{file.lines ?? 0} lines</em>
+                <b>{file.referenced ? "referenced" : "unreferenced"}</b>
+              </div>
+            ))}
+          </div>
+          {context.scriptRefs.length > 0 && (
+            <div className="pf-agent-script-order">
+              <span>script order</span>
+              <strong>{context.scriptRefs.join(" -> ")}</strong>
+            </div>
+          )}
+        </div>
+      )}
+
+      {context.filesInContext.length > 0 && (
+        <div className="pf-agent-context-group">
+          <div className="pf-agent-context-subhead">
+            <Edit3 size={14} />
+            <span>Files in context</span>
+          </div>
+          <div className="pf-agent-context-list">
+            {context.filesInContext.map((file) => (
+              <div className={`pf-agent-context-row${file.deleted ? " is-deleted" : ""}`} key={file.path}>
+                <strong>{file.path}</strong>
+                <span>{contextSourceLabel(file.record_source)}</span>
+                <em>{file.record_state || "active"}</em>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FileChangeRow({ change, showDiff = false }: { change: FileChange; showDiff?: boolean }) {
   return (
     <div className={`pf-file-change-row is-${change.action}`}>
-      <Edit3 size={14} />
-      <span className="pf-file-change-action">{fileChangeLabel(change.action)}</span>
-      <strong>{change.path}</strong>
-      <b className="pf-file-change-plus">+{change.added}</b>
-      <b className="pf-file-change-minus">-{change.deleted}</b>
-      {change.detail && <em>{change.detail}</em>}
+      <div className="pf-file-change-summary">
+        <Edit3 size={14} />
+        <span className="pf-file-change-action">{fileChangeLabel(change.action)}</span>
+        <strong>{change.path}</strong>
+        <b className="pf-file-change-plus">+{change.added}</b>
+        <b className="pf-file-change-minus">-{change.deleted}</b>
+        {change.detail && <em>{change.detail}</em>}
+      </div>
+      {showDiff && change.diff && change.diffFormat === "unified" && (
+        <details className="pf-file-diff">
+          <summary>View diff</summary>
+          <pre>{change.diff}</pre>
+        </details>
+      )}
     </div>
   );
 }
@@ -1442,8 +1516,154 @@ function eventString(event: unknown, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
+function eventArray(event: unknown, key: string): unknown[] {
+  if (!event || typeof event !== "object") return [];
+  const value = (event as Record<string, unknown>)[key];
+  return Array.isArray(value) ? value : [];
+}
+
+function eventRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function optionalEventNumber(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function eventStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+}
+
+function bundleFilesFromValue(value: unknown): AgentBundleFile[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): AgentBundleFile[] => {
+    const record = eventRecord(item);
+    const path = typeof record?.path === "string" ? record.path : "";
+    if (!record || !path) return [];
+    return [
+      {
+        bytes: optionalEventNumber(record, "bytes"),
+        kind: typeof record.kind === "string" ? record.kind : undefined,
+        lines: optionalEventNumber(record, "lines"),
+        path,
+        referenced: typeof record.referenced === "boolean" ? record.referenced : undefined,
+      },
+    ];
+  });
+}
+
+function fileContextsFromValue(value: unknown): AgentFileContext[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): AgentFileContext[] => {
+    const record = eventRecord(item);
+    const path = typeof record?.path === "string" ? record.path : "";
+    if (!record || !path) return [];
+    return [
+      {
+        bytes: optionalEventNumber(record, "bytes"),
+        cline_edit_date: optionalEventNumber(record, "cline_edit_date") ?? null,
+        cline_read_date: optionalEventNumber(record, "cline_read_date") ?? null,
+        deleted: typeof record.deleted === "boolean" ? record.deleted : undefined,
+        lines: optionalEventNumber(record, "lines"),
+        path,
+        record_source: typeof record.record_source === "string" ? record.record_source : undefined,
+        record_state: typeof record.record_state === "string" ? record.record_state : undefined,
+        updated_at: optionalEventNumber(record, "updated_at"),
+      },
+    ];
+  });
+}
+
+function latestAgentContext(logs: AgentLogItem[]): AgentContextSummary {
+  let files: AgentBundleFile[] = [];
+  let filesInContext: AgentFileContext[] = [];
+  let scriptRefs: string[] = [];
+
+  logs.forEach((log) => {
+    logEntries(log).forEach((entry) => {
+      const event = eventRecord(entry.event);
+      if (!event) return;
+      const bundle = eventRecord(event.bundle);
+      const bundleFiles = bundleFilesFromValue(bundle?.files);
+      const eventFiles = bundleFilesFromValue(event.files);
+      const bundleContext = fileContextsFromValue(bundle?.files_in_context);
+      const eventContext = fileContextsFromValue(event.files_in_context);
+      const bundleRefs = eventStringArray(bundle?.script_refs);
+      const eventRefs = eventStringArray(event.script_refs);
+
+      if (bundleFiles.length) files = bundleFiles;
+      if (eventFiles.length) files = eventFiles;
+      if (bundleContext.length) filesInContext = bundleContext;
+      if (eventContext.length) filesInContext = eventContext;
+      if (bundleRefs.length) scriptRefs = bundleRefs;
+      if (eventRefs.length) scriptRefs = eventRefs;
+    });
+  });
+
+  return { files, filesInContext, scriptRefs };
+}
+
+function contextSourceLabel(source: string | undefined) {
+  switch (source) {
+    case "read_tool":
+      return "read";
+    case "cline_edited":
+      return "edited";
+    case "user_edited":
+      return "user edited";
+    case "file_mentioned":
+      return "mentioned";
+    default:
+      return source || "tracked";
+  }
+}
+
+function clineToolLabel(tool: string) {
+  switch (tool) {
+    case "readFile":
+      return "Read file";
+    case "searchFiles":
+      return "Searched files";
+    case "listFilesTopLevel":
+    case "listFilesRecursive":
+      return "Listed files";
+    case "editedExistingFile":
+      return "Edited file";
+    case "newFileCreated":
+      return "Created file";
+    case "fileDeleted":
+      return "Deleted file";
+    case "useSkill":
+      return "Read skill";
+    default:
+      return tool.replace(/_/g, " ");
+  }
+}
+
 function activityMessageFromEvent(event: unknown): string {
   const type = eventType(event);
+  if (type === "turn_state") {
+    const phase = eventString(event, "phase");
+    const message = eventString(event, "message");
+    const toolCount = eventNumber(event, "tool_count");
+    if (phase === "streaming" && toolCount) return `Agent running with ${toolCount} tool(s)`;
+    if (phase === "completed") return message || "Agent completed";
+    if (phase === "error") return message || "Agent stopped";
+    return message || (phase ? `Agent ${phase}` : "");
+  }
+  if (type === "usage") {
+    const total = eventNumber(event, "total_tokens");
+    const cached = eventNumber(event, "cached_tokens");
+    const cachePercent = eventNumber(event, "cache_percent");
+    return total ? `Model usage ${total.toLocaleString()} tokens, cache ${cached.toLocaleString()} (${cachePercent}%)` : "";
+  }
+  if (type === "file_change") {
+    const change = fileChangeFromEvent(event, "");
+    if (!change) return "";
+    const label = change.action === "created" ? "Created" : change.action === "deleted" ? "Deleted" : "Edited";
+    return `${label} ${change.path} (+${change.added} -${change.deleted})`;
+  }
   if (type === "heartbeat") {
     const phase = eventString(event, "phase") || "authoring";
     const elapsed = eventNumber(event, "elapsed_seconds");
@@ -1460,8 +1680,14 @@ function activityMessageFromEvent(event: unknown): string {
     return `checks ${checksOk ? "passed" : "pending"}: static ${staticErrors ? `${staticErrors} error(s)` : "OK"}, smoke ${smokeOk ? "ok" : "pending"}`;
   }
   if (type === "tool") {
-    const tool = eventString(event, "tool") || "tool";
+    const clineTool = eventString(event, "cline_tool");
+    const tool = clineTool ? clineToolLabel(clineTool) : eventString(event, "tool") || "tool";
     const path = eventString(event, "path") || eventString(event, "name");
+    const query = eventString(event, "query");
+    const matchCount = eventArray(event, "matches").length;
+    const fileCount = eventArray(event, "files").length;
+    if (query) return `${tool}: "${query}"${matchCount ? ` (${matchCount} match(es))` : ""}`;
+    if (fileCount) return `${tool}: ${fileCount} file(s)`;
     return path ? `${tool} ${path}` : tool;
   }
   if (type === "error") return eventString(event, "message") || "Agent error";
@@ -1479,6 +1705,8 @@ function fileChangeFromEvent(event: unknown, line: string): FileChange | null {
     added: eventNumber(event, "added"),
     deleted: eventNumber(event, "deleted"),
     detail: eventString(event, "detail") || undefined,
+    diff: eventString(event, "diff") || null,
+    diffFormat: eventString(event, "diff_format") || undefined,
     line,
     path,
   };
