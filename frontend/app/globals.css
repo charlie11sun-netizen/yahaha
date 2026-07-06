@@ -4637,6 +4637,31 @@ img {
   overflow-wrap: anywhere;
 }
 
+/* 作者模式产出的 bundle 文件结构（数据来自 manifest.files，文件数由 agent 决定） */
+.pf-detail-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.pf-detail-files span {
+  background: #eef2fd;
+  border: 1px solid #dbe3f8;
+  border-radius: 999px;
+  color: #3d4a6b;
+  display: inline-flex;
+  font-size: 11px;
+  margin-top: 0;
+  padding: 3px 10px;
+}
+
+.pf-detail-files span.is-entry {
+  background: #101844;
+  border-color: #101844;
+  color: #ffffff;
+}
+
 .pf-detail-prompt p {
   color: #53607b;
   font-size: 13.5px;

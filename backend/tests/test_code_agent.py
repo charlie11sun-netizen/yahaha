@@ -76,7 +76,7 @@ def test_session_patch_resets_checks_flag():
 
 def test_session_rejects_unknown_path_and_oversize():
     s = code_agent.RepairSession.from_files(_files())
-    assert "not editable" in s.apply_patch(_patch("x", "y", path="evil.js"))
+    assert "no such file" in s.apply_patch(_patch("x", "y", path="evil.js"))
     assert "no such file" in s.read_file("nope.js")
     big = "x" * (code_agent.validation.MAX_FILE_BYTES + 1)
     assert "exceeds" in s.apply_patch(
@@ -94,9 +94,9 @@ def test_session_rejects_invalid_patch_inputs():
     assert "unified diff" in s.apply_patch(unified)
     # 上下文与当前文件不符
     assert "context not found" in s.apply_patch(_patch("var missing = true;", "var ok = true;"))
-    # bundle 文件集固定，Add/Delete 不支持
-    add = "*** Begin Patch\n*** Add File: new.js\n+var x = 1;\n*** End Patch"
-    assert "Update File" in s.apply_patch(add)
+    # Move 不支持；Add/Delete 的新契约见 test_session_add_delete_files
+    move = "*** Begin Patch\n*** Move to: main.js\n*** End Patch"
+    assert "not supported" in s.apply_patch(move)
     # 截断的补丁（缺 *** End Patch）要求重发而不是半套用
     truncated = (
         "*** Begin Patch\n*** Update File: game.js\n"
@@ -223,7 +223,7 @@ def test_repair_node_falls_back_when_agent_unavailable(monkeypatch):
 
     def fake_generate(state, repair_error=None):
         seen["error"] = repair_error
-        return _files(), 7, "template"
+        return _files(), 7, "template", []
 
     monkeypatch.setattr(nodes, "_generate_code", fake_generate)
     out = nodes.repair_code_node(
@@ -240,7 +240,7 @@ def test_repair_node_fallback_keeps_agent_tokens(monkeypatch):
     monkeypatch.setattr(
         code_agent, "run_repair", lambda files, **kw: _outcome(checks_ok=False, note="GIVEUP: cannot fix")
     )
-    monkeypatch.setattr(nodes, "_generate_code", lambda state, repair_error=None: (_files(), 10, "template"))
+    monkeypatch.setattr(nodes, "_generate_code", lambda state, repair_error=None: (_files(), 10, "template", []))
     out = nodes.repair_code_node(
         {"repair_attempts": 0, "last_error": "boom", "generated_files": _files(), "use_real": True}
     )
@@ -250,7 +250,7 @@ def test_repair_node_fallback_keeps_agent_tokens(monkeypatch):
 
 
 def test_repair_node_legacy_path_when_disabled(monkeypatch):
-    monkeypatch.setattr(nodes, "_generate_code", lambda state, repair_error=None: (_files(), 5, "template"))
+    monkeypatch.setattr(nodes, "_generate_code", lambda state, repair_error=None: (_files(), 5, "template", []))
     called = {"agent": False}
     monkeypatch.setattr(code_agent, "run_repair", lambda *a, **kw: called.__setitem__("agent", True))
     out = nodes.repair_code_node({"repair_attempts": 0, "last_error": "x", "generated_files": _files()})
@@ -416,3 +416,166 @@ def test_gameplay_repair_legacy_path_when_disabled(monkeypatch):
     assert out["gameplay_repair_attempts"] == 2
     # 开关没开导致的回落必须留痕，不能静默
     assert any("code agent disabled" in line for line in out["_logs"])
+
+
+# ---- 作者模式：Add/Delete/write_file 与多文件 bundle 的契约 ----
+
+
+def test_session_add_delete_files():
+    s = code_agent.RepairSession.from_files(_files())
+    add = (
+        "*** Begin Patch\n"
+        "*** Add File: shop.js\n"
+        "+var shopOpen = false;\n"
+        "+function toggleShop(){ shopOpen = !shopOpen; }\n"
+        "*** End Patch"
+    )
+    out = s.apply_patch(add)
+    assert "added shop.js" in out
+    assert s.read_file("shop.js").startswith("var shopOpen")
+    assert "shop.js" in s.changed and s.order[-1] == "shop.js"
+    # 平铺路径 + 扩展名白名单：路径穿越与额外 html 都拒绝
+    assert "invalid new file path" in s.apply_patch(
+        "*** Begin Patch\n*** Add File: ../evil.js\n+var x = 1;\n*** End Patch"
+    )
+    assert "invalid new file path" in s.apply_patch(
+        "*** Begin Patch\n*** Add File: page.html\n+<html></html>\n*** End Patch"
+    )
+    # 已存在的文件必须走 Update
+    assert "already exists" in s.apply_patch(
+        "*** Begin Patch\n*** Add File: shop.js\n+var x = 1;\n*** End Patch"
+    )
+    # 三件套不可删；模块可删
+    assert "cannot delete" in s.apply_patch("*** Begin Patch\n*** Delete File: game.js\n*** End Patch")
+    assert "deleted shop.js" in s.apply_patch("*** Begin Patch\n*** Delete File: shop.js\n*** End Patch")
+    assert "shop.js" not in s.order
+
+
+def test_session_add_respects_file_count_cap(monkeypatch):
+    monkeypatch.setattr(code_agent.validation, "MAX_BUNDLE_FILES", 4)
+    s = code_agent.RepairSession.from_files(_files())
+    assert "added a.js" in s.apply_patch("*** Begin Patch\n*** Add File: a.js\n+var a = 1;\n*** End Patch")
+    assert "max 4" in s.apply_patch("*** Begin Patch\n*** Add File: b.js\n+var b = 1;\n*** End Patch")
+
+
+def test_session_write_file_creates_and_replaces():
+    s = code_agent.RepairSession.from_files(_files())
+    out = s.write_file("hud.js", "var hud = 1;")
+    assert "wrote hud.js" in out and "Wire it into index.html" in out
+    assert s.order[-1] == "hud.js" and "hud.js" in s.changed
+    # 整文件替换已有文件（作者模式写 game.js 核心用）
+    assert "wrote game.js" in s.write_file("game.js", "var score = 1;")
+    assert s.read_file("game.js") == "var score = 1;"
+    # 路径与体积约束
+    assert "invalid new file path" in s.write_file("../x.js", "var x = 1;")
+    assert "invalid new file path" in s.write_file("sub/dir.js", "var x = 1;")
+    big = "x" * (code_agent.validation.MAX_FILE_BYTES + 1)
+    assert "over the" in s.write_file("big.js", big)
+
+
+def test_run_checks_accepts_referenced_module_bundle():
+    files = [
+        {
+            "path": "index.html",
+            "content": '<html><head></head><body><canvas id="stage"></canvas>'
+            '<script src="helpers.js"></script><script src="game.js"></script></body></html>',
+        },
+        {"path": "style.css", "content": "canvas{display:block}"},
+        {"path": "helpers.js", "content": "var HELPER = { boost: 2 };"},
+        {"path": "game.js", "content": "var score = HELPER.boost;"},
+    ]
+    s = code_agent.RepairSession.from_files(files)
+    assert "ALL CHECKS PASSED" in s.run_checks()
+
+
+def test_run_checks_flags_unreferenced_module():
+    files = _files() + [{"path": "shop.js", "content": "var shop = 1;"}]
+    s = code_agent.RepairSession.from_files(files)
+    # _files() 的 game.js 带 fetch()，先修掉再看引用错误更聚焦——直接断言引用错误在输出里即可
+    out = s.run_checks()
+    assert "shop.js is not referenced" in out
+
+
+def test_author_enabled_requires_flag_and_real_model(monkeypatch):
+    monkeypatch.setattr(code_agent.settings, "CODE_AGENT_AUTHOR_ENABLED", True)
+    assert code_agent.author_enabled({"use_real": True})
+    assert not code_agent.author_enabled({"use_real": False})
+    monkeypatch.setattr(code_agent.settings, "CODE_AGENT_AUTHOR_ENABLED", False)
+    assert not code_agent.author_enabled({"use_real": True})
+
+
+def test_run_author_returns_none_for_empty_bundle():
+    assert code_agent.run_author([], spec={}, design={}) is None
+
+
+def test_author_input_carries_spec_design_and_runtime():
+    files = [{"path": "index.html", "content": "<html></html>"}]
+    text = code_agent._build_author_input(files, {"title": "T"}, {"mode": "waves"}, "phaser", "2d")
+    assert '"title": "T"' in text and '"mode": "waves"' in text
+    assert "Phaser" in text and "index.html (13B)" in text
+
+
+def test_generate_code_uses_author_agent(monkeypatch):
+    monkeypatch.setattr(nodes.templating, "select_template", lambda spec, design: "t")
+    monkeypatch.setattr(nodes.templating, "build_config", lambda *a, **kw: {"title": "T"})
+    monkeypatch.setattr(nodes.templating, "render_files", lambda *a, **kw: [])
+    monkeypatch.setattr(nodes.code_agent, "author_enabled", lambda state: True)
+    outcome = code_agent.RepairOutcome(
+        files=[
+            {"path": "index.html", "content": '<script src="game.js"></script><script src="shop.js"></script>'},
+            {"path": "style.css", "content": "canvas{}"},
+            {"path": "game.js", "content": "var score = 0;" * 40},
+            {"path": "shop.js", "content": "var shop = [];"},
+        ],
+        changed=["game.js", "shop.js"],
+        tokens=99,
+        logs=["agent wrote game.js (560B, new file)"],
+        note="DONE: core + shop",
+        checks_ok=True,
+        turns=6,
+    )
+    monkeypatch.setattr(nodes.code_agent, "run_author", lambda files, **kw: outcome)
+    files, tokens, mode, agent_logs = nodes._generate_code({"use_real": True, "game_spec": {}, "game_design": {}})
+    assert tokens == 99
+    assert mode.startswith("agent author (4 file(s), 6 turn(s)")
+    assert any(f["path"] == "shop.js" for f in files)
+    assert any("agent wrote game.js" in line for line in agent_logs)
+
+
+def test_generate_code_author_falls_back_to_oneshot(monkeypatch):
+    monkeypatch.setattr(nodes.settings, "PHASER_2D_ENABLED", False)
+    monkeypatch.setattr(nodes.templating, "select_template", lambda spec, design: "t")
+    monkeypatch.setattr(nodes.templating, "build_config", lambda *a, **kw: {"title": "T"})
+    monkeypatch.setattr(nodes.templating, "render_files", lambda *a, **kw: [])
+    monkeypatch.setattr(nodes.code_agent, "author_enabled", lambda state: True)
+    monkeypatch.setattr(nodes.code_agent, "run_author", lambda files, **kw: None)
+    monkeypatch.setattr(
+        nodes.llm,
+        "chat",
+        lambda *a, **kw: ("```html\n\n```\n```css\nc{}\n```\n```js\n" + "var x=1;" * 80 + "\n```", 7),
+    )
+    files, tokens, mode, agent_logs = nodes._generate_code({"use_real": True, "game_spec": {}, "game_design": {}})
+    assert mode.startswith("model (")
+    assert any("falling back to one-shot" in line for line in agent_logs)
+
+
+def test_generate_code_repair_path_skips_author(monkeypatch):
+    monkeypatch.setattr(nodes.settings, "PHASER_2D_ENABLED", False)
+    monkeypatch.setattr(nodes.templating, "select_template", lambda spec, design: "t")
+    monkeypatch.setattr(nodes.templating, "build_config", lambda *a, **kw: {"title": "T"})
+    monkeypatch.setattr(nodes.templating, "render_files", lambda *a, **kw: [])
+    monkeypatch.setattr(nodes.code_agent, "author_enabled", lambda state: True)
+    called = {"author": False}
+    monkeypatch.setattr(
+        nodes.code_agent, "run_author", lambda files, **kw: called.__setitem__("author", True)
+    )
+    monkeypatch.setattr(
+        nodes.llm,
+        "chat",
+        lambda *a, **kw: ("```html\n\n```\n```css\nc{}\n```\n```js\n" + "var x=1;" * 80 + "\n```", 7),
+    )
+    files, tokens, mode, agent_logs = nodes._generate_code(
+        {"use_real": True, "game_spec": {}, "game_design": {}}, repair_error="boom"
+    )
+    assert not called["author"]  # 修复重生成不重跑作者循环
+    assert mode.startswith("model (")

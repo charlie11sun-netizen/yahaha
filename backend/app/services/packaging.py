@@ -18,6 +18,21 @@ _CONTENT_TYPE = {
     "three.min.js": "application/javascript; charset=utf-8",
     "phaser.min.js": "application/javascript; charset=utf-8",
 }
+# 作者模式的 bundle 可以带 agent 自定名字的模块（shop.js/hud.css 等）：MIME 必须
+# 按扩展名兜底——text/plain 的 <script> 会被带 nosniff 的浏览器/CDN 拒绝执行。
+_EXT_CONTENT_TYPE = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".json": "application/json",
+}
+
+
+def _content_type_for(path: str, default: str = "text/plain; charset=utf-8") -> str:
+    name = str(path or "")
+    if name in _CONTENT_TYPE:
+        return _CONTENT_TYPE[name]
+    return _EXT_CONTENT_TYPE.get(os.path.splitext(name)[1].lower(), default)
 
 # iframe 的 sandbox 属性并不拦网络请求；manifest 承诺的 permissions.network=false
 # 靠这里注入的 CSP 在浏览器层强制：connect-src 'none' 掐断 fetch/XHR/WebSocket/
@@ -123,7 +138,7 @@ def write_bundle(
     # (e.g. three.min.js for 3D games). Uploaded next to index.html so the
     # sandboxed iframe resolves them against its own remote URL.
     for name, data in (extra_assets or {}).items():
-        s3.put_object(f"{prefix}/{name}", data, _CONTENT_TYPE.get(name, "application/octet-stream"))
+        s3.put_object(f"{prefix}/{name}", data, _content_type_for(name, default="application/octet-stream"))
         assets.append(name)
 
     manifest = {
@@ -183,7 +198,7 @@ def publish_generated(state: dict) -> tuple[str, str, str]:
         for f in files:
             content = inject_csp(f["content"]) if f["path"] == "index.html" else f["content"]
             key = f"{prefix}/{f['path']}"
-            s3.put_object(key, content, _CONTENT_TYPE.get(f["path"], "text/plain; charset=utf-8"))
+            s3.put_object(key, content, _content_type_for(f["path"]))
             total_bytes += len(content.encode("utf-8"))
             uploaded.append({
                 "path": f["path"], "url": s3.public_url(key),
@@ -288,7 +303,7 @@ def publish_revision(state: dict) -> tuple[str, str, str, str]:
                 content = inject_csp(content)
             key = f"{prefix}/{path}"
             encoded = content.encode("utf-8")
-            s3.put_object(key, encoded, _CONTENT_TYPE.get(path, "text/plain; charset=utf-8"))
+            s3.put_object(key, encoded, _content_type_for(path))
             size_bytes += len(encoded)
             uploaded.append({
                 "path": path,
@@ -430,7 +445,7 @@ def publish_remix(state: dict) -> tuple[str, str, str]:
                 content = inject_csp(content)
             encoded = content.encode("utf-8")
             key = f"{prefix}/{path}"
-            s3.put_object(key, encoded, _CONTENT_TYPE.get(path, "text/plain; charset=utf-8"))
+            s3.put_object(key, encoded, _content_type_for(path))
             size_bytes += len(encoded)
             uploaded.append({
                 "path": path,

@@ -237,7 +237,7 @@ def test_generate_code_switches_to_phaser_prompt(monkeypatch):
         return (f"```html\n\n```\n```css\ncanvas{{}}\n```\n```js\n{js}\n```", 42)
 
     monkeypatch.setattr(nodes.llm, "chat", fake_chat)
-    files, tokens, mode = nodes._generate_code({"use_real": True, "game_spec": {}, "game_design": {}})
+    files, tokens, mode, _agent_logs = nodes._generate_code({"use_real": True, "game_spec": {}, "game_design": {}})
     assert seen["system"] is prompts.CODE_SYSTEM_PROMPT_PHASER
     assert mode.startswith("model (phaser")
     index = next(f["content"] for f in files if f["path"] == "index.html")
@@ -256,7 +256,7 @@ def test_generate_code_canvas_default_unchanged(monkeypatch):
         return ("```html\n\n```\n```css\nc{}\n```\n```js\n" + "var x=1;" * 80 + "\n```", 7)
 
     monkeypatch.setattr(nodes.llm, "chat", fake_chat)
-    files, tokens, mode = nodes._generate_code({"use_real": True, "game_spec": {}, "game_design": {}})
+    files, tokens, mode, _agent_logs = nodes._generate_code({"use_real": True, "game_spec": {}, "game_design": {}})
     assert seen["system"] is prompts.CODE_SYSTEM_PROMPT
     assert mode in {"model (full bundle)", "model (game.js)"}
     index = next(f["content"] for f in files if f["path"] == "index.html")

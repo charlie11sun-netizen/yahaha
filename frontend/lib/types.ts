@@ -51,6 +51,23 @@ export interface GameVersion {
   is_current: boolean;
 }
 
+export interface GameManifestFile {
+  path: string;
+  url?: string;
+  sha256?: string;
+}
+
+export interface GameManifest {
+  entry?: string;
+  entry_url?: string;
+  runtime?: string;
+  sha256?: string;
+  title?: string;
+  files?: GameManifestFile[];
+  _source?: string;
+  _url?: string;
+}
+
 export interface Step {
   seq: number;
   agent: string;

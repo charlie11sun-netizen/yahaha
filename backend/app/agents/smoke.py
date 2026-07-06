@@ -141,3 +141,25 @@ def run_smoke(js: str, timeout_ms: int = 6000) -> tuple[bool, str]:
     if not _AVAILABLE:
         return True, "skipped (engine unavailable)"
     return _run_in_child(_PRELUDE + _WRAP_HEAD + js + _WRAP_TAIL, timeout_ms)
+
+
+def run_smoke_files(files: list[dict], timeout_ms: int = 6000) -> tuple[bool, str]:
+    """Smoke a whole bundle: concatenate its .js files in index.html <script> order.
+
+    Classic script tags share one global scope, so a single eval of the
+    concatenated sources preserves cross-file top-level references. Engine
+    files (three/phaser) are absent from the bundle and stubbed by the prelude;
+    unreferenced .js files still run last (the missing reference itself is
+    reported by static validation, not here).
+    """
+    from app.agents import validation  # 延迟导入，保持本模块无启动依赖
+
+    contents = {str(f.get("path") or ""): str(f.get("content") or "") for f in files or []}
+    order = [src for src in validation.script_srcs(contents.get("index.html", "")) if src in contents]
+    for path in contents:
+        if path.endswith(".js") and path not in order:
+            order.append(path)
+    sources = [contents[path] for path in order if contents[path]]
+    if not sources:
+        return True, "empty"
+    return run_smoke("\n;\n".join(sources), timeout_ms)

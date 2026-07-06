@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     CODE_AGENT_ENABLED: bool = False
     CODE_AGENT_MAX_TURNS: int = 8
     CODE_AGENT_MODEL: str = ""  # 留空复用 MODEL_NAME
+    # 作者模式试点（2D）：real 任务由 agent 在工具循环里从骨架逐文件写出游戏，
+    # 文件结构自定（write_file / V4A Add File，平铺 .js/.css，配额见 validation）。
+    # 每轮一个小 patch，绕开单请求超时墙；agent 不可用/产出过短自动回落单次整包
+    # 生成。产物仍过 build_validation / gameplay QA 门禁。
+    CODE_AGENT_AUTHOR_ENABLED: bool = False
+    CODE_AGENT_AUTHOR_MAX_TURNS: int = 32
     # 2D 生成运行时试点：true 时 real 模式的 2D 代码生成改用自托管 Phaser 4
     # （vendor/phaser.min.js，全局 Phaser，与 3D three.min.js 同模式随包发布）。
     # 模板兜底仍是 Canvas；模型失败/过短的回退逻辑不变。默认关闭灰度。

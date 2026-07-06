@@ -1,6 +1,7 @@
 import type {
   Comment,
   Game,
+  GameManifest,
   GameVersion,
   MemoryItem,
   MemoryProfile,
@@ -146,12 +147,9 @@ export const api = {
     req<{ items: { rank: number; name: string; points: number; ago: string }[] }>(`/games/${id}/leaderboard`),
   submitScore: (id: string, points: number, player_name?: string) =>
     req<{ ok: boolean }>(`/games/${id}/score`, { json: { points, player_name } }),
-  gameManifest: (id: string) =>
-    req<{ entry?: string; entry_url?: string; runtime?: string; sha256?: string; _source?: string; _url?: string }>(`/games/${id}/manifest`),
+  gameManifest: (id: string) => req<GameManifest>(`/games/${id}/manifest`),
   gameManifestVersion: (id: string, version: string) =>
-    req<{ entry?: string; entry_url?: string; runtime?: string; sha256?: string; _source?: string; _url?: string }>(
-      `/games/${id}/manifest?version=${encodeURIComponent(version)}`,
-    ),
+    req<GameManifest>(`/games/${id}/manifest?version=${encodeURIComponent(version)}`),
 
   upload: (files: FileList | File[]) => {
     const fd = new FormData();

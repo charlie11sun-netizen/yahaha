@@ -36,6 +36,7 @@ export default function DetailPage() {
   const queryClient = useQueryClient();
   const commentsQ = useQuery({ queryKey: ["comments", id], queryFn: () => api.comments(id) });
   const relatedQ = useQuery({ queryKey: ["related", id], queryFn: () => api.relatedGames(id) });
+  const manifestQ = useQuery({ queryKey: ["manifest", id], queryFn: () => api.gameManifest(id) });
   const [commentText, setCommentText] = useState("");
   const [posting, setPosting] = useState(false);
   const [liked, setLiked] = useState(false);
@@ -195,6 +196,15 @@ export default function DetailPage() {
               <div>
                 <strong>Remote bundle</strong>
                 <span>{game.oss_path}</span>
+                {(manifestQ.data?.files?.length ?? 0) > 0 ? (
+                  <div className="pf-detail-files">
+                    {(manifestQ.data?.files ?? []).map((file) => (
+                      <span className={file.path === (manifestQ.data?.entry || "index.html") ? "is-entry" : undefined} key={file.path}>
+                        {file.path}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             </div>
 

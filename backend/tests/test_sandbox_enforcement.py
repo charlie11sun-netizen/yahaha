@@ -91,3 +91,37 @@ def test_validation_blocks_network_bypass_apis():
     assert "dynamic import()" in labels
     assert "sendBeacon" in labels
     assert "EventSource" in labels
+
+
+def test_validation_blocks_truncated_game_js_before_browser_qa():
+    from app.agents.validation import validate_files
+
+    files = [
+        {"path": "index.html", "content": "<script src='game.js'></script>game.js"},
+        {"path": "style.css", "content": "body{}"},
+        {"path": "game.js", "content": "function loop(){ if (true) { requestAnimationFrame(loop);"},
+    ]
+    result = validate_files(files)
+    labels = " ".join(result["errors"])
+    assert result["valid"] is False
+    assert "game.js appears incomplete" in labels
+    assert "unclosed" in labels
+
+
+def test_validation_allows_balanced_js_with_comments_strings_and_regex():
+    from app.agents.validation import validate_files
+
+    files = [
+        {"path": "index.html", "content": "<script src='game.js'></script>game.js"},
+        {"path": "style.css", "content": "body{}"},
+        {
+            "path": "game.js",
+            "content": (
+                "const label = '}'; /* ignored } */\n"
+                "const rx = /[{}]/g;\n"
+                "function loop(){ const state = {ok: rx.test(label)}; requestAnimationFrame(loop); return state; }\n"
+            ),
+        },
+    ]
+    result = validate_files(files)
+    assert result["valid"], result["errors"]

@@ -68,15 +68,18 @@ export default function PlayPage() {
     setActivity(["Fetching manifest from object storage…"]);
 
     // 真实拉取 manifest（后端从 OSS 读取），替代此前的纯动画
-    let manifest: { entry?: string; entry_url?: string; runtime?: string; sha256?: string; _source?: string } | null = null;
+    let manifest:
+      | { entry?: string; entry_url?: string; runtime?: string; sha256?: string; _source?: string; files?: { path: string }[] }
+      | null = null;
     try {
       manifest = requestedVersion
         ? await api.gameManifestVersion(nextGame.id, requestedVersion)
         : await api.gameManifest(nextGame.id);
       patchRuntime("manifest", "ready");
       const sha = manifest.sha256 ? ` · sha256=${String(manifest.sha256).slice(0, 12)}` : "";
+      const fileCount = manifest.files?.length ? ` · files=${manifest.files.length}` : "";
       addActivity(
-        `Manifest ${manifest._source === "oss" ? "fetched from OSS" : "resolved"} ✓ entry=${manifest.entry || "index.html"} · runtime=${manifest.runtime || "iframe"}${sha}`,
+        `Manifest ${manifest._source === "oss" ? "fetched from OSS" : "resolved"} ✓ entry=${manifest.entry || "index.html"} · runtime=${manifest.runtime || "iframe"}${fileCount}${sha}`,
       );
     } catch {
       patchRuntime("manifest", "failed");

@@ -12,6 +12,7 @@ SDK 惰性导入：CODE_AGENT_ENABLED=false（默认）或未安装 openai-agent
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -21,14 +22,16 @@ from app.agents import llm, smoke, validation
 from app.core.config import settings
 
 _SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
-_EDITABLE = ("index.html", "style.css", "game.js")
+_PROTECTED_FILES = ("index.html", "style.css", "game.js")  # 入口三件套：可改不可删
+# 新建文件：平铺文件名（天然排除 / 与 ..），只允许 .js/.css 模块
+_NEW_PATH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.(?:js|css)$")
 _MAX_ERRORS_SHOWN = 8
 
 _INSTRUCTIONS = """You repair a small self-contained HTML5 game bundle (index.html, style.css, game.js) that just failed one of GameWeave's quality gates — static build validation or browser gameplay QA (the task input states which).
 
 Hard sandbox contract (any violation fails validation again):
 - Forbidden everywhere: eval(), new Function, fetch(), XMLHttpRequest, WebSocket, EventSource, navigator.sendBeacon, dynamic import(), localStorage, sessionStorage, document.cookie, window.parent/window.top access (postMessage is the only exception), and any external http(s) URL including <script src="http...">.
-- Required files: exactly index.html, style.css, game.js; each <= 400KB; index.html must reference game.js.
+- Entry files index.html, style.css, game.js always exist; a bundle may also carry flat .js/.css modules. Every .js must be referenced by a <script src> in index.html; each file <= 400KB.
 - Graphics/sound must be procedural or data:/blob: URIs. Report score only via window.parent.postMessage({type:"gameweave:score", points:<int>}, "*").
 - game.js top-level code also runs once in a stubbed V8 smoke test (no real DOM, requestAnimationFrame/setTimeout are no-ops): it must not throw at load time.
 
@@ -44,15 +47,40 @@ _3D_NOTE = (
     "before game.js, and game.js uses the global THREE. Keep that script tag and never switch to a CDN."
 )
 
+# 作者模式 instructions。必须保持模块级静态常量（不做任何插值）：它与固定的工具
+# schema 序构成每轮请求的稳定前缀，是多轮循环 prompt cache 命中率的根基。动态内容
+# （spec/design/骨架清单）一律走 _build_author_input。
+_AUTHOR_INSTRUCTIONS = """You are GameCodeAuthor, a senior HTML5 game developer. Starting from a skeleton bundle, BUILD the complete, polished browser game described by the task's GameSpec/GameDesign, growing the bundle with your tools until run_checks passes and every designed system exists.
+
+You decide the file layout:
+- The entry trio index.html, style.css, game.js always stays. Add one flat .js module per big system (e.g. shop.js, upgrades.js, waves.js, hud.js) with write_file; extra .css files are allowed too. Max 12 files, each <= 400KB.
+- Wire every .js into index.html with a <script src> tag in dependency order (helpers before their users). An unreferenced .js fails validation.
+- write_file creates or fully replaces one file; apply_patch (V4A) makes surgical edits and can also '*** Add File:' / '*** Delete File:'.
+
+Hard sandbox contract (the outer gate re-checks all of it):
+- Forbidden everywhere: eval(), new Function, fetch(), XMLHttpRequest, WebSocket, EventSource, navigator.sendBeacon, dynamic import(), localStorage, sessionStorage, document.cookie, window.parent/window.top access (postMessage is the only exception), and any external http(s) URL.
+- Graphics/sound are procedural or data:/blob: URIs only. Report score only via window.parent.postMessage({type:"gameweave:score", points:<int>}, "*").
+- Top-level code of every .js runs once in a stubbed V8 smoke test (no real DOM, rAF/timers are no-ops): it must not throw at load time; gameplay setup lives in init/scene callbacks.
+
+Method — small verified increments:
+1. Build the playable core loop in game.js first; run_checks until green before adding systems.
+2. Then add ONE system per module file, wiring index.html immediately; run_checks after each file.
+3. When the design includes progression/economy it is mandatory, not optional: in-run currency, a shop/upgrade screen reachable from play (buy weapons, ammo, gear), prices and effects tied to the design's balance numbers. Keep all persistence in memory — no storage APIs.
+4. Polish is part of done: particle bursts, screen shake, hit-flash, score pops, smooth easing, a living background; WebAudio oscillator sound for key events.
+5. Finish with exactly one line: "DONE: <files written + systems implemented>". If genuinely impossible, "GIVEUP: <why>".
+Never finish while run_checks is failing or any .js is unreferenced."""
+
 # ---- V4A 补丁解析/应用。改编自 OpenAI GPT-4.1 prompting guide 的 apply_patch 参考
 #      实现（openai-cookbook，MIT）——模型被专门训练过这个格式，解析算法保持与官方
-#      一致（@@ 锚点、上下文匹配的 fuzz 级联、EOF 段）。适配点：只支持 Update（bundle
-#      文件集固定）、目标是内存文件字典而非磁盘、全部文件应用成功才原子提交、保留
-#      原文件的 CRLF。----
+#      一致（@@ 锚点、上下文匹配的 fuzz 级联、EOF 段）。适配点：支持 Update/Add/Delete
+#      （Move 不支持；新路径限平铺 .js/.css 且有配额）、目标是内存文件字典而非磁盘、
+#      全部文件应用成功才原子提交、保留原文件的 CRLF。----
 
 _BEGIN_PATCH = "*** Begin Patch"
 _END_PATCH = "*** End Patch"
 _UPDATE_PREFIX = "*** Update File: "
+_ADD_PREFIX = "*** Add File: "
+_DELETE_PREFIX = "*** Delete File: "
 _EOF_MARK = "*** End of File"
 _SECTION_STOPS = (_END_PATCH, "*** Update File:", "*** Delete File:", "*** Add File:", _EOF_MARK)
 
@@ -110,8 +138,6 @@ def _resolve_bundle_path(raw: str, files: dict[str, str]) -> str:
         path = path[2:]
     if path not in files and os.path.basename(path) in files:
         path = os.path.basename(path)  # bundle 是平铺的，容忍模型多写目录前缀
-    if path not in _EDITABLE:
-        raise _PatchError(f"{raw!r} is not editable; only {', '.join(_EDITABLE)} are")
     if path not in files:
         raise _PatchError(f"no such file {raw!r}; bundle has: {', '.join(files)}")
     return path
@@ -197,6 +223,8 @@ class _V4AParser:
     index: int = 0
     fuzz: int = 0
     updates: dict[str, list[_Chunk]] = field(default_factory=dict)
+    adds: dict[str, str] = field(default_factory=dict)
+    deletes: list[str] = field(default_factory=list)
 
     def _cur(self) -> str:
         if self.index >= len(self.patch_lines):
@@ -206,19 +234,62 @@ class _V4AParser:
     def parse(self) -> None:
         while not self._cur().startswith(_END_PATCH):
             line = self._cur()
-            if line.startswith(("*** Add File:", "*** Delete File:", "*** Move to:")):
-                raise _PatchError(
-                    "only '*** Update File:' is supported — the bundle always has exactly "
-                    f"{', '.join(_EDITABLE)}; got: {line[:60]!r}"
-                )
+            if line.startswith(_ADD_PREFIX):
+                self.index += 1
+                path = self._new_path(line[len(_ADD_PREFIX):])
+                self.adds[path] = self._parse_add_section(path)
+                continue
+            if line.startswith(_DELETE_PREFIX):
+                self.index += 1
+                path = _resolve_bundle_path(line[len(_DELETE_PREFIX):], self.files)
+                if path in _PROTECTED_FILES:
+                    raise _PatchError(f"cannot delete {path}; entry files {', '.join(_PROTECTED_FILES)} must stay")
+                if path in self.deletes:
+                    raise _PatchError(f"duplicate '*** Delete File: {path}'")
+                if path in self.updates:
+                    raise _PatchError(f"{path} is both updated and deleted in one patch; pick one")
+                self.deletes.append(path)
+                continue
+            if line.startswith("*** Move to:"):
+                raise _PatchError("'*** Move to:' is not supported; use '*** Add File:' plus '*** Delete File:'")
             if not line.startswith(_UPDATE_PREFIX):
                 raise _PatchError(f"unexpected patch line {line[:60]!r}; expected '*** Update File: <path>'")
             self.index += 1
             path = _resolve_bundle_path(line[len(_UPDATE_PREFIX):], self.files)
             if path in self.updates:
                 raise _PatchError(f"duplicate '*** Update File: {path}'; merge the sections into one block")
+            if path in self.deletes:
+                raise _PatchError(f"{path} is both updated and deleted in one patch; pick one")
             self.updates[path] = self._parse_update_section(path)
         self.index += 1
+
+    def _new_path(self, raw: str) -> str:
+        path = raw.strip().strip('"').replace("\\", "/")
+        if path.startswith("./"):
+            path = path[2:]
+        if path in self.files:
+            raise _PatchError(f"{path!r} already exists; use '*** Update File: {path}'")
+        if path in self.adds:
+            raise _PatchError(f"duplicate '*** Add File: {path}'")
+        if not _NEW_PATH_RE.match(path):
+            raise _PatchError(
+                f"invalid new file path {raw.strip()!r}; use a flat filename ([A-Za-z0-9._-]) ending in .js or .css"
+            )
+        return path
+
+    def _parse_add_section(self, path: str) -> str:
+        body: list[str] = []
+        while self.index < len(self.patch_lines) and not self._cur().startswith(_SECTION_STOPS):
+            s = self._cur()
+            if not s.startswith("+"):
+                raise _PatchError(
+                    f"in '*** Add File: {path}' every content line must start with '+'; got {s[:60]!r}"
+                )
+            body.append(s[1:])
+            self.index += 1
+        if not body:
+            raise _PatchError(f"'*** Add File: {path}' has no '+' content lines")
+        return "\n".join(body)
 
     def _parse_update_section(self, path: str) -> list[_Chunk]:
         file_lines = self.files[path].split("\n")
@@ -291,6 +362,11 @@ def enabled(state: dict) -> bool:
     return bool(settings.CODE_AGENT_ENABLED and state.get("use_real"))
 
 
+def author_enabled(state: dict) -> bool:
+    """作者模式开关：agent 从骨架起步自定文件结构写整局游戏，失败回落单次整包生成。"""
+    return bool(settings.CODE_AGENT_AUTHOR_ENABLED and state.get("use_real"))
+
+
 @dataclass
 class RepairOutcome:
     files: list[dict]
@@ -336,6 +412,30 @@ class RepairSession:
         self._log(f"agent read {path} ({len(body.encode('utf-8'))}B)")
         return body
 
+    def write_file(self, path: str, content: str) -> str:
+        name = str(path or "").strip().strip('"').replace("\\", "/")
+        if name.startswith("./"):
+            name = name[2:]
+        if name not in self.contents and not _NEW_PATH_RE.match(name):
+            return f"error: invalid new file path {path!r}; use a flat filename ending in .js or .css"
+        body = str(content or "")
+        size = len(body.encode("utf-8"))
+        if size > validation.MAX_FILE_BYTES:
+            return f"error: {name} would be {size}B, over the {validation.MAX_FILE_BYTES // 1000}KB limit"
+        created = name not in self.contents
+        if created and len(self.contents) >= validation.MAX_BUNDLE_FILES:
+            return f"error: bundle already has {len(self.contents)} files (max {validation.MAX_BUNDLE_FILES})"
+        if not created and body == self.contents[name]:
+            return f"error: {name} already has exactly this content"
+        self.contents[name] = body
+        if created:
+            self.order.append(name)
+        self.changed.add(name)
+        self.checks_ok = False
+        self._log(f"agent wrote {name} ({size}B{', new file' if created else ''})")
+        wiring = " Wire it into index.html with a <script src> tag next." if created and name.endswith(".js") else ""
+        return f"wrote {name} ({size}B).{wiring} Then run_checks."
+
     def apply_patch(self, patch: str) -> str:
         try:
             patch_lines = _prepare_patch_lines(patch)
@@ -356,9 +456,24 @@ class RepairSession:
                         f"({size}B); apply a smaller patch"
                     )
                 staged[path] = (new_text, len(chunks), size)
+            added: dict[str, tuple[str, int]] = {}  # path -> (内容, 字节数)
+            for path, content in parser.adds.items():
+                size = len(content.encode("utf-8"))
+                if size > validation.MAX_FILE_BYTES:
+                    raise _PatchError(
+                        f"new file {path} would be {size}B, over the {validation.MAX_FILE_BYTES // 1000}KB limit"
+                    )
+                added[path] = (content, size)
+            if added:
+                projected = len(self.contents) + len(added) - len(parser.deletes)
+                if projected > validation.MAX_BUNDLE_FILES:
+                    raise _PatchError(
+                        f"bundle would grow to {projected} files (max {validation.MAX_BUNDLE_FILES}); "
+                        "consolidate systems into existing modules"
+                    )
         except _PatchError as exc:
             return f"error: {exc}"
-        if not staged:
+        if not staged and not added and not parser.deletes:
             return "error: patch made no changes"
         summaries = []
         for path, (content, chunk_count, size) in staged.items():
@@ -366,6 +481,18 @@ class RepairSession:
             self.changed.add(path)
             self._log(f"agent patched {path} ({chunk_count} chunk(s), {size}B)")
             summaries.append(f"{path} ({chunk_count} chunk(s), {size}B)")
+        for path in parser.deletes:
+            del self.contents[path]
+            self.order.remove(path)
+            self.changed.add(path)
+            self._log(f"agent deleted {path}")
+            summaries.append(f"deleted {path}")
+        for path, (content, size) in added.items():
+            self.contents[path] = content
+            self.order.append(path)
+            self.changed.add(path)
+            self._log(f"agent added {path} ({size}B)")
+            summaries.append(f"added {path} ({size}B)")
         if parser.fuzz:
             self._log(f"agent patch matched with fuzz {parser.fuzz}")
         self.checks_ok = False
@@ -374,7 +501,7 @@ class RepairSession:
     def run_checks(self) -> str:
         result = validation.validate_files(self.to_files())
         errors = [str(e)[:160] for e in (result.get("errors") or [])][:_MAX_ERRORS_SHOWN]
-        ok_smoke, smoke_detail = smoke.run_smoke(self.contents.get("game.js", ""))
+        ok_smoke, smoke_detail = smoke.run_smoke_files(self.to_files())
         self.checks_ok = bool(result.get("valid")) and ok_smoke
         self._log(
             "agent checks: static "
@@ -439,14 +566,60 @@ def _build_input(
     return "\n\n".join(parts)
 
 
+def _build_author_input(files: list[dict], spec: dict, design: dict, runtime: str, dimension: str) -> str:
+    """作者任务的动态载荷（首条 user 消息）：spec/design/骨架清单 + 运行时注记。
+    这里的内容进对话历史后同样被 cache 复用，跑内一次成本、跑间不共享。"""
+    listing = "\n".join(
+        f"- {f.get('path')} ({len(str(f.get('content') or '').encode('utf-8'))}B)" for f in files
+    )
+    parts = [
+        "Author the complete game for this specification.",
+        f"GameSpec:\n{json.dumps(spec, ensure_ascii=False)}",
+        f"GameDesign to implement (entities, mechanics, balance):\n{json.dumps(design, ensure_ascii=False)}",
+        f"Skeleton bundle already in place:\n{listing}",
+    ]
+    if dimension == "3d":
+        parts.append(_3D_NOTE)
+    elif runtime == "phaser":
+        parts.append(
+            "Runtime: Phaser 4 via the global `Phaser`; index.html already loads phaser.min.js before game.js — "
+            "keep that order and never fetch the engine. Structure play as Phaser Scenes (menu / play / shop or "
+            "upgrade screens as the design demands) and read the phaser runtime skill before writing code."
+        )
+    else:
+        parts.append("Runtime: vanilla Canvas 2D — no engine script tag; render everything yourself.")
+    skills = available_skills()
+    if skills:
+        parts.append("Reference skills available via read_skill: " + ", ".join(skills))
+    parts.append(
+        "Begin now: read index.html, write the core game.js, then grow one system per file with run_checks between steps."
+    )
+    return "\n\n".join(parts)
+
+
 def _usage_of(result) -> dict:
     usage = getattr(getattr(result, "context_wrapper", None), "usage", None)
+    details = getattr(usage, "input_tokens_details", None)
     return {
         "requests": int(getattr(usage, "requests", 0) or 0),
         "input": int(getattr(usage, "input_tokens", 0) or 0),
         "output": int(getattr(usage, "output_tokens", 0) or 0),
         "total": int(getattr(usage, "total_tokens", 0) or 0),
+        "cached": int(getattr(details, "cached_tokens", 0) or 0),
     }
+
+
+def _log_cache_hit(session: RepairSession, result) -> None:
+    """多轮循环的成本命门是 prompt cache：稳定前缀（静态 instructions + 固定工具序）
+    加 append-only 历史应让命中率随轮数上升。把整跑命中率写进日志，退化能被看见。"""
+    if result is None:
+        return
+    u = _usage_of(result)
+    if u["input"]:
+        pct = u["cached"] * 100 // u["input"]
+        session._log(
+            f"agent prompt cache: {u['cached']}/{u['input']} input tokens cached ({pct}%) over {u['requests']} request(s)"
+        )
 
 
 def _record(result, model_name: str, latency_ms: int) -> int:
@@ -471,32 +644,11 @@ def _close_client(client) -> None:
         pass
 
 
-def run_repair(
-    files: list[dict],
-    *,
-    error: str,
-    dimension: str = "2d",
-    task_note: str | None = None,
-    failure_label: str = "Build validation",
-    max_turns: int | None = None,
-) -> RepairOutcome | None:
-    """跑一轮修复 agent。返回 None 表示 agent 路径不可用/异常（调用方回落旧路径）。
-
-    注意：openai-agents 的顶层包名就是 `agents`（与 app.agents 无冲突，绝对导入
-    只会命中 site-packages）。所有 SDK 符号惰性导入，未安装不影响主流程。
-    """
-    if not files:
-        return None
-    try:
-        from agents import Agent, OpenAIChatCompletionsModel, RunConfig, Runner, function_tool
-        from agents.exceptions import AgentsException, MaxTurnsExceeded
-        from openai import AsyncOpenAI
-    except Exception:  # pragma: no cover —— SDK 未安装
-        return None
-
-    session = RepairSession.from_files(files)
-    model_name = settings.CODE_AGENT_MODEL or settings.MODEL_NAME
-    turns_limit = max_turns or settings.CODE_AGENT_MAX_TURNS
+def _make_tools(session: RepairSession, *, author: bool = False):
+    """工具面固定顺序构建：工具 schema 是每轮请求前缀的一部分，顺序/文案稳定是
+    prompt cache 命中的前提。author 额外拿 write_file（整文件写入，修复 agent 不给，
+    保持"最小 patch"纪律）。"""
+    from agents import function_tool
 
     @function_tool
     def read_file(path: str) -> str:
@@ -513,15 +665,20 @@ def run_repair(
 -removed line
 +added line
 *** End Patch
-Keep ~3 context lines around each change; use '@@ <copied source line>' to locate a block when context repeats; several @@ blocks per file and several files per patch are allowed. Patch only the changed lines — never rewrite a file."""
+Keep ~3 context lines around each change; use '@@ <copied source line>' to locate a block when context repeats; several @@ blocks per file and several files per patch are allowed. A patch may also '*** Add File: <name>.js' (every body line prefixed '+') or '*** Delete File: <name>' (the entry files index.html/style.css/game.js cannot be deleted). Patch only the changed lines — never rewrite a file."""
         return session.apply_patch(patch)
+
+    @function_tool
+    def write_file(path: str, content: str) -> str:
+        """Create a new flat .js/.css module (wire it into index.html afterwards) or fully replace one existing file with `content`. Prefer apply_patch for small edits."""
+        return session.write_file(path, content)
 
     @function_tool
     def run_checks() -> str:
         """Run GameWeave's static validation plus the V8 smoke test on the current bundle."""
         return session.run_checks()
 
-    tools = [read_file, apply_patch, run_checks]
+    tools = [read_file, apply_patch, write_file, run_checks] if author else [read_file, apply_patch, run_checks]
     if available_skills():
 
         @function_tool
@@ -530,6 +687,36 @@ Keep ~3 context lines around each change; use '@@ <copied source line>' to locat
             return session.read_skill(name)
 
         tools.append(read_skill)
+    return tools
+
+
+def _execute_agent(
+    session: RepairSession,
+    *,
+    agent_name: str,
+    instructions: str,
+    author_tools: bool,
+    task_input: str,
+    turns_limit: int,
+    workflow_name: str,
+) -> RepairOutcome | None:
+    """共享的 SDK 工具循环执行器。返回 None 表示不可用/异常（调用方回落旧路径）。
+
+    注意：openai-agents 的顶层包名就是 `agents`（与 app.agents 无冲突，绝对导入
+    只会命中 site-packages）。所有 SDK 符号惰性导入，未安装不影响主流程。
+    cache 纪律：instructions 必须是模块级常量、工具序固定、循环 append-only ——
+    三者共同构成跨轮稳定的请求前缀；动态内容一律放 task_input（首条 user 消息，
+    进历史后同样被缓存复用）。整跑命中率由 _log_cache_hit 落日志。
+    """
+    try:
+        from agents import Agent, OpenAIChatCompletionsModel, RunConfig, Runner
+        from agents.exceptions import AgentsException, MaxTurnsExceeded
+        from openai import AsyncOpenAI
+    except Exception:  # pragma: no cover —— SDK 未安装
+        return None
+
+    model_name = settings.CODE_AGENT_MODEL or settings.MODEL_NAME
+    tools = _make_tools(session, author=author_tools)
 
     try:
         client = AsyncOpenAI(
@@ -542,8 +729,8 @@ Keep ~3 context lines around each change; use '@@ <copied source line>' to locat
         return None
 
     agent = Agent(
-        name="GameCodeRepair",
-        instructions=_INSTRUCTIONS,
+        name=agent_name,
+        instructions=instructions,
         model=OpenAIChatCompletionsModel(model=model_name, openai_client=client),
         tools=tools,
     )
@@ -554,9 +741,9 @@ Keep ~3 context lines around each change; use '@@ <copied source line>' to locat
     try:
         result = Runner.run_sync(
             agent,
-            _build_input(files, error, dimension, task_note, failure_label),
+            task_input,
             max_turns=turns_limit,
-            run_config=RunConfig(workflow_name="gameweave-repair", tracing_disabled=True),
+            run_config=RunConfig(workflow_name=workflow_name, tracing_disabled=True),
         )
         note = str(result.final_output or "").strip()[:200]
     except MaxTurnsExceeded:
@@ -574,6 +761,7 @@ Keep ~3 context lines around each change; use '@@ <copied source line>' to locat
 
     latency_ms = int((time.perf_counter() - start) * 1000)
     tokens = _record(result, model_name, latency_ms)
+    _log_cache_hit(session, result)
     if hit_limit:
         session._log(f"agent stopped: {note}")
     return RepairOutcome(
@@ -584,4 +772,57 @@ Keep ~3 context lines around each change; use '@@ <copied source line>' to locat
         note=note,
         checks_ok=session.checks_ok,
         turns=_usage_of(result)["requests"] if result is not None else turns_limit,
+    )
+
+
+def run_repair(
+    files: list[dict],
+    *,
+    error: str,
+    dimension: str = "2d",
+    task_note: str | None = None,
+    failure_label: str = "Build validation",
+    max_turns: int | None = None,
+) -> RepairOutcome | None:
+    """跑一轮修复 agent。返回 None 表示 agent 路径不可用/异常（调用方回落旧路径）。"""
+    if not files:
+        return None
+    session = RepairSession.from_files(files)
+    return _execute_agent(
+        session,
+        agent_name="GameCodeRepair",
+        instructions=_INSTRUCTIONS,
+        author_tools=False,
+        task_input=_build_input(files, error, dimension, task_note, failure_label),
+        turns_limit=max_turns or settings.CODE_AGENT_MAX_TURNS,
+        workflow_name="gameweave-repair",
+    )
+
+
+def run_author(
+    files: list[dict],
+    *,
+    spec: dict,
+    design: dict,
+    runtime: str = "canvas",
+    dimension: str = "2d",
+    max_turns: int | None = None,
+) -> RepairOutcome | None:
+    """作者模式：从骨架 bundle 起步，agent 自定文件结构逐文件写出完整游戏。
+
+    每轮输出只是一个小 patch/文件，单请求远离网关超时墙；总代码量为各轮之和，
+    不受单次响应解码预算限制。产物只是候选——外层 build_validation / gameplay QA
+    门禁照常把关；返回 None 时调用方回落单次整包生成。
+    """
+    if not files:
+        return None
+    session = RepairSession.from_files(files)
+    return _execute_agent(
+        session,
+        agent_name="GameCodeAuthor",
+        instructions=_AUTHOR_INSTRUCTIONS,
+        author_tools=True,
+        task_input=_build_author_input(files, spec, design, runtime, dimension),
+        turns_limit=max_turns or settings.CODE_AGENT_AUTHOR_MAX_TURNS,
+        workflow_name="gameweave-author",
     )

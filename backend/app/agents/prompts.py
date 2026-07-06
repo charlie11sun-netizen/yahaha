@@ -78,7 +78,7 @@ Produce a more ROBUST GameDesign JSON that STILL honors the player's genre and c
 Keep the signature mechanics (an fps_arena keeps first-person shooting and enemy waves); simplify only what's fragile — fewer simultaneous entity types, simpler boss phases, defensive spawn caps, a simpler camera. Do NOT turn it into 2D or a blander game.
 Output valid JSON only (same shape as the 3D GameDesign)."""
 
-CODE_SYSTEM_PROMPT_3D = """You are GameCodeAgent3D, a senior WebGL game developer. Build a COMPLETE, polished, single-screen browser game in REAL-TIME 3D as a self-contained bundle of three files: index.html, style.css, game.js. Use the Three.js library via the GLOBAL `THREE` object — the host already serves it locally (same-origin), you must NOT fetch it.
+CODE_SYSTEM_PROMPT_3D = """You are GameCodeAgent3D, a senior WebGL game developer. Build a COMPLETE, polished browser game in REAL-TIME 3D as a self-contained bundle of three files: index.html, style.css, game.js. Use the Three.js library via the GLOBAL `THREE` object — the host already serves it locally (same-origin), you must NOT fetch it.
 
 OUTPUT FORMAT — emit EXACTLY three fenced code blocks in this order and nothing else (no prose):
 ```html
@@ -256,7 +256,7 @@ def build_code_revision_prompt(
     return "\n\n".join(parts)
 
 
-CODE_SYSTEM_PROMPT = """You are GameCodeAgent, a senior HTML5 game developer. Build a COMPLETE, polished, single-screen browser game as a self-contained bundle of three files: index.html, style.css, game.js (vanilla JS + Canvas 2D, no build step, no assets).
+CODE_SYSTEM_PROMPT = """You are GameCodeAgent, a senior HTML5 game developer. Build a COMPLETE, polished browser game as a self-contained bundle of three files: index.html, style.css, game.js (vanilla JS + Canvas 2D, no build step, no assets).
 
 OUTPUT FORMAT — emit EXACTLY three fenced code blocks in this order and nothing else (no prose):
 ```html
@@ -280,6 +280,7 @@ QUALITY BAR — this must look and feel like a real arcade game, NOT a prototype
 GENRE FIDELITY — implement the mechanics the GameDesign specifies, faithfully.
 - For a shooter / shmup (战机雷霆 / Raiden style): a player ship with continuous fire, 3+ distinct enemy types with different movement and attack patterns, enemy bullets to dodge, power-ups (e.g. spread / laser / shield / wingman), and a multi-phase BOSS with a visible health bar at the climax. It must read as a real top-down air-combat game.
 - For other genres, deliver the equivalent depth: varied entities, escalating waves, and a satisfying win/lose.
+- When the GameDesign includes progression/economy (currency, shop, upgrades), implement it as in-game overlays/screens with working purchases that change play — all state in memory, no storage APIs.
 
 TECH REQUIREMENTS:
 - Vanilla JS only. NO imports, NO external URLs/fonts/images, NO fetch / XMLHttpRequest / WebSocket / eval / new Function / localStorage / sessionStorage / cookies.
@@ -296,7 +297,7 @@ Output ONLY the three fenced code blocks."""
 # Phaser 2D（PHASER_2D_ENABLED 试点）。API 备忘单蒸馏自 phaser 官方仓库 skills/
 # （game-setup-and-config / scenes / physics-arcade / input / graphics-and-shapes），
 # 并按 GameWeave 沙箱合同改写：禁 loader 文件路径/URL，纹理一律程序化生成。
-CODE_SYSTEM_PROMPT_PHASER = """You are GameCodeAgent, a senior HTML5 game developer. Build a COMPLETE, polished, single-screen browser game on the Phaser 4 framework as a self-contained bundle of three files: index.html, style.css, game.js. Use the GLOBAL `Phaser` object — the host serves the engine locally (same-origin), you must NOT fetch it.
+CODE_SYSTEM_PROMPT_PHASER = """You are GameCodeAgent, a senior HTML5 game developer. Build a COMPLETE, polished browser game on the Phaser 4 framework as a self-contained bundle of three files: index.html, style.css, game.js. Use the GLOBAL `Phaser` object — the host serves the engine locally (same-origin), you must NOT fetch it.
 
 OUTPUT FORMAT — emit EXACTLY three fenced code blocks in this order and nothing else (no prose):
 ```html
@@ -318,6 +319,7 @@ index.html REQUIREMENTS (exact):
 PHASER 4 CHEATSHEET — idiomatic usage inside this sandbox:
 - Boot: `class PlayScene extends Phaser.Scene { create(){} update(time, delta){} }` then at top level
   `new Phaser.Game({ type: Phaser.AUTO, backgroundColor: '#0b1026', scale: { mode: Phaser.Scale.RESIZE, autoCenter: Phaser.Scale.CENTER_BOTH }, physics: { default: 'arcade', arcade: { gravity: { y: 0 } } }, scene: [PlayScene] })`.
+- Multiple scenes are idiomatic and encouraged for menu / play / shop / upgrade screens: `scene: [MenuScene, PlayScene, ShopScene]`, switch with `this.scene.start('Shop', data)`, overlay with `this.scene.launch` + `this.scene.pause`; share run state via a plain shared object or the scene init(data) payload.
 - TEXTURES ARE PROCEDURAL ONLY — there is no network and no asset files. NEVER call `this.load.image/audio/spritesheet/atlas` with a path or URL. Instead build textures in create():
   `const g = this.add.graphics(); g.fillStyle(0x67e8f9, 1); g.fillCircle(16, 16, 14); g.generateTexture('orb', 32, 32); g.destroy();`
   Layer fillStyle/fillRect/fillCircle/fillTriangle/lineStyle strokes for ships, enemies, pickups; use multiple generateTexture calls for variants. data: URIs are also allowed.
@@ -336,6 +338,7 @@ QUALITY BAR — must look and feel like a real arcade game, NOT a prototype:
 GENRE FIDELITY — implement the mechanics the GameDesign specifies, faithfully.
 - For a shooter / shmup: continuous player fire, 3+ enemy types with distinct movement/attack, enemy bullets to dodge, power-ups, and a multi-phase BOSS with a visible health bar.
 - For other genres, deliver the equivalent depth: varied entities, escalating waves, and a satisfying win/lose.
+- When the GameDesign includes progression/economy (currency, shop, upgrades), implement it as real scenes/overlays with working purchases that change play — all state in memory, no storage APIs.
 
 TECH REQUIREMENTS:
 - Vanilla JS + the global Phaser only. NO imports, NO external URLs/fonts/images/audio files, NO fetch / XMLHttpRequest / WebSocket / eval / new Function / localStorage / sessionStorage / cookies. The ONLY external file references allowed anywhere are the RELATIVE `phaser.min.js`, `style.css`, and `game.js`.
