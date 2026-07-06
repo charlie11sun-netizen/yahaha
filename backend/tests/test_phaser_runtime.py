@@ -131,6 +131,76 @@ def test_gameplay_qa_canvas_rules_unchanged(monkeypatch):
 
 # ---- QA 沙箱与发布：引擎随包 ----
 
+def test_phaser_player_overlap_lint_flags_reversed_callbacks():
+    bad = """
+class PlayScene extends Phaser.Scene {
+  create(){
+    this.physics.add.overlap(this.enemyBullets, this.player, this.enemyBulletHitsPlayer, null, this);
+    this.physics.add.overlap(this.rockets, this.player, (p,r)=>this.explode(r.x,r.y,52,18,true,r), null, this);
+    this.physics.add.overlap(this.enemies, this.player, this.enemyTouchPlayer, null, this);
+  }
+  enemyBulletHitsPlayer(p,b){ this.killObj(b); this.damagePlayer(b.getData('dmg')||8); }
+  enemyTouchPlayer(p,e){ this.damagePlayer(ENEMY[e.getData('type')].touch); p.setVelocity(1,1); }
+}
+"""
+    issues = nodes._phaser_player_overlap_issues(bad)
+    assert len(issues) == 3
+    assert any("enemyBullets" in issue for issue in issues)
+    assert any("rockets" in issue for issue in issues)
+    assert any("enemies" in issue for issue in issues)
+
+
+def test_phaser_player_overlap_lint_accepts_registration_order():
+    good = """
+class PlayScene extends Phaser.Scene {
+  create(){
+    this.physics.add.overlap(this.enemyBullets, this.player, this.enemyBulletHitsPlayer, null, this);
+    this.physics.add.overlap(this.rockets, this.player, (rocket,player)=>this.explode(rocket.x,rocket.y,52,18,true,rocket), null, this);
+    this.physics.add.overlap(this.enemies, this.player, this.enemyTouchPlayer, null, this);
+  }
+  enemyBulletHitsPlayer(bullet,player){ this.killObj(bullet); this.damagePlayer(bullet.getData('dmg')||8); }
+  enemyTouchPlayer(enemy,player){ this.damagePlayer(ENEMY[enemy.getData('type')].touch); player.setVelocity(1,1); }
+}
+"""
+    assert nodes._phaser_player_overlap_issues(good) == []
+
+
+def test_phaser_removed_api_lint_flags_set_tint_fill():
+    issues = nodes._phaser_removed_api_issues("sprite.setTintFill(0xffffff);")
+    assert issues == [
+        "Phaser 4 removed setTintFill(); use setTint(color).setTintMode(Phaser.TintModes.FILL)."
+    ]
+
+
+def test_phaser_destroyed_body_lint_flags_knockback_after_kill():
+    bad = """
+class PlayScene extends Phaser.Scene {
+  bulletHitsEnemy(b,e){
+    this.damageEnemy(e,dmg,b.x,b.y);
+    e.setVelocity(e.body.velocity.x+1,e.body.velocity.y+1);
+    this.killObj(b);
+  }
+}
+"""
+    issues = nodes._phaser_destroyed_body_issues(bad)
+    assert issues == [
+        "Phaser code reads e.body.velocity after damageEnemy(e, ...); damageEnemy may destroy the enemy before knockback."
+    ]
+
+
+def test_phaser_destroyed_body_lint_accepts_active_body_guard():
+    good = """
+class PlayScene extends Phaser.Scene {
+  bulletHitsEnemy(b,e){
+    this.damageEnemy(e,dmg,b.x,b.y);
+    if(e.active && e.body) e.setVelocity(e.body.velocity.x+1,e.body.velocity.y+1);
+    this.killObj(b);
+  }
+}
+"""
+    assert nodes._phaser_destroyed_body_issues(good) == []
+
+
 def test_sandbox_files_include_phaser_engine(monkeypatch):
     monkeypatch.setattr(packaging, "phaser_engine_bytes", lambda: b"//phaser-stub")
     payload = nodes._sandbox_files_for_qa(_phaser_files(), "2d")

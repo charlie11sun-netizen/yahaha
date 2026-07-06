@@ -897,6 +897,172 @@ def _balance_log_lines(archetype: str, balance: dict) -> list[str]:
     ]
 
 
+def _js_braced_body(source: str, body_start: int) -> str | None:
+    depth = 1
+    i = body_start
+    state = "code"
+    quote = ""
+    escaped = False
+    while i < len(source):
+        ch = source[i]
+        nxt = source[i + 1] if i + 1 < len(source) else ""
+        if state == "line_comment":
+            if ch == "\n":
+                state = "code"
+        elif state == "block_comment":
+            if ch == "*" and nxt == "/":
+                state = "code"
+                i += 1
+        elif state in {"string", "template"}:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif state == "string" and ch == quote:
+                state = "code"
+            elif state == "template" and ch == "`":
+                state = "code"
+        else:
+            if ch == "/" and nxt == "/":
+                state = "line_comment"
+                i += 1
+            elif ch == "/" and nxt == "*":
+                state = "block_comment"
+                i += 1
+            elif ch in {"'", '"'}:
+                state = "string"
+                quote = ch
+                escaped = False
+            elif ch == "`":
+                state = "template"
+                escaped = False
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return source[body_start:i]
+        i += 1
+    return None
+
+
+def _js_method(source: str, name: str) -> tuple[list[str], str] | None:
+    match = re.search(rf"\b{re.escape(name)}\s*\(([^)]*)\)\s*{{", source)
+    if not match:
+        return None
+    params = [
+        re.sub(r"[^\w$].*", "", part.strip())
+        for part in match.group(1).split(",")
+        if part.strip()
+    ]
+    body = _js_braced_body(source, match.end())
+    if body is None:
+        return None
+    return params, body
+
+
+def _phaser_player_overlap_issues(js: str) -> list[str]:
+    """Catch delayed Phaser crashes caused by reversed Arcade overlap args.
+
+    Phaser passes overlap callbacks in registration order. For
+    overlap(this.enemyBullets, this.player, cb), arg0 is the bullet and arg1 is
+    the player. Model output often names them as if player came first; short
+    smoke tests may miss the crash until the first enemy projectile/touch.
+    """
+    issues: list[str] = []
+    seen: set[str] = set()
+
+    def add_issue(key: str, detail: str) -> None:
+        if key not in seen:
+            seen.add(key)
+            issues.append(detail)
+
+    def second_arg_misused(collection: str, params: list[str], body: str, key: str) -> None:
+        if len(params) < 2:
+            return
+        second = re.escape(params[1])
+        if collection == "enemies" and re.search(rf"\bENEMY\s*\[\s*{second}\.getData\s*\(\s*['\"]type", body):
+            add_issue(
+                key,
+                "Phaser overlap callback for this.enemies vs this.player treats the second argument as the enemy; Phaser passes the player second.",
+            )
+        if collection in {"enemyBullets", "rockets"} and (
+            re.search(rf"\bkillObj\s*\(\s*{second}\s*\)", body)
+            or re.search(rf"\bexplode\s*\([^)]*{second}\.x[^)]*,[^)]*{second}\.y", body)
+            or re.search(rf"{second}\.getData\s*\(\s*['\"]dmg", body)
+        ):
+            add_issue(
+                key,
+                f"Phaser overlap callback for this.{collection} vs this.player treats the second argument as the projectile; Phaser passes the player second.",
+            )
+
+    method_re = re.compile(
+        r"physics\.add\.overlap\(\s*this\.(enemyBullets|rockets|enemies)\s*,\s*this\.player\s*,\s*this\.(\w+)",
+        re.S,
+    )
+    for match in method_re.finditer(js):
+        method = _js_method(js, match.group(2))
+        if method:
+            second_arg_misused(match.group(1), method[0], method[1], match.group(0))
+
+    arrow_re = re.compile(
+        r"physics\.add\.overlap\(\s*this\.(enemyBullets|rockets|enemies)\s*,\s*this\.player\s*,\s*\(([^)]*)\)\s*=>\s*(.+?)\s*,\s*null\s*,\s*this",
+        re.S,
+    )
+    for match in arrow_re.finditer(js):
+        params = [
+            re.sub(r"[^\w$].*", "", part.strip())
+            for part in match.group(2).split(",")
+            if part.strip()
+        ]
+        second_arg_misused(match.group(1), params, match.group(3), match.group(0))
+
+    return issues
+
+
+def _phaser_removed_api_issues(js: str) -> list[str]:
+    low = js.lower()
+    issues: list[str] = []
+    if ".settintfill(" in low:
+        issues.append(
+            "Phaser 4 removed setTintFill(); use setTint(color).setTintMode(Phaser.TintModes.FILL)."
+        )
+    return issues
+
+
+def _phaser_destroyed_body_issues(js: str) -> list[str]:
+    issues: list[str] = []
+    methods = re.finditer(r"\b(\w+)\s*\(([^)]*)\)\s*{", js)
+    for match in methods:
+        body = _js_braced_body(js, match.end())
+        if body is None:
+            continue
+        params = [
+            re.sub(r"[^\w$].*", "", part.strip())
+            for part in match.group(2).split(",")
+            if part.strip()
+        ]
+        for param in params:
+            if not param:
+                continue
+            damage = re.search(rf"\bdamageEnemy\s*\(\s*{re.escape(param)}\b", body)
+            velocity = re.search(rf"\b{re.escape(param)}\.body\.velocity\b", body)
+            if not damage or not velocity or damage.start() > velocity.start():
+                continue
+            between = body[damage.end() : velocity.start()]
+            guard = re.search(
+                rf"!\s*{re.escape(param)}\.active|!\s*{re.escape(param)}\.body"
+                rf"|{re.escape(param)}\.active\s*&&\s*{re.escape(param)}\.body"
+                rf"|{re.escape(param)}\.body\s*&&\s*{re.escape(param)}\.active",
+                between,
+            )
+            if not guard:
+                issues.append(
+                    f"Phaser code reads {param}.body.velocity after damageEnemy({param}, ...); damageEnemy may destroy the enemy before knockback."
+                )
+    return issues
+
+
 def _gameplay_qa(state: dict) -> dict:
     """Model-first smoke QA: prove the artifact is a real, runnable game without
     second-guessing how the model wrote it. Hard-fail only on "this isn't a game";
@@ -929,6 +1095,10 @@ def _gameplay_qa(state: dict) -> dict:
     ])
     if not has_input:
         issues.append("no input handling found")
+    if uses_phaser:
+        issues.extend(_phaser_player_overlap_issues(js))
+        issues.extend(_phaser_removed_api_issues(js))
+        issues.extend(_phaser_destroyed_body_issues(js))
     has_restart = any(tok in low for tok in [
         "restart", "reset(", "replay", "again", "location.reload", '"rs"', "'rs'",
     ])
