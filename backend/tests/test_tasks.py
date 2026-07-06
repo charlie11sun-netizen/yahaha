@@ -189,6 +189,24 @@ def test_runtime_smoke_allows_three_and_dom():
     assert ok is True, detail
 
 
+def test_runtime_smoke_degrades_open_when_engine_process_aborts(monkeypatch):
+    from app.agents import smoke
+
+    class Completed:
+        returncode = -6
+        stdout = ""
+        stderr = "aborted"
+
+    monkeypatch.setattr(smoke, "_AVAILABLE", True)
+    monkeypatch.setattr(smoke.subprocess, "run", lambda *args, **kwargs: Completed())
+
+    ok, detail = smoke.run_smoke("var ok = 1;")
+
+    assert ok is True
+    assert "skipped" in detail
+    assert "SIGABRT" in detail
+
+
 def test_delete_active_task_rejected(client):
     h = _auth(client)
     tid = client.post("/tasks", json={"idea": "x", "asset_ids": []}, headers=h).json()["task_id"]

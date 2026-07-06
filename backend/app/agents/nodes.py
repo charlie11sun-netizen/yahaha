@@ -939,6 +939,8 @@ def _gameplay_qa(state: dict) -> dict:
     smoke_ok, smoke_detail = smoke.run_smoke(js)
     if not smoke_ok:
         issues.append(f"runtime smoke test: game crashed on load — {smoke_detail}")
+    elif smoke_detail.startswith("skipped"):
+        warnings.append(f"runtime smoke skipped: {_clip(smoke_detail, 160)}")
 
     browser_result = None
     sandbox_error_code = None
@@ -1004,6 +1006,7 @@ def _gameplay_qa(state: dict) -> dict:
             "has_input": has_input,
             "has_restart": has_restart,
             "runtime_smoke_ok": smoke_ok,
+            "runtime_smoke_detail": smoke_detail,
             "sandbox_ok": None if browser_result is None else browser_result.ok,
             "sandbox_skipped": None if browser_result is None else browser_result.skipped,
             "sandbox_frames": None if browser_result is None else browser_result.frames_observed,
@@ -1024,7 +1027,12 @@ def _gameplay_qa_log_lines(result: dict) -> list[str]:
         f"code smoke: game.js={m.get('js_bytes')} bytes, input={m.get('has_input')}, restart={m.get('has_restart')}, {depth_label}={depth_val}",
     ]
     if m.get("runtime_smoke_ok") is not None:
-        lines.append("runtime smoke: " + ("passed (top-level executes clean)" if m.get("runtime_smoke_ok") else "CRASHED on load"))
+        smoke_detail = str(m.get("runtime_smoke_detail") or "")
+        if smoke_detail.startswith("skipped"):
+            lines.append(f"runtime smoke: {smoke_detail}")
+        else:
+            smoke_status = "passed (top-level executes clean)" if m.get("runtime_smoke_ok") else "CRASHED on load"
+            lines.append("runtime smoke: " + smoke_status)
     if m.get("sandbox_ok") is not None:
         if m.get("sandbox_skipped"):
             lines.append("browser sandbox: skipped")
