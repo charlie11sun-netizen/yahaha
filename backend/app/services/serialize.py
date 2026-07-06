@@ -163,6 +163,16 @@ def _parse(raw):
         return {}
 
 
+def _parse_log_payload(raw):
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _dur(s):
     if s.started_at and s.finished_at:
         return f"{(s.finished_at - s.started_at).total_seconds():.1f}s"
@@ -288,7 +298,16 @@ def task_out(t, include_details: bool = True) -> dict:
          "message": (s.logs[-1].line if s.logs else ""),
          "created_at": _iso(s.logs[-1].created_at if s.logs else s.created_at),
          "duration": _dur(s), "status": _ST.get(s.status, "pending"),
-         "lines": [log.line for log in s.logs]}
+         "lines": [log.line for log in s.logs],
+         "entries": [
+             {
+                 "line": log.line,
+                 "level": getattr(log, "level", "info"),
+                 "created_at": _iso(getattr(log, "created_at", None)),
+                 "event": _parse_log_payload(getattr(log, "payload_json", None)),
+             }
+             for log in s.logs
+         ]}
         for s in t.steps
     ]
     out["steps"] = [

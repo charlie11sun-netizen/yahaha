@@ -1407,13 +1407,14 @@ function getLiveStreamTokens(task?: Task) {
 
 function getLiveAgentActivity(task?: Task) {
   const logs = activeTaskLogs(task)
-    .map((log) => {
-      const lines = log.lines.filter((line) => !isStreamTokenLine(line));
-      const message = isStreamTokenLine(log.message) ? (lines.at(-1) ?? "") : log.message;
-      return { ...log, message, lines };
-    })
-    .filter((log) => log.message || log.lines.length);
+    .map(stripStreamTokenEntries)
+    .filter((log) => log.message || log.lines.length || (log.entries?.length ?? 0) > 0);
   for (let logIndex = logs.length - 1; logIndex >= 0; logIndex -= 1) {
+    const entries = logEntries(logs[logIndex]);
+    for (let entryIndex = entries.length - 1; entryIndex >= 0; entryIndex -= 1) {
+      const eventMessage = activityMessageFromEvent(entries[entryIndex].event);
+      if (eventMessage) return eventMessage;
+    }
     const lines = logs[logIndex].lines.length ? logs[logIndex].lines : [logs[logIndex].message];
     for (let lineIndex = lines.length - 1; lineIndex >= 0; lineIndex -= 1) {
       const compact = lines[lineIndex]?.replace(/\s+/g, " ").trim();
@@ -1421,6 +1422,72 @@ function getLiveAgentActivity(task?: Task) {
     }
   }
   return "";
+}
+
+function eventType(event: unknown): string {
+  if (!event || typeof event !== "object") return "";
+  const value = (event as { type?: unknown }).type;
+  return typeof value === "string" ? value : "";
+}
+
+function eventNumber(event: unknown, key: string): number {
+  if (!event || typeof event !== "object") return 0;
+  const value = (event as Record<string, unknown>)[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function eventString(event: unknown, key: string): string {
+  if (!event || typeof event !== "object") return "";
+  const value = (event as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : "";
+}
+
+function activityMessageFromEvent(event: unknown): string {
+  const type = eventType(event);
+  if (type === "heartbeat") {
+    const phase = eventString(event, "phase") || "authoring";
+    const elapsed = eventNumber(event, "elapsed_seconds");
+    const idle = eventNumber(event, "idle_seconds");
+    const files = eventNumber(event, "file_count");
+    const changed = eventNumber(event, "changed_count");
+    const checks = eventString(event, "checks") || "pending";
+    return `${phase} waiting on model response: ${elapsed}s elapsed, ${idle}s since last tool, bundle=${files} file(s), changed=${changed}, checks=${checks}`;
+  }
+  if (type === "check") {
+    const checksOk = Boolean((event as Record<string, unknown>).checks_ok);
+    const staticErrors = eventNumber(event, "static_errors");
+    const smokeOk = Boolean((event as Record<string, unknown>).smoke_ok);
+    return `checks ${checksOk ? "passed" : "pending"}: static ${staticErrors ? `${staticErrors} error(s)` : "OK"}, smoke ${smokeOk ? "ok" : "pending"}`;
+  }
+  if (type === "tool") {
+    const tool = eventString(event, "tool") || "tool";
+    const path = eventString(event, "path") || eventString(event, "name");
+    return path ? `${tool} ${path}` : tool;
+  }
+  if (type === "error") return eventString(event, "message") || "Agent error";
+  if (type === "notice") return eventString(event, "message") || "Agent update";
+  return "";
+}
+
+function fileChangeFromEvent(event: unknown, line: string): FileChange | null {
+  if (eventType(event) !== "file_change") return null;
+  const path = eventString(event, "path");
+  if (!path) return null;
+  const action = eventString(event, "action");
+  return {
+    action: action === "created" || action === "deleted" ? action : "modified",
+    added: eventNumber(event, "added"),
+    deleted: eventNumber(event, "deleted"),
+    detail: eventString(event, "detail") || undefined,
+    line,
+    path,
+  };
+}
+
+function logEntries(log: AgentLogItem) {
+  if (log.entries?.length) return log.entries;
+  const lines = log.lines.length ? log.lines : [log.message];
+  return lines.map((line) => ({ line, event: null }));
 }
 
 function parseFileChange(line: string | null | undefined): FileChange | null {
@@ -1440,6 +1507,10 @@ function parseFileChange(line: string | null | undefined): FileChange | null {
 }
 
 function getLogFileChanges(log: AgentLogItem): FileChange[] {
+  const structured = logEntries(log)
+    .map((entry) => fileChangeFromEvent(entry.event, entry.line))
+    .filter((change): change is FileChange => Boolean(change));
+  if (structured.length > 0) return structured;
   const lines = log.lines.length ? log.lines : [log.message];
   return lines.map(parseFileChange).filter((change): change is FileChange => Boolean(change));
 }
@@ -1456,12 +1527,15 @@ function fileChangeLabel(action: FileChange["action"]) {
 
 function visibleAgentLogs(task?: Task): AgentLogItem[] {
   return (task?.logs ?? [])
-    .map((log) => {
-      const lines = log.lines.filter((line) => !isStreamTokenLine(line));
-      const message = isStreamTokenLine(log.message) ? (lines.at(-1) ?? "") : log.message;
-      return { ...log, message, lines };
-    })
-    .filter((log) => log.message || log.lines.length);
+    .map(stripStreamTokenEntries)
+    .filter((log) => log.message || log.lines.length || (log.entries?.length ?? 0) > 0);
+}
+
+function stripStreamTokenEntries(log: AgentLogItem): AgentLogItem {
+  const lines = log.lines.filter((line) => !isStreamTokenLine(line));
+  const entries = log.entries?.filter((entry) => !isStreamTokenLine(entry.line));
+  const message = isStreamTokenLine(log.message) ? (lines.at(-1) ?? entries?.at(-1)?.line ?? "") : log.message;
+  return { ...log, message, lines, entries };
 }
 
 function getGameplayQaStatus(task?: Task): StepState | null {

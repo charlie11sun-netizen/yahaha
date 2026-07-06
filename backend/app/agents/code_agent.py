@@ -427,18 +427,22 @@ class RepairSession:
     def to_files(self) -> list[dict]:
         return [{"path": p, "content": self.contents[p]} for p in self.order]
 
-    def _log(self, line: str, *, heartbeat: bool = False) -> None:
+    def _log(self, line: str, *, heartbeat: bool = False, event: dict | None = None) -> None:
         if not heartbeat:
             self.last_tool_at = time.perf_counter()
         self.log_lines.append(line)
-        tracing.record_step_log(line, step_id=self.live_step_id)
+        tracing.record_step_log(line, step_id=self.live_step_id, payload=event)
 
     # ---- 工具实现（SDK 包装见 run_repair；保持纯函数便于离线单测）----
     def read_file(self, path: str) -> str:
         if path not in self.contents:
             return f"error: no such file {path!r}; bundle has: {', '.join(self.order)}"
         body = self.contents[path]
-        self._log(f"agent read {path} ({len(body.encode('utf-8'))}B)")
+        size = len(body.encode("utf-8"))
+        self._log(
+            f"agent read {path} ({size}B)",
+            event={"type": "tool", "tool": "read_file", "path": path, "bytes": size, "status": "done"},
+        )
         return body
 
     def write_file(self, path: str, content: str) -> str:
@@ -462,9 +466,21 @@ class RepairSession:
             self.order.append(name)
         self.changed.add(name)
         self.checks_ok = False
+        action = "created" if created else "modified"
+        detail = f"{size}B{', new file' if created else ''}"
         self._log(
-            f"agent wrote {name} ({_delta_text(added_lines, deleted_lines)}, "
-            f"{size}B{', new file' if created else ''})"
+            f"agent wrote {name} ({_delta_text(added_lines, deleted_lines)}, {detail})",
+            event={
+                "type": "file_change",
+                "tool": "write_file",
+                "action": action,
+                "path": name,
+                "added": added_lines,
+                "deleted": deleted_lines,
+                "bytes": size,
+                "detail": detail,
+                "status": "done",
+            },
         )
         wiring = " Wire it into index.html with a <script src> tag next." if created and name.endswith(".js") else ""
         return f"wrote {name} ({size}B).{wiring} Then run_checks."
@@ -515,21 +531,61 @@ class RepairSession:
             self.contents[path] = content
             self.changed.add(path)
             delta = _delta_text(added_lines, deleted_lines)
-            self._log(f"agent patched {path} ({delta}, {chunk_count} chunk(s), {size}B)")
+            detail = f"{chunk_count} chunk(s), {size}B"
+            self._log(
+                f"agent patched {path} ({delta}, {detail})",
+                event={
+                    "type": "file_change",
+                    "tool": "apply_patch",
+                    "action": "modified",
+                    "path": path,
+                    "added": added_lines,
+                    "deleted": deleted_lines,
+                    "bytes": size,
+                    "chunks": chunk_count,
+                    "detail": detail,
+                    "status": "done",
+                },
+            )
             summaries.append(f"{path} ({delta}, {chunk_count} chunk(s), {size}B)")
         for path in parser.deletes:
             deleted_lines = _line_count(self.contents[path])
             del self.contents[path]
             self.order.remove(path)
             self.changed.add(path)
-            self._log(f"agent deleted {path} (+0 -{deleted_lines})")
+            self._log(
+                f"agent deleted {path} (+0 -{deleted_lines})",
+                event={
+                    "type": "file_change",
+                    "tool": "apply_patch",
+                    "action": "deleted",
+                    "path": path,
+                    "added": 0,
+                    "deleted": deleted_lines,
+                    "status": "done",
+                },
+            )
             summaries.append(f"deleted {path}")
         for path, (content, size) in added.items():
             self.contents[path] = content
             self.order.append(path)
             self.changed.add(path)
             added_lines = _line_count(content)
-            self._log(f"agent added {path} (+{added_lines} -0, {size}B)")
+            detail = f"{size}B"
+            self._log(
+                f"agent added {path} (+{added_lines} -0, {detail})",
+                event={
+                    "type": "file_change",
+                    "tool": "apply_patch",
+                    "action": "created",
+                    "path": path,
+                    "added": added_lines,
+                    "deleted": 0,
+                    "bytes": size,
+                    "detail": detail,
+                    "status": "done",
+                },
+            )
             summaries.append(f"added {path} (+{added_lines} -0, {size}B)")
         if parser.fuzz:
             self._log(f"agent patch matched with fuzz {parser.fuzz}")
@@ -545,7 +601,16 @@ class RepairSession:
             "agent checks: static "
             + ("OK" if result.get("valid") else f"{len(result.get('errors') or [])} error(s)")
             + " · smoke "
-            + ("ok" if ok_smoke else "crashed")
+            + ("ok" if ok_smoke else "crashed"),
+            event={
+                "type": "check",
+                "tool": "run_checks",
+                "static_ok": bool(result.get("valid")),
+                "static_errors": len(result.get("errors") or []),
+                "smoke_ok": ok_smoke,
+                "checks_ok": self.checks_ok,
+                "status": "done",
+            },
         )
         static_line = "OK" if result.get("valid") else "; ".join(errors)
         smoke_line = smoke_detail if ok_smoke else f"crashed: {smoke_detail}"
@@ -562,7 +627,10 @@ class RepairSession:
         path = os.path.join(_SKILLS_DIR, name, "SKILL.md")
         if not os.path.isfile(path):
             return f"unknown skill {name!r}; available: {self.list_skills()}"
-        self._log(f"agent read skill {name}")
+        self._log(
+            f"agent read skill {name}",
+            event={"type": "tool", "tool": "read_skill", "name": name, "status": "done"},
+        )
         with open(path, encoding="utf-8") as fh:
             return fh.read()
 
@@ -703,9 +771,21 @@ def _start_heartbeat(
     def run() -> None:
         while not stop.wait(interval):
             elapsed = int(time.perf_counter() - started)
+            idle = int(time.perf_counter() - session.last_tool_at)
+            checks = "ok" if session.checks_ok else "pending"
             session._log(
                 f"agent {verb} waiting on model response: {elapsed}s elapsed, {_heartbeat_status(session)}",
                 heartbeat=True,
+                event={
+                    "type": "heartbeat",
+                    "phase": verb,
+                    "elapsed_seconds": elapsed,
+                    "idle_seconds": idle,
+                    "file_count": len(session.contents),
+                    "changed_count": len(session.changed),
+                    "checks": checks,
+                    "status": "waiting",
+                },
             )
 
     thread = threading.Thread(target=run, name=f"{agent_name}Heartbeat", daemon=True)
@@ -826,10 +906,18 @@ def _execute_agent(
         hit_limit = True
         note = f"max turns ({turns_limit}) exhausted"
     except AgentsException as exc:
-        session._log(f"agent aborted: {str(exc)[:160]}")
+        message = str(exc)[:160]
+        session._log(
+            f"agent aborted: {message}",
+            event={"type": "error", "source": "agent", "message": message, "status": "failed"},
+        )
         return None
     except Exception as exc:  # noqa: BLE001 —— 网络/供应商异常，一律回落旧路径
-        session._log(f"agent failed: {str(exc)[:160]}")
+        message = str(exc)[:160]
+        session._log(
+            f"agent failed: {message}",
+            event={"type": "error", "source": "model", "message": message, "status": "failed"},
+        )
         return None
     finally:
         _stop_heartbeat(heartbeat_stop, heartbeat_thread)
@@ -839,7 +927,10 @@ def _execute_agent(
     tokens = _record(result, model_name, latency_ms)
     _log_cache_hit(session, result)
     if hit_limit:
-        session._log(f"agent stopped: {note}")
+        session._log(
+            f"agent stopped: {note}",
+            event={"type": "notice", "reason": "max_turns", "message": note, "status": "stopped"},
+        )
     return RepairOutcome(
         files=session.to_files(),
         changed=sorted(session.changed),

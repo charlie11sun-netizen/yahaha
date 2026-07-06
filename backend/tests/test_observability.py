@@ -126,6 +126,7 @@ def test_tracing_records_live_step_logs_without_finish_duplicates(db_session_fac
     from app.agents import tracing
     from app.core.telemetry import clear_context
     from app.models import AgentLog, GenerationTask
+    from app.services.serialize import task_out
 
     db = db_session_factory()
     user = _user()
@@ -140,18 +141,33 @@ def test_tracing_records_live_step_logs_without_finish_duplicates(db_session_fac
     monkeypatch.setattr(tracing, "SessionLocal", db_session_factory)
 
     step_id = tracing.begin_step(task_id, "GameCodeAgent", "Code Generation")
-    assert tracing.record_step_log("agent wrote game.js (1200B)", step_id=step_id)
+    payload = {
+        "type": "file_change",
+        "tool": "write_file",
+        "action": "modified",
+        "path": "game.js",
+        "added": 12,
+        "deleted": 3,
+    }
+    assert tracing.record_step_log("agent wrote game.js (+12 -3, 1200B)", step_id=step_id, payload=payload)
 
     db = db_session_factory()
-    live_lines = [log.line for log in db.query(AgentLog).filter(AgentLog.step_id == step_id).order_by(AgentLog.seq)]
-    assert "agent wrote game.js (1200B)" in live_lines
+    live_logs = db.query(AgentLog).filter(AgentLog.step_id == step_id).order_by(AgentLog.seq).all()
+    live_lines = [log.line for log in live_logs]
+    assert "agent wrote game.js (+12 -3, 1200B)" in live_lines
+    payload_log = next(log for log in live_logs if log.line.startswith("agent wrote game.js"))
+    assert payload_log.payload_json
+    dto = task_out(db.get(GenerationTask, task_id))
+    entries = dto["logs"][-1]["entries"]
+    assert entries[-1]["event"]["type"] == "file_change"
+    assert entries[-1]["event"]["path"] == "game.js"
     db.close()
 
-    tracing.finish_step(task_id, step_id, ["agent wrote game.js (1200B)", "generated files: game.js (1 file(s))"])
+    tracing.finish_step(task_id, step_id, ["agent wrote game.js (+12 -3, 1200B)", "generated files: game.js (1 file(s))"])
 
     db = db_session_factory()
     final_lines = [log.line for log in db.query(AgentLog).filter(AgentLog.step_id == step_id).order_by(AgentLog.seq)]
-    assert final_lines.count("agent wrote game.js (1200B)") == 1
+    assert final_lines.count("agent wrote game.js (+12 -3, 1200B)") == 1
     assert final_lines[-1] == "generated files: game.js (1 file(s))"
     db.close()
     clear_context()

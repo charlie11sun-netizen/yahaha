@@ -112,6 +112,7 @@ class AgentLog(Base):
     seq: Mapped[int] = mapped_column(Integer, default=0)
     line: Mapped[str] = mapped_column(Text)
     level: Mapped[str] = mapped_column(String(10), default="info")
+    payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
     step: Mapped["AgentStep"] = relationship(back_populates="logs")

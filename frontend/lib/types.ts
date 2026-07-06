@@ -91,6 +91,68 @@ export interface AgentLogItem {
   duration?: string | null;
   status: string;
   lines: string[];
+  entries?: AgentLogEntry[];
+}
+
+export type AgentLogEvent =
+  | {
+      type: "file_change";
+      action: "created" | "modified" | "deleted";
+      path: string;
+      added?: number;
+      deleted?: number;
+      bytes?: number;
+      chunks?: number;
+      detail?: string;
+      status?: string;
+      tool?: string;
+    }
+  | {
+      type: "heartbeat";
+      phase?: string;
+      elapsed_seconds?: number;
+      idle_seconds?: number;
+      file_count?: number;
+      changed_count?: number;
+      checks?: string;
+      status?: string;
+    }
+  | {
+      type: "check";
+      checks_ok?: boolean;
+      smoke_ok?: boolean;
+      static_errors?: number;
+      static_ok?: boolean;
+      status?: string;
+      tool?: string;
+    }
+  | {
+      type: "tool";
+      tool?: string;
+      path?: string;
+      name?: string;
+      bytes?: number;
+      status?: string;
+    }
+  | {
+      type: "error";
+      message?: string;
+      source?: string;
+      status?: string;
+    }
+  | {
+      type: "notice";
+      message?: string;
+      reason?: string;
+      status?: string;
+    }
+  | Record<string, unknown>;
+
+export interface AgentLogEntry {
+  line: string;
+  level?: string;
+  created_at?: string | null;
+  event?: AgentLogEvent | null;
 }
 
 export interface DesignPreview {

@@ -76,14 +76,20 @@ def test_session_logs_to_live_step(monkeypatch):
     monkeypatch.setattr(
         code_agent.tracing,
         "record_step_log",
-        lambda line, *, step_id=None: calls.append((line, step_id)) or True,
+        lambda line, *, step_id=None, payload=None: calls.append((line, step_id, payload)) or True,
     )
     s = code_agent.RepairSession.from_files(_files(), live_step_id="step-1")
 
     s.read_file("game.js")
 
     assert s.log_lines[0].startswith("agent read game.js")
-    assert calls == [(s.log_lines[0], "step-1")]
+    assert calls[0][0] == s.log_lines[0]
+    assert calls[0][1] == "step-1"
+    assert calls[0][2]["type"] == "tool"
+    assert calls[0][2]["tool"] == "read_file"
+    assert calls[0][2]["path"] == "game.js"
+    assert calls[0][2]["status"] == "done"
+    assert isinstance(calls[0][2]["bytes"], int)
 
 
 def test_session_edit_logs_include_line_delta(monkeypatch):
@@ -91,7 +97,7 @@ def test_session_edit_logs_include_line_delta(monkeypatch):
     monkeypatch.setattr(
         code_agent.tracing,
         "record_step_log",
-        lambda line, *, step_id=None: calls.append(line) or True,
+        lambda line, *, step_id=None, payload=None: calls.append((line, payload)) or True,
     )
     s = code_agent.RepairSession.from_files(_files(), live_step_id="step-1")
 
@@ -104,11 +110,19 @@ def test_session_edit_logs_include_line_delta(monkeypatch):
         "*** End Patch"
     )
 
-    assert any(line.startswith("agent patched game.js (+2 -1,") for line in calls)
+    assert any(line.startswith("agent patched game.js (+2 -1,") for line, _payload in calls)
+    assert any(
+        payload
+        and payload.get("type") == "file_change"
+        and payload.get("path") == "game.js"
+        and payload.get("added") == 2
+        and payload.get("deleted") == 1
+        for _line, payload in calls
+    )
 
 
 def test_agent_heartbeat_logs_bundle_activity(monkeypatch):
-    monkeypatch.setattr(code_agent.tracing, "record_step_log", lambda line, *, step_id=None: True)
+    monkeypatch.setattr(code_agent.tracing, "record_step_log", lambda line, *, step_id=None, payload=None: True)
     s = code_agent.RepairSession.from_files(_files(), live_step_id="step-1")
 
     stop, thread = code_agent._start_heartbeat(s, agent_name="GameCodeAuthor", interval=0.01)

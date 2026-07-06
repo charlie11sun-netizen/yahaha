@@ -118,7 +118,22 @@ def current_step_id() -> str | None:
     return get_context().get("step_id")
 
 
-def record_step_log(line: str, *, step_id: str | None = None, level: str = "info") -> bool:
+def _payload_json(payload: dict | None) -> str | None:
+    if payload is None:
+        return None
+    try:
+        return json.dumps(payload, ensure_ascii=False, default=str)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def record_step_log(
+    line: str,
+    *,
+    step_id: str | None = None,
+    level: str = "info",
+    payload: dict | None = None,
+) -> bool:
     target_step_id = step_id or current_step_id()
     if not target_step_id:
         return False
@@ -130,7 +145,15 @@ def record_step_log(line: str, *, step_id: str | None = None, level: str = "info
             .scalar()
             or 0
         )
-        db.add(AgentLog(step_id=target_step_id, seq=int(seq), line=str(line), level=level))
+        db.add(
+            AgentLog(
+                step_id=target_step_id,
+                seq=int(seq),
+                line=str(line),
+                level=level,
+                payload_json=_payload_json(payload),
+            )
+        )
         db.commit()
         return True
     except Exception:  # noqa: BLE001
