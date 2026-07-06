@@ -335,3 +335,5 @@ def test_gameplay_repair_legacy_path_when_disabled(monkeypatch):
     assert not called["agent"]  # 默认关闭：运行时报错也走旧的重生成路径
     assert out["generated_files"] == []
     assert out["gameplay_repair_attempts"] == 2
+    # 开关没开导致的回落必须留痕，不能静默
+    assert any("code agent disabled" in line for line in out["_logs"])

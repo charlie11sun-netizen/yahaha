@@ -1879,6 +1879,11 @@ def gameplay_repair_node(state: dict) -> dict:
             )
         else:
             logs.append("agent loop unavailable; falling back to balance repair + regeneration")
+    elif failure_kind == "runtime":
+        logs.append(
+            "code agent disabled (needs CODE_AGENT_ENABLED=true and a real-model task); "
+            "falling back to balance repair + regeneration"
+        )
     spec = state.get("game_spec") or {}
     archetype = spec.get("archetype") or (state.get("game_design") or {}).get("archetype") or "topdown_collect"
     balance = _repair_balance(state.get("balance_config") or (state.get("game_design") or {}).get("balance") or {}, archetype, attempts)
