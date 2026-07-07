@@ -3131,6 +3131,8 @@ img {
 }
 
 .pf-studio-task-table {
+  border: 1px solid #edf0f5;
+  border-radius: 12px;
   overflow-x: auto;
 }
 
@@ -3139,21 +3141,22 @@ img {
   align-items: center;
   display: grid;
   gap: 18px;
-  grid-template-columns: minmax(260px, 1.6fr) minmax(120px, 0.55fr) minmax(120px, 0.55fr) minmax(150px, 0.8fr) minmax(120px, 0.58fr);
-  min-width: 860px;
+  grid-template-columns: minmax(300px, 1.45fr) 130px 130px minmax(150px, 0.7fr) 184px;
+  min-width: 1014px;
 }
 
 .pf-studio-task-head {
+  background: #fbfcff;
   border-bottom: 1px solid #e5e7eb;
   color: #64748b;
   font-size: 13px;
-  padding: 0 12px 12px;
+  padding: 14px 18px;
 }
 
 .pf-studio-task-row {
   border-bottom: 1px solid #edf0f5;
   min-height: 76px;
-  padding: 12px;
+  padding: 14px 18px;
 }
 
 .pf-studio-task-row:last-child {
@@ -4188,27 +4191,6 @@ img {
 .pf-version-row button:disabled {
   cursor: default;
   opacity: 0.55;
-}
-
-.pf-studio-task-table {
-  border: 1px solid #edf0f5;
-  border-radius: 12px;
-  overflow: hidden;
-}
-
-.pf-studio-task-head,
-.pf-studio-task-row {
-  grid-template-columns: minmax(300px, 1.45fr) 130px 130px minmax(150px, 0.7fr) 184px;
-  min-width: 1014px;
-}
-
-.pf-studio-task-head {
-  background: #fbfcff;
-  padding: 14px 18px;
-}
-
-.pf-studio-task-row {
-  padding: 14px 18px;
 }
 
 .pf-studio-settings {

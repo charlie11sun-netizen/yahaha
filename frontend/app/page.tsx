@@ -53,11 +53,27 @@ export default function HomePage() {
     const videoCtx = videoContext;
     const particlesCtx = particlesContext;
     const cardsGridEl = cardsGrid;
+    const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const constrainedViewportQuery = window.matchMedia("(max-width: 768px), (hover: none), (pointer: coarse)");
+    const shouldReduceMotion = () => reducedMotionQuery.matches;
+    const shouldConserveResources = () => constrainedViewportQuery.matches;
+    const shouldAnimateParticles = () => !shouldReduceMotion() && !shouldConserveResources() && !document.hidden;
 
     let frames: ImageBitmap[] = [];
     let framesReady = false;
     let lastFrameIndex = -1;
     let videoSeeking = false;
+    let extractingFrames = false;
+    let videoFrameRequest = 0;
+    let cardsFrameRequest = 0;
+    let particlesFrameRequest = 0;
+
+    function releaseFrames() {
+      frames.forEach((frame) => frame.close());
+      frames = [];
+      framesReady = false;
+      lastFrameIndex = -1;
+    }
 
     function resizeVideoCanvas() {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -74,9 +90,11 @@ export default function HomePage() {
     }
 
     async function extractFrames() {
-      if (!("createImageBitmap" in window)) return;
+      if (shouldReduceMotion() || shouldConserveResources() || extractingFrames || !("createImageBitmap" in window)) return;
 
       let objectUrl: string | undefined;
+      let capturedFrames: ImageBitmap[] = [];
+      extractingFrames = true;
 
       try {
         const response = await fetch(VIDEO_URL, { mode: "cors" });
@@ -99,8 +117,7 @@ export default function HomePage() {
         const scale = Math.min(1, 1280 / video.videoWidth);
         const scaledWidth = Math.round(video.videoWidth * scale);
         const scaledHeight = Math.round(video.videoHeight * scale);
-        const frameCount = Math.max(30, Math.min(120, Math.round(video.duration * 24)));
-        const capturedFrames: ImageBitmap[] = [];
+        const frameCount = Math.max(30, Math.min(72, Math.round(video.duration * 18)));
 
         for (let index = 0; index < frameCount && !cancelled; index += 1) {
           const time = (index / (frameCount - 1)) * (video.duration - 0.05);
@@ -129,16 +146,25 @@ export default function HomePage() {
           capturedFrames.push(bitmap);
         }
 
+        if (cancelled || shouldReduceMotion() || shouldConserveResources()) {
+          capturedFrames.forEach((frame) => frame.close());
+          return;
+        }
+
         if (!cancelled && capturedFrames.length > 0) {
+          releaseFrames();
           frames = capturedFrames;
           framesReady = true;
           videoCanvasEl.style.visibility = "visible";
           videoFallbackEl.style.display = "none";
+          requestVideoFrame();
         }
       } catch {
+        capturedFrames.forEach((frame) => frame.close());
         videoCanvasEl.style.visibility = "hidden";
         videoFallbackEl.style.display = "block";
       } finally {
+        extractingFrames = false;
         if (objectUrl) URL.revokeObjectURL(objectUrl);
       }
     }
@@ -177,8 +203,8 @@ export default function HomePage() {
       );
     }
 
-    function videoTick() {
-      if (cancelled) return;
+    function drawVideoForScroll() {
+      if (cancelled || shouldReduceMotion()) return;
 
       const progress = getVideoProgress();
 
@@ -203,8 +229,14 @@ export default function HomePage() {
           }
         }
       }
+    }
 
-      window.requestAnimationFrame(videoTick);
+    function requestVideoFrame() {
+      if (cancelled || shouldReduceMotion() || videoFrameRequest) return;
+      videoFrameRequest = window.requestAnimationFrame(() => {
+        videoFrameRequest = 0;
+        drawVideoForScroll();
+      });
     }
 
     type Particle = {
@@ -220,6 +252,8 @@ export default function HomePage() {
 
     function createParticles() {
       particles = [];
+      if (!shouldAnimateParticles()) return;
+
       const count = Math.floor((particlesCanvasEl.width * particlesCanvasEl.height) / 12000);
 
       for (let index = 0; index < count; index += 1) {
@@ -238,10 +272,14 @@ export default function HomePage() {
       particlesCanvasEl.width = window.innerWidth;
       particlesCanvasEl.height = window.innerHeight;
       createParticles();
+      if (!shouldAnimateParticles()) {
+        particlesCtx.clearRect(0, 0, particlesCanvasEl.width, particlesCanvasEl.height);
+      }
     }
 
     function animateParticles() {
-      if (cancelled) return;
+      particlesFrameRequest = 0;
+      if (cancelled || !shouldAnimateParticles()) return;
 
       particlesCtx.clearRect(0, 0, particlesCanvasEl.width, particlesCanvasEl.height);
 
@@ -260,7 +298,20 @@ export default function HomePage() {
         particlesCtx.fill();
       }
 
-      window.requestAnimationFrame(animateParticles);
+      particlesFrameRequest = window.requestAnimationFrame(animateParticles);
+    }
+
+    function startParticles() {
+      if (particlesFrameRequest || !shouldAnimateParticles()) return;
+      particlesFrameRequest = window.requestAnimationFrame(animateParticles);
+    }
+
+    function stopParticles() {
+      if (particlesFrameRequest) {
+        window.cancelAnimationFrame(particlesFrameRequest);
+        particlesFrameRequest = 0;
+      }
+      particlesCtx.clearRect(0, 0, particlesCanvasEl.width, particlesCanvasEl.height);
     }
 
     function updateHeroOpacity() {
@@ -268,7 +319,8 @@ export default function HomePage() {
       heroEl.style.opacity = String(fade);
     }
 
-    function tickCards() {
+    function updateCards() {
+      cardsFrameRequest = 0;
       if (cancelled) return;
 
       const rect = triggerEl.getBoundingClientRect();
@@ -295,12 +347,52 @@ export default function HomePage() {
       fixedCardsEl.style.pointerEvents = containerOpacity > 0.1 ? "auto" : "none";
       cardsGridEl.style.maskImage = mask;
       cardsGridEl.style.setProperty("-webkit-mask-image", mask);
+    }
 
-      window.requestAnimationFrame(tickCards);
+    function requestCardsFrame() {
+      if (cancelled || cardsFrameRequest) return;
+      cardsFrameRequest = window.requestAnimationFrame(updateCards);
+    }
+
+    const handleScroll = () => {
+      updateHeroOpacity();
+      requestVideoFrame();
+      requestCardsFrame();
+    };
+
+    const handleResize = () => {
+      resizeVideoCanvas();
+      resizeParticles();
+      requestVideoFrame();
+      requestCardsFrame();
+      startParticles();
+    };
+
+    const handleResourcePreferenceChange = () => {
+      if (shouldReduceMotion() || shouldConserveResources()) {
+        releaseFrames();
+        stopParticles();
+        videoCanvasEl.style.visibility = "hidden";
+        videoFallbackEl.style.display = "block";
+      } else {
+        void extractFrames();
+        startParticles();
+      }
+      requestVideoFrame();
+      requestCardsFrame();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        stopParticles();
+      } else {
+        startParticles();
+      }
     }
 
     const handleVideoSeeked = () => {
       videoSeeking = false;
+      requestVideoFrame();
     };
 
     const handleVideoLoaded = () => {
@@ -309,6 +401,7 @@ export default function HomePage() {
       } catch {
         videoSeeking = false;
       }
+      requestVideoFrame();
     };
 
     const observer = new IntersectionObserver(
@@ -324,29 +417,43 @@ export default function HomePage() {
     resizeVideoCanvas();
     resizeParticles();
     videoCanvasEl.style.visibility = "hidden";
+    if (shouldReduceMotion()) {
+      videoFallbackEl.style.display = "block";
+    } else {
+      void extractFrames();
+    }
+    updateHeroOpacity();
+    requestVideoFrame();
+    requestCardsFrame();
+    startParticles();
 
-    window.addEventListener("resize", resizeVideoCanvas);
-    window.addEventListener("resize", resizeParticles);
-    window.addEventListener("scroll", updateHeroOpacity, { passive: true });
+    window.addEventListener("resize", handleResize);
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    reducedMotionQuery.addEventListener("change", handleResourcePreferenceChange);
+    constrainedViewportQuery.addEventListener("change", handleResourcePreferenceChange);
     videoFallbackEl.addEventListener("seeked", handleVideoSeeked);
     videoFallbackEl.addEventListener("stalled", handleVideoSeeked);
     videoFallbackEl.addEventListener("loadeddata", handleVideoLoaded);
     observer.observe(sectionThreeInnerEl);
 
     cleanupCallbacks.push(
-      () => window.removeEventListener("resize", resizeVideoCanvas),
-      () => window.removeEventListener("resize", resizeParticles),
-      () => window.removeEventListener("scroll", updateHeroOpacity),
+      () => window.removeEventListener("resize", handleResize),
+      () => window.removeEventListener("scroll", handleScroll),
+      () => document.removeEventListener("visibilitychange", handleVisibilityChange),
+      () => reducedMotionQuery.removeEventListener("change", handleResourcePreferenceChange),
+      () => constrainedViewportQuery.removeEventListener("change", handleResourcePreferenceChange),
       () => videoFallbackEl.removeEventListener("seeked", handleVideoSeeked),
       () => videoFallbackEl.removeEventListener("stalled", handleVideoSeeked),
       () => videoFallbackEl.removeEventListener("loadeddata", handleVideoLoaded),
       () => observer.disconnect(),
-      () => frames.forEach((frame) => frame.close()),
+      () => {
+        if (videoFrameRequest) window.cancelAnimationFrame(videoFrameRequest);
+        if (cardsFrameRequest) window.cancelAnimationFrame(cardsFrameRequest);
+        stopParticles();
+        releaseFrames();
+      },
     );
-
-    window.requestAnimationFrame(videoTick);
-    window.requestAnimationFrame(animateParticles);
-    window.requestAnimationFrame(tickCards);
 
     return () => {
       cancelled = true;

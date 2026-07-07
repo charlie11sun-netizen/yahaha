@@ -520,9 +520,9 @@
     "semantic_hash": "648be9c1aadcfeb643dc89829c52c814"
   },
   "frontend/app/explore/page.tsx": {
-    "mtime": 1783051987.1052887,
-    "ast_hash": "806f337bcc060d7edc9a97056073313d",
-    "semantic_hash": "806f337bcc060d7edc9a97056073313d"
+    "mtime": 1783384837.3850715,
+    "ast_hash": "0d99e0b5035b481f246e4ea6fbf9ad7b",
+    "semantic_hash": ""
   },
   "frontend/app/games/[id]/layout.tsx": {
     "mtime": 1782896172.7968907,
@@ -565,9 +565,9 @@
     "semantic_hash": "870df80c46f1ac13901e179647bcbe70"
   },
   "frontend/app/page.tsx": {
-    "mtime": 1782896172.8009398,
-    "ast_hash": "beee95fc38f908b5cd369a1e5fc106b0",
-    "semantic_hash": "beee95fc38f908b5cd369a1e5fc106b0"
+    "mtime": 1783384558.8023162,
+    "ast_hash": "a265138e75179950079947b277fd0491",
+    "semantic_hash": ""
   },
   "frontend/app/play/[id]/page.tsx": {
     "mtime": 1783320638.6088252,

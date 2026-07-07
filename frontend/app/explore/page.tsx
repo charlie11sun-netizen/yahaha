@@ -540,37 +540,40 @@ function ShowcaseCard({
 }) {
   return (
     <Card className="gap-0 overflow-hidden rounded-3xl border-white/60 bg-white/60 p-2 shadow-2xl shadow-slate-900/10 backdrop-blur-xl [animation:pf-rise-in_0.6s_var(--pf-ease)_0.1s_both]">
-      <button
-        type="button"
-        onClick={() => onOpen(featured.id)}
-        className="group relative block aspect-[16/10] w-full overflow-hidden rounded-[1.25rem]"
-      >
+      <div className="group relative aspect-[16/10] w-full overflow-hidden rounded-[1.25rem]">
         <img
           src={heroImageForGame(featured)}
           alt={`${featured.title} game art`}
           className="size-full object-cover transition-transform duration-700 group-hover:scale-105"
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-slate-950/75 via-slate-950/10 to-transparent" />
-        <div className="absolute top-3.5 left-3.5">
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-slate-950/75 via-slate-950/10 to-transparent" />
+        <button
+          type="button"
+          onClick={() => onOpen(featured.id)}
+          className="absolute inset-0 z-10 cursor-pointer rounded-[1.25rem]"
+          aria-label={`Open ${featured.title}`}
+        />
+        <div className="pointer-events-none absolute top-3.5 left-3.5 z-20">
           <Badge className="gap-1.5 border-0 bg-white/90 text-violet-700 shadow-sm backdrop-blur">
             <CirclePlay className="size-3.5" />
             Featured
           </Badge>
         </div>
-        <div className="absolute right-3.5 bottom-3.5 left-3.5 flex items-end justify-between gap-3 text-left">
-          <div className="min-w-0">
+        <div className="absolute right-3.5 bottom-3.5 left-3.5 z-20 flex items-end justify-between gap-3 text-left">
+          <div className="pointer-events-none min-w-0">
             <h3 className="font-display text-xl font-bold text-white drop-shadow-sm">{featured.title}</h3>
             <p className="mt-0.5 text-xs font-medium text-white/80">{featured.playsLabel}</p>
           </div>
-          <span
-            onClick={(e) => { e.stopPropagation(); onPlay(featured.id); }}
+          <button
+            type="button"
+            onClick={() => onPlay(featured.id)}
             className="flex shrink-0 items-center gap-1.5 rounded-full bg-white px-4 py-2 text-xs font-bold text-slate-900 shadow-lg transition-transform hover:scale-105"
           >
             <Play className="size-3.5 fill-current" />
             Play
-          </span>
+          </button>
         </div>
-      </button>
+      </div>
 
       <div className="px-2.5 pt-3 pb-1.5">
         <div className="flex items-center justify-between px-1">
