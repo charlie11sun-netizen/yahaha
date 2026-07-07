@@ -6,7 +6,16 @@ from app.core.config import settings
 from app.core.security import create_access_token, hash_password, password_hash_needs_upgrade, verify_password
 from app.db.session import get_db
 from app.models import OAuthAccount, User
-from app.schemas import ChangePasswordIn, LoginIn, ProfileUpdateIn, RegisterIn
+from app.schemas import (
+    AuthOut,
+    ChangePasswordIn,
+    LoginIn,
+    OAuthDemoOut,
+    OkOut,
+    ProfileUpdateIn,
+    RegisterIn,
+    UserOut,
+)
 from app.services import content_safety
 from app.services.serialize import user_out
 
@@ -17,7 +26,12 @@ def _initial(name: str) -> str:
     return (name.strip()[:1] or "?").upper()
 
 
-@router.post("/register", dependencies=[Depends(rate_limit(10, 60, "register"))])
+@router.post(
+    "/register",
+    response_model=AuthOut,
+    response_model_exclude_unset=True,
+    dependencies=[Depends(rate_limit(10, 60, "register"))],
+)
 def register(body: RegisterIn, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == body.email).first():
         raise HTTPException(status_code=409, detail="Email already registered")
@@ -38,7 +52,12 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
     return {"token": create_access_token(user.id), "user": user_out(user)}
 
 
-@router.post("/login", dependencies=[Depends(rate_limit(10, 60, "login"))])
+@router.post(
+    "/login",
+    response_model=AuthOut,
+    response_model_exclude_unset=True,
+    dependencies=[Depends(rate_limit(10, 60, "login"))],
+)
 def login(body: LoginIn, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == body.email).first()
     if not user or not user.password_hash or not verify_password(body.password, user.password_hash):
@@ -51,12 +70,12 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
     return {"token": create_access_token(user.id), "user": user_out(user)}
 
 
-@router.get("/me")
+@router.get("/me", response_model=UserOut, response_model_exclude_unset=True)
 def me(user: User = Depends(get_current_user)):
     return user_out(user)
 
 
-@router.patch("/me")
+@router.patch("/me", response_model=UserOut, response_model_exclude_unset=True)
 def update_me(body: ProfileUpdateIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if body.display_name is not None:
         content_safety.ensure_allowed(
@@ -88,7 +107,12 @@ def update_me(body: ProfileUpdateIn, user: User = Depends(get_current_user), db:
     return user_out(user)
 
 
-@router.post("/change-password", dependencies=[Depends(rate_limit(10, 60, "chpw"))])
+@router.post(
+    "/change-password",
+    response_model=OkOut,
+    response_model_exclude_unset=True,
+    dependencies=[Depends(rate_limit(10, 60, "chpw"))],
+)
 def change_password(body: ChangePasswordIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if user.password_hash and not verify_password(body.current_password, user.password_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
@@ -97,7 +121,7 @@ def change_password(body: ChangePasswordIn, user: User = Depends(get_current_use
     return {"ok": True}
 
 
-@router.delete("/me")
+@router.delete("/me", response_model=OkOut, response_model_exclude_unset=True)
 def delete_me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     from app.models import Game
     from app.storage import s3
@@ -116,13 +140,13 @@ def delete_me(user: User = Depends(get_current_user), db: Session = Depends(get_
     return {"ok": True}
 
 
-@router.post("/logout")
+@router.post("/logout", response_model=OkOut, response_model_exclude_unset=True)
 def logout(_user: User = Depends(get_current_user)):
     # 无状态 JWT：前端丢弃 token 即登出
     return {"ok": True}
 
 
-@router.post("/oauth/{provider}/demo")
+@router.post("/oauth/{provider}/demo", response_model=OAuthDemoOut, response_model_exclude_unset=True)
 def oauth_demo(provider: str, db: Session = Depends(get_db)):
     """Explicitly enabled local-only OAuth demo using shared identities."""
     if not settings.ENABLE_OAUTH_DEMO:

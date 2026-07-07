@@ -19,6 +19,7 @@ from app.core.config import settings
 from app.core.security import create_access_token
 from app.db.session import get_db
 from app.models import OAuthAccount, User
+from app.schemas import OAuthProvidersOut
 
 router = APIRouter(prefix="/auth", tags=["oauth"])
 _STATE_COOKIE = "gameweave_oauth_state"
@@ -61,7 +62,7 @@ def _redirect_uri(provider: str) -> str:
     return f"{settings.OAUTH_REDIRECT_BASE}/auth/oauth/{provider}/callback"
 
 
-@router.get("/oauth/providers")
+@router.get("/oauth/providers", response_model=OAuthProvidersOut, response_model_exclude_unset=True)
 def oauth_providers():
     """前端据此决定按钮走真实流程还是 demo。"""
     return {**{p: _enabled(p) for p in _PROVIDERS}, "_demo": settings.ENABLE_OAUTH_DEMO}

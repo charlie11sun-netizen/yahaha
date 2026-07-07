@@ -7,6 +7,7 @@ from app.api.deps import get_current_user, rate_limit
 from app.db.session import get_db
 from app.models import Asset
 from app.models.common import gen_uuid
+from app.schemas import UploadOut
 from app.services.upload_safety import (
     SafeUpload,
     UploadRejected,
@@ -21,7 +22,12 @@ router = APIRouter(prefix="/uploads", tags=["uploads"])
 MAX_FILES = 6
 MAX_FILE_BYTES = 10 * 1024 * 1024      # 单文件 10MB
 MAX_TOTAL_BYTES = 40 * 1024 * 1024     # 单次合计 40MB
-@router.post("", dependencies=[Depends(rate_limit(60, 3600, "upload"))])
+@router.post(
+    "",
+    response_model=UploadOut,
+    response_model_exclude_unset=True,
+    dependencies=[Depends(rate_limit(60, 3600, "upload"))],
+)
 async def upload(
     files: list[UploadFile] = File(...),
     user=Depends(get_current_user),

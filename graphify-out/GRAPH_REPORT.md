@@ -1,16 +1,16 @@
 # Graph Report - yahaha  (2026-07-06)
 
 ## Corpus Check
-- 180 files · ~241,873 words
+- 198 files · ~244,257 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 5293 nodes · 9782 edges · 198 communities (169 shown, 29 thin omitted)
-- Extraction: 92% EXTRACTED · 8% INFERRED · 0% AMBIGUOUS · INFERRED: 794 edges (avg confidence: 0.71)
+- 5407 nodes · 10107 edges · 208 communities (163 shown, 45 thin omitted)
+- Extraction: 92% EXTRACTED · 8% INFERRED · 0% AMBIGUOUS · INFERRED: 857 edges (avg confidence: 0.71)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `3a4a6d8a`
+- Built from commit: `6af8c3a0`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -115,6 +115,8 @@
 - [[_COMMUNITY_nh|nh]]
 - [[_COMMUNITY_so|so]]
 - [[_COMMUNITY_Follow|Follow]]
+- [[_COMMUNITY_批次 C：可观测性与成本|批次 C：可观测性与成本]]
+- [[_COMMUNITY_qc|qc]]
 - [[_COMMUNITY_Backend Errors Core|Backend Errors Core]]
 - [[_COMMUNITY_Env Code|Env Code]]
 - [[_COMMUNITY_0001 Baseline|0001 Baseline]]
@@ -133,7 +135,6 @@
 - [[_COMMUNITY_Migrate Import.sh|Migrate Import.sh]]
 - [[_COMMUNITY_Frontend Next.config|Frontend Next.config]]
 - [[_COMMUNITY_Frontend Postcss.config.|Frontend Postcss.config.]]
-- [[_COMMUNITY_test_comment_moderation_blocks_in_enforce_mode|test_comment_moderation_blocks_in_enforce_mode]]
 - [[_COMMUNITY_test_code_agent.py|test_code_agent.py]]
 - [[_COMMUNITY_2. 数据模型（逐表）|2. 数据模型（逐表）]]
 - [[_COMMUNITY_run_generation|run_generation]]
@@ -146,8 +147,10 @@
 - [[_COMMUNITY_数据模型与核心接口|数据模型与核心接口]]
 - [[_COMMUNITY_整站访问密码门禁（Site Access Gate）|整站访问密码门禁（Site Access Gate）]]
 - [[_COMMUNITY_AI Native 互动游戏平台 Multi-Agent 设计文档|AI Native 互动游戏平台 Multi-Agent 设计文档]]
+- [[_COMMUNITY_Ja|Ja]]
 - [[_COMMUNITY_Settings|Settings]]
 - [[_COMMUNITY_Ops 查询手册|Ops 查询手册]]
+- [[_COMMUNITY__l|_l]]
 - [[_COMMUNITY_ec|ec]]
 - [[_COMMUNITY_技术选型|技术选型]]
 - [[_COMMUNITY_GameWeave — AI Native 互动游戏平台（MVP）|GameWeave — AI Native 互动游戏平台（MVP）]]
@@ -165,6 +168,7 @@
 - [[_COMMUNITY_9. 长任务体验设计|9. 长任务体验设计]]
 - [[_COMMUNITY_13. API 设计|13. API 设计]]
 - [[_COMMUNITY_toast.tsx|toast.tsx]]
+- [[_COMMUNITY_.crossFadeFrom|.crossFadeFrom]]
 - [[_COMMUNITY_4. 顶部导航设计|4. 顶部导航设计]]
 - [[_COMMUNITY_6.1 Game Brief 卡片|6.1 Game Brief 卡片]]
 - [[_COMMUNITY_6.2 Creating Your Game 主状态卡|6.2 Creating Your Game 主状态卡]]
@@ -177,11 +181,16 @@
 - [[_COMMUNITY_AGENTS|AGENTS.md]]
 - [[_COMMUNITY_CLAUDE|CLAUDE.md]]
 - [[_COMMUNITY_design-qa|design-qa.md]]
+- [[_COMMUNITY_qc|qc]]
 - [[_COMMUNITY_5. 页面标题区|5. 页面标题区]]
 - [[_COMMUNITY_6.3 简化步骤流|6.3 简化步骤流]]
 - [[_COMMUNITY__seed_game|_seed_game]]
-- [[_COMMUNITY_7. 右侧 Preview  Status 面板|7. 右侧 Preview / Status 面板]]
+- [[_COMMUNITY_memory.py|memory.py]]
+- [[_COMMUNITY_publish.py|publish.py]]
+- [[_COMMUNITY_Do|Do]]
 - [[_COMMUNITY_2. Multi-Agent Pattern 选择|2. Multi-Agent Pattern 选择]]
+- [[_COMMUNITY__l|_l]]
+- [[_COMMUNITY_ph|ph]]
 
 ## God Nodes (most connected - your core abstractions)
 1. `i()` - 1151 edges
@@ -191,214 +200,194 @@
 5. `Create 页面设计文档` - 60 edges
 6. `It` - 54 edges
 7. `ie` - 51 edges
-8. `li` - 45 edges
-9. `Game` - 45 edges
-10. `GenerationTask` - 43 edges
+8. `GenerationTask` - 48 edges
+9. `li` - 45 edges
+10. `Game` - 44 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `AuthProvider()` --indirect_call--> `logout()`  [INFERRED]
   frontend/lib/auth.tsx → backend/app/api/routers/auth.py
+- `memory_retrieval_node()` --calls--> `_clip()`  [INFERRED]
+  backend/app/agents/memory.py → backend/app/agents/nodes_common.py
+- `memory_update_node()` --calls--> `_clip()`  [INFERRED]
+  backend/app/agents/memory.py → backend/app/agents/nodes_common.py
+- `failed_node()` --calls--> `_clip()`  [INFERRED]
+  backend/app/agents/planning.py → backend/app/agents/nodes_common.py
 - `xn()` --calls--> `i()`  [INFERRED]
   backend/app/agents/vendor/three.min.js → backend/app/agents/vendor/phaser.min.js
-- `_user_from_creds()` --calls--> `decode_token()`  [INFERRED]
-  backend/app/api/deps.py → backend/app/core/security.py
-- `_enqueue_generation()` --calls--> `current_request_id()`  [INFERRED]
-  backend/app/api/routers/tasks.py → backend/app/core/telemetry.py
-- `test_inject_csp_placed_in_head_and_idempotent()` --calls--> `inject_csp()`  [INFERRED]
-  backend/tests/test_sandbox_enforcement.py → backend/app/services/packaging.py
 
 ## Import Cycles
 - None detected.
 
-## Communities (198 total, 29 thin omitted)
+## Communities (208 total, 45 thin omitted)
 
 ### Community 0 - "Three.js Vendor"
-Cohesion: 0.02
-Nodes (63): _activateAction(), _addInactiveAction(), _addInactiveBinding(), Ai, Ar(), _bindAction(), br(), Cc (+55 more)
-
-### Community 1 - "Agent Nodes"
-Cohesion: 0.12
-Nodes (10): archetype_router_node(), _brief_keywords(), build_validation_node(), _prompt_cues(), LangGraph nodes for GameWeave generation.  The graph is fixed and safety-criti, 3D 路由：信模型给的 genre，不再用易误判的关键词级联（旧版会把 spec 里出现 "track"/     "car" 的射击 prompt 误判成, _route_archetype(), _route_archetype_3d() (+2 more)
+Cohesion: 0.03
+Nodes (58): _activateAction(), _addInactiveAction(), _addInactiveBinding(), Ai, Ar(), _bindAction(), br(), Cc (+50 more)
 
 ### Community 2 - "Backend Memory Profiles Service"
-Cohesion: 0.12
-Nodes (64): now_utc(), MemoryProfileEvidence, _active_conflict(), _active_evidence_rows(), _adopt_similar_key(), _apply_evidence_state(), _attribute_for(), _backfill_profile_embeddings() (+56 more)
+Cohesion: 0.11
+Nodes (71): now_utc(), MemoryProfile, _active_conflict(), _active_evidence_rows(), _adopt_similar_key(), _apply_evidence_state(), _attribute_for(), backfill_missing_profiles() (+63 more)
 
 ### Community 3 - "Three.js Vendor 2"
-Cohesion: 0.07
-Nodes (47): Any, chat(), _client(), _estimate_prompt_tokens(), _estimate_tokens(), _event_error_message(), _extract_response_text(), LLMResult (+39 more)
+Cohesion: 0.08
+Nodes (42): Any, chat(), _client(), _estimate_prompt_tokens(), _estimate_tokens(), _event_error_message(), _extract_response_text(), LLMResult (+34 more)
 
 ### Community 4 - "Tests Test Memory"
-Cohesion: 0.11
-Nodes (55): MemoryItem, MemoryProfile, MemorySettings, User, backfill_missing_profiles(), profile_history(), _profiles_for_extraction_context(), Active and candidate profiles the extractor should reuse keys from.      Candi (+47 more)
+Cohesion: 0.10
+Nodes (56): MemoryItem, MemorySettings, User, profile_history(), reconcile_memory_item(), db_session_factory(), test_safety_intake_blocks_prompt_and_records_event(), _auth() (+48 more)
 
-### Community 6 - "Three.js Vendor 4"
-Cohesion: 0.05
-Nodes (5): Lt(), na, Rt(), setFromCamera(), Ti
+### Community 5 - "Three.js Vendor 3"
+Cohesion: 0.10
+Nodes (53): TaskCreateIn, Business-layer error that routers translate into HTTP responses., ServiceError, activate_version(), add_comment(), delete_comment(), delete_game(), game_manifest() (+45 more)
 
 ### Community 7 - "Frontend Explore Page"
 Cohesion: 0.07
 Nodes (41): artForGame(), BoundArt, boundArtPool, featureStrip, flowSteps, footerColumns, heroImageForGame(), HomeGame (+33 more)
 
 ### Community 8 - "Three.js Vendor 5"
-Cohesion: 0.13
-Nodes (16): bindSkeletons(), hc, load(), loadAsync(), parse(), parseAnimations(), parseAsync(), parseGeometries() (+8 more)
+Cohesion: 0.09
+Nodes (14): bindSkeletons(), hc, load(), loadAsync(), parse(), parseAnimations(), parseAsync(), parseGeometries() (+6 more)
 
 ### Community 9 - "Three.js Vendor 6"
 Cohesion: 0.04
-Nodes (11): dc, fc, ml(), Mo, oo, pc, pl, so (+3 more)
+Nodes (13): al(), dc, fc, fo, gl, go(), oo, parseShapes() (+5 more)
 
 ### Community 11 - "Backend Games API"
-Cohesion: 0.13
-Nodes (39): activate_version(), add_comment(), delete_comment(), delete_game(), favorite(), game_manifest(), get_game(), leaderboard() (+31 more)
+Cohesion: 0.17
+Nodes (31): activate_version(), add_comment(), delete_comment(), delete_game(), favorite(), game_manifest(), get_game(), leaderboard() (+23 more)
 
 ### Community 13 - "Backend S3 Storage"
 Cohesion: 0.05
-Nodes (5): Ca, ds(), ln, Ue, updateMatrixWorld()
+Nodes (7): Ca, ds(), ln, setFromCamera(), sn, Ue, updateMatrixWorld()
 
 ### Community 14 - "Three.js Vendor 9"
-Cohesion: 0.08
-Nodes (14): al(), cl(), el(), il(), jo(), ko, ll(), nl() (+6 more)
+Cohesion: 0.06
+Nodes (19): cl(), el(), hl(), Ho(), il(), jo(), ko, ll() (+11 more)
 
 ### Community 15 - "Three.js Vendor 10"
 Cohesion: 0.07
-Nodes (7): Ft(), kt(), Tt(), wt(), Xt(), Yt(), Zt
-
-### Community 17 - "Backend Telemetry Core"
-Cohesion: 0.04
-Nodes (12): bc, bs, clone(), ec, hn, Mi, Qi(), rn (+4 more)
+Nodes (5): Tt(), wt(), Xt(), Yt(), Zt
 
 ### Community 18 - "Frontend Create Page"
-Cohesion: 0.05
-Nodes (40): ActionPanel(), ActivityDrawer(), AgentContextSummary, cleanStreamLine(), CreateWorkspace(), designField(), displayStepSummary(), FileChange (+32 more)
+Cohesion: 0.23
+Nodes (9): CreateInput(), TaskMissingCard(), TasksDrawer(), useNow(), useCreateTaskQuery(), useCreateTasksQuery(), CreatePageInner(), ApiError (+1 more)
 
 ### Community 19 - "Three.js Vendor 12"
-Cohesion: 0.06
-Nodes (5): containsPoint(), equals(), _i, ic, we()
+Cohesion: 0.11
+Nodes (4): add(), containsPoint(), _i, no
 
 ### Community 21 - "Three.js Vendor 14"
-Cohesion: 0.05
-Nodes (13): 73482(), add(), At(), closestPointToPoint(), closestPointToPointParameter(), delta(), distanceToPoint(), mn (+5 more)
+Cohesion: 0.06
+Nodes (7): _a(), applyMatrix4(), ba, bi, Ji, Ki(), ro()
 
 ### Community 22 - "Backend Upload Safety Service"
-Cohesion: 0.18
-Nodes (11): 1. 实体关系总览, 3. 枚举与状态机, 4. 远端产物协议（OSS + manifest）, 5.1 Auth, 5.2 Home / Games, 5.3 Create / 生成, 5.4 Memory, 5. 核心接口（REST） (+3 more)
+Cohesion: 0.10
+Nodes (28): archetype_router_node(), _asset_log_lines(), asset_processing_node(), _brief_keywords(), _coerce_brief(), _coerce_mechanic_plan(), _content_log_lines(), _content_plan() (+20 more)
 
 ### Community 23 - "Backend Memory Service"
 Cohesion: 0.13
 Nodes (40): _backfill_candidate_embeddings(), _bm25_scores(), capture_success_memories(), _category_for(), _clean(), create_memories_batch(), create_memory(), _embed_one() (+32 more)
 
 ### Community 24 - "Three.js Vendor 15"
-Cohesion: 0.10
-Nodes (4): dispose(), ne, setSize(), ta
+Cohesion: 0.06
+Nodes (53): ActionPanel(), ActivityDrawer(), CreateWorkspace(), designField(), FileChangeRow(), PreviewCard(), ProgressCard(), activeTaskLogs() (+45 more)
 
 ### Community 25 - "Three.js Vendor 16"
-Cohesion: 0.06
-Nodes (4): gc, li, remove(), sn
+Cohesion: 0.07
+Nodes (4): gc, li, parseObject(), remove()
 
 ### Community 26 - "Three.js Vendor 17"
-Cohesion: 0.07
-Nodes (6): $c, disconnect(), getInput(), getOutput(), qc, Xc()
-
-### Community 27 - "Three.js Vendor 18"
-Cohesion: 0.07
-Nodes (8): constructor(), Da, fo, _initMemoryManager(), ka, setColors(), setDirection(), subscribe_()
+Cohesion: 0.10
+Nodes (4): $c, disconnect(), getInput(), getOutput()
 
 ### Community 28 - "Three.js Vendor 19"
-Cohesion: 0.09
-Nodes (9): ac(), cn, fs(), getParameter(), jl(), ms(), rc, sc (+1 more)
+Cohesion: 0.08
+Nodes (7): bo, clampPoint(), copy(), distanceToPoint(), Mo, setFromCenterAndSize(), vn
 
 ### Community 29 - "Tests Test Tasks"
-Cohesion: 0.17
-Nodes (17): Game, _auth(), _completed_preview(), 3D 引擎已 vendored，且 3D bundle 会注入 three.min.js（2D 不注入）。, test_create_and_list_task(), test_create_remix_task_from_published_source(), test_create_revision_task_preserves_raw_feedback(), test_create_task_dimension_3d() (+9 more)
+Cohesion: 0.11
+Nodes (29): Game, GameVersion, _get_or_create_tag(), _get_or_create_user(), _prune_retired(), Game, User, Idempotent database seed for curated GameWeave sample games.  The API containe (+21 more)
 
 ### Community 30 - "Tests Test Pipeline Semantics"
-Cohesion: 0.20
-Nodes (23): Base, GameSource, GameStatus, PkMixin, TimestampMixin, Favorite, GameVersion, Like (+15 more)
+Cohesion: 0.10
+Nodes (41): follow(), get_profile(), get_user_games(), Session, unfollow(), Base, GameSource, GameStatus (+33 more)
 
 ### Community 31 - "Three.js Vendor 20"
-Cohesion: 0.20
-Nodes (15): _clip(), code_revision_node(), _controls_line(), failed_node(), feedback_understanding_node(), _file_log_lines(), _generate_revision_code(), memory_retrieval_node() (+7 more)
+Cohesion: 0.14
+Nodes (26): _assemble_bundle(), code_generation_node(), code_revision_node(), _extract_bundle(), _extract_js(), _generate_code(), _generate_revision_code(), Code generation and revision nodes for the GameWeave LangGraph pipeline. (+18 more)
 
 ### Community 32 - "Frontend Package"
 Cohesion: 0.06
 Nodes (33): dependencies, class-variance-authority, clsx, @fontsource/albert-sans, @fontsource/ibm-plex-mono, @fontsource/space-grotesk, lucide-react, next (+25 more)
 
 ### Community 33 - "Three.js Vendor 21"
-Cohesion: 0.04
-Nodes (20): _a(), bi, bl, bo, copy(), dl(), fl(), Ga (+12 more)
+Cohesion: 0.06
+Nodes (13): hn, Qi(), rn, setFromObject(), setTime(), tn(), tr(), update() (+5 more)
 
 ### Community 34 - "Three.js Vendor 22"
-Cohesion: 0.10
-Nodes (12): cs(), en(), hs(), ks(), ls(), os(), _s(), ss() (+4 more)
+Cohesion: 0.08
+Nodes (15): cn, cs(), en(), fs(), getParameter(), hs(), ls(), ms() (+7 more)
 
 ### Community 35 - "Three.js Vendor 23"
-Cohesion: 0.08
-Nodes (10): an, mc, Pn, setFromObject(), setTime(), tr(), update(), vt (+2 more)
+Cohesion: 0.09
+Nodes (4): bind(), ec, getValue(), nh
 
 ### Community 36 - "Three.js Vendor 24"
-Cohesion: 0.06
-Nodes (9): bt(), ea, ee, lc, _n(), Oc, Qt(), setUsage() (+1 more)
+Cohesion: 0.10
+Nodes (8): Ft(), ks(), kt(), lc, Oc, Qt(), $t, Vc
 
 ### Community 37 - "Backend Content Safety Service"
-Cohesion: 0.06
-Nodes (53): get_current_user(), get_optional_user(), _get_rl_redis(), Session, User, rate_limit(), 基于 Redis 的简单 IP 限流依赖工厂；Redis 不可用时放行(fail-open)。, _user_from_creds() (+45 more)
+Cohesion: 0.05
+Nodes (58): get_current_user(), get_optional_user(), _get_rl_redis(), Session, User, rate_limit(), 基于 Redis 的简单 IP 限流依赖工厂；Redis 不可用时放行(fail-open)。, _user_from_creds() (+50 more)
 
 ### Community 38 - "Backend Memory Models"
 Cohesion: 0.11
 Nodes (9): _phaser_files(), Phaser 2D 运行时试点：组装注入、QA 放行、发布挂载、提示词切换、skills 可读（全离线）。, _skipped_sandbox(), test_gameplay_qa_canvas_rules_unchanged(), test_gameplay_qa_passes_phaser_idioms(), test_phaser_skills_visible_to_repair_agent(), test_publish_helpers_know_phaser(), test_sandbox_files_include_phaser_engine() (+1 more)
 
 ### Community 39 - "Three.js Vendor 25"
-Cohesion: 0.19
-Nodes (25): finish_step(), AgentStep, GenerationTask, _auth(), _make_task(), P0 语义回归：真取消、重投递幂等、publish 幂等、记忆捕获幂等。  这些行为共同保证：取消不再烧 LLM / 不留孤儿游戏；acks_late 重投, 取消恰好落在 publish 节点执行中：图已建出 Game，但收尾必须把孤儿清掉。, RUNNING 重投递 + 有快照：保留步骤、悬挂步骤翻 failed、tokens 不清零、     initial 从快照重建并带 _resume_nod (+17 more)
+Cohesion: 0.07
+Nodes (62): build_graph(), 固定 LangGraph 顶层工作流（docs/multi-agent_design.md §7.2）。  safety_intake → intent_s, _cleanup_cancelled_artifacts(), _json_object(), _load_resume_snapshot(), _load_revision_files(), 生成任务执行入口。  跑固定 LangGraph 工作流；每个节点由 tracing.logged 包装，开始/结束实时写 agent_steps / a, state_json → (node, state)。缺失/损坏一律 None，回落全新跑，不比旧路径差。 (+54 more)
 
 ### Community 40 - "Frontend Lib"
-Cohesion: 0.09
-Nodes (26): coverBackground(), GameCard(), authHeader(), gateHeader(), handleSessionExpiry(), req(), AgentBundleFile, AgentBundleMetadata (+18 more)
+Cohesion: 0.07
+Nodes (26): INITIAL_RUNTIME, Phase, RuntimeKey, RuntimeStatus, coverBackground(), GameCard(), authHeader(), gateHeader() (+18 more)
 
 ### Community 41 - "Frontend Me Page"
-Cohesion: 0.09
-Nodes (7): avatarChoices(), coverStyle(), joinedDate(), Section, SECTIONS, StudioGameCard(), StudioPage()
+Cohesion: 0.12
+Nodes (27): Avatar(), GameGrid(), MemorySection(), Panel(), StatCard(), StudioGameCard(), TaskTable(), avatarChoices() (+19 more)
 
 ### Community 42 - "Three.js Vendor 26"
-Cohesion: 0.18
-Nodes (11): _js_completeness_error(), BuildValidate —— 生成产物的确定性校验（docs/multi-agent_design.md §6.6）。  文件白名单 + forbidd, index.html 里 <script src> 的相对引用，按出现顺序（即浏览器加载顺序）。, script_srcs(), _skip_regex_literal(), validate_files(), 第三批回归：CSP 强制注入、演示后门默认关闭、扩充的违禁 API 黑名单。, test_inject_csp_placed_in_head_and_idempotent() (+3 more)
+Cohesion: 0.08
+Nodes (9): constructor(), Da, Et(), _initMemoryManager(), ka, parseTextures(), setColors(), setDirection() (+1 more)
 
 ### Community 43 - "Frontend Games Page"
 Cohesion: 0.09
-Nodes (22): CreatePageInner(), useNow(), coverBackground(), DetailPage(), metadata, LoginInner(), Providers(), AuthorPage() (+14 more)
+Nodes (21): AppShell(), usesLegacyPfStyles(), coverBackground(), DetailPage(), metadata, LoginInner(), Providers(), AuthorPage() (+13 more)
 
 ### Community 44 - "Three.js Vendor 27"
-Cohesion: 0.29
-Nodes (6): _files(), test_sandbox_client_adds_http_timeout_headroom(), test_sandbox_client_fails_closed_when_required_and_unavailable(), test_sandbox_client_reports_http_error_detail(), test_sandbox_client_skips_when_not_required_and_unconfigured(), test_setinterval_loop_is_valid_sandbox_activity()
-
-### Community 45 - "Three.js Vendor 28"
-Cohesion: 0.06
-Nodes (5): _lendControlInterpolant(), stopAllAction(), uh, xl, yl
-
-### Community 47 - "Backend Auth API"
-Cohesion: 0.15
-Nodes (3): go(), To, toShapes()
+Cohesion: 0.07
+Nodes (6): At(), closestPointToPoint(), closestPointToPointParameter(), delta(), mn, St()
 
 ### Community 48 - "Three.js Vendor 30"
 Cohesion: 0.06
 Nodes (5): ao, co(), Eo, lineTo(), moveTo()
 
 ### Community 49 - "Backend Tasks API"
-Cohesion: 0.29
-Nodes (17): cancel_task(), _copy_source_task_context(), _create_remix_task(), create_task(), delete_task(), _enqueue_generation(), _ensure_active_task_slot(), get_task() (+9 more)
+Cohesion: 0.33
+Nodes (11): cancel_task(), create_task(), delete_task(), get_task(), list_tasks(), Session, retry_task(), revise_task() (+3 more)
 
 ### Community 50 - "Main Code"
-Cohesion: 0.22
-Nodes (10): _assemble_bundle(), code_generation_node(), _extract_bundle(), _extract_js(), _generate_code(), 演示用故障注入（默认关闭）。开启后 prompt 含 force-repair/force-replan     会故意注入违禁 API 触发修复回环 ——, Parse a model reply into {path: content}. Expects three fenced blocks     (html, Turn parsed model files into the canonical 3-file bundle; synthesize a     mini (+2 more)
+Cohesion: 0.06
+Nodes (9): fl(), Ga, Mi, nc, ol(), pl, ra, zl (+1 more)
 
 ### Community 51 - "Frontend Tsconfig"
 Cohesion: 0.10
 Nodes (19): compilerOptions, allowJs, esModuleInterop, incremental, isolatedModules, jsx, lib, module (+11 more)
 
 ### Community 52 - "Three.js Vendor 31"
-Cohesion: 0.07
-Nodes (57): change_password(), delete_me(), _initial(), login(), logout(), me(), oauth_demo(), Session (+49 more)
+Cohesion: 0.08
+Nodes (50): AgentLogEntryOut, AgentLogItemOut, AuthOut, CommentIn, CommentListOut, CommentOut, DesignFieldOut, DesignPreviewOut (+42 more)
 
 ### Community 53 - "Agent Pipeline"
 Cohesion: 0.00
@@ -417,36 +406,32 @@ Cohesion: 0.03
 Nodes (60): 10. 实时更新策略, 11.1 组件列表, 11.2 GenerationStatusPanel, 11.3 GenerationTimeline, 11.4 CurrentStepCard, 11.5 GameDesignPreviewCard, 11.6 AgentSummaryCard, 11. 页面组件设计 (+52 more)
 
 ### Community 57 - "Backend Schemas"
-Cohesion: 0.05
-Nodes (14): 84366(), Dh(), gl, Io, Ja, lo, no, Ot() (+6 more)
+Cohesion: 0.50
+Nodes (3): GenerationState, LangGraph 共享状态与步骤常量（对应 docs/multi-agent_design.md §5）。, TypedDict
 
 ### Community 58 - "Frontend Lib 2"
-Cohesion: 0.30
-Nodes (11): _http_error_detail(), _payload(), Raised when the build sandbox is required but cannot be reached., _request_timeout_seconds(), run_bundle(), SandboxResult, SandboxUnavailableError, _skipped() (+3 more)
+Cohesion: 0.17
+Nodes (23): change_password(), delete_me(), _initial(), login(), logout(), me(), oauth_demo(), Session (+15 more)
 
 ### Community 59 - "Tests Test Uploads"
 Cohesion: 0.27
 Nodes (13): _auth(), _jpeg_with_exif(), _png_bytes(), test_upload_bad_type(), test_upload_non_image_presign_forces_attachment(), test_upload_ok(), test_upload_reencodes_jpeg_and_strips_exif(), test_upload_rejects_html_spoofed_as_image() (+5 more)
 
 ### Community 60 - "Three.js Vendor 34"
-Cohesion: 0.09
-Nodes (22): 10. 与当前实现的衔接, 11. 测试要求, 14. 参考文献, 1. 目标, 2.1 原文优先, 2.2 增量写入, 2.3 明确优先级, 2.4 记忆不是指令 (+14 more)
+Cohesion: 0.08
+Nodes (25): 10. 与当前实现的衔接, 11. 测试要求, 12.1 证据、关联、状态与历史, 12.2 `memory_profiles`, 12.3 作用范围判断, 12.4 提取与准确性判断, 12.5 冲突状态机, 12.6 检索和 Prompt 组装 (+17 more)
 
 ### Community 61 - "Frontend Lib 3"
 Cohesion: 0.41
 Nodes (9): POST(), gateEnabled(), gateToken(), publicBrowseEnabled(), safeEqual(), sitePassword(), config, isPublicBrowsePath() (+1 more)
 
 ### Community 62 - "Three.js Vendor 35"
-Cohesion: 0.05
-Nodes (39): 0. 背景与总判断, A1. sandbox-runner 服务（新组件 `sandbox/`）, A2. worker 集成与 fail-closed, A3. 资源限制铺满, A4. 每用户并发槽位, A5. 恶意样本回归集, A'. Token 硬预算（C3 之后，半天）, A 批次验收 (+31 more)
-
-### Community 63 - "Three.js Vendor 36"
-Cohesion: 0.20
-Nodes (11): _gameplay_qa(), _gameplay_qa_log_lines(), gameplay_qa_node(), _js_braced_body(), _js_method(), _phaser_destroyed_body_issues(), _phaser_player_overlap_issues(), _phaser_removed_api_issues() (+3 more)
+Cohesion: 0.08
+Nodes (24): 0. 背景与总判断, B1. 上传管线（新模块 `backend/app/services/upload_safety.py`）, B2. 内容审核（新模块 `backend/app/services/content_safety.py`）, B 批次验收, D1. 版本切换（1 天）, D2. Remix（2 天）, D3. 门禁分层公开 Demo（1–1.5 天）, D4. Playwright E2E（1.5–2 天） (+16 more)
 
 ### Community 64 - "MemoryEntityLink"
-Cohesion: 0.35
-Nodes (10): MemoryEntityLink, _claim_entities(), _clean(), delete_links_for_memory(), normalize_entity_name(), MemoryItem, Session, rank_candidate_memories_by_entity() (+2 more)
+Cohesion: 0.09
+Nodes (5): bt(), ea, ee, _n(), setUsage()
 
 ### Community 65 - "Tests Test Auth"
 Cohesion: 0.27
@@ -461,12 +446,16 @@ Cohesion: 0.06
 Nodes (33): 10. Success Criteria, 11. Why This Fits the Test Requirements, 12. Non-goals, 1. Goal, 2.1 Single-template bottleneck, 2.2 GameDesign contract is too soft, 2.3 Validation only checks build and safety, 2.4 Repair only fixes code-level issues (+25 more)
 
 ### Community 68 - "main.py"
-Cohesion: 0.20
-Nodes (18): Browser, Page, BundleFile, _decode_files(), _drive_page(), _ensure_browser(), health(), _install_routes() (+10 more)
+Cohesion: 0.05
+Nodes (59): Session, upload(), Settings, gen_uuid(), _http_error_detail(), _payload(), Raised when the build sandbox is required but cannot be reached., _request_timeout_seconds() (+51 more)
 
 ### Community 69 - "Backend Memory API"
 Cohesion: 0.06
 Nodes (35): 17777(), 21859(), 26479(), 28103(), 31029(), 34454(), 37289(), 37867() (+27 more)
+
+### Community 70 - "bs"
+Cohesion: 0.08
+Nodes (6): bc, clone(), dispose(), ne, setSize(), ta
 
 ### Community 71 - "Helpers Code"
 Cohesion: 0.40
@@ -477,12 +466,8 @@ Cohesion: 0.22
 Nodes (5): build_game_design_prompt(), build_intent_spec_prompt(), _memory_block(), Agent 系统提示词（real 模式用）。mock 模式走 nodes.py 的启发式，不调模型。  模型优先：Coder 直接产出完整三件套（index, GameDesign 模型的上下文。      设计模型是整条链里最有创造性的一步，过去只拿到 GameSpec + AssetManifest，看不到前面
 
 ### Community 73 - "Three.js Vendor 40"
-Cohesion: 0.14
-Nodes (19): _balance_log_lines(), balance_plan_node(), _classify_gameplay_failure(), _coerce_design(), _design_log_lines(), _entity_line(), game_design_node(), gameplay_repair_node() (+11 more)
-
-### Community 74 - "Three.js Vendor 41"
-Cohesion: 0.24
-Nodes (11): brief_expansion_node(), _brief_log_lines(), _coerce_brief(), _coerce_mechanic_plan(), _content_log_lines(), _content_plan(), content_plan_node(), _heuristic_brief() (+3 more)
+Cohesion: 0.18
+Nodes (14): _validation_log_lines(), build_validation_node(), _gameplay_qa(), _gameplay_qa_log_lines(), gameplay_qa_node(), _js_braced_body(), _js_method(), _phaser_destroyed_body_issues() (+6 more)
 
 ### Community 75 - "Three.js Vendor 42"
 Cohesion: 0.07
@@ -493,20 +478,16 @@ Cohesion: 0.40
 Nodes (9): _auth(), _game(), 第二批语义回归：可见性矩阵、预览不计数、is_active 全局生效、删除清理 OSS。, draft/preview 的评论、排行、计分、manifest、play、related 与详情页同一条可见性规则。, test_author_preview_play_not_counted(), test_delete_game_cleans_object_storage(), test_disabled_account_rejected_globally(), test_draft_subresources_hidden_from_non_author() (+1 more)
 
 ### Community 77 - "Frontend Play Page"
-Cohesion: 0.18
-Nodes (5): INITIAL_RUNTIME, Phase, RuntimeKey, RuntimeStatus, api
-
-### Community 78 - "Xe"
-Cohesion: 0.24
-Nodes (17): _declared_allowed(), _decoded_text(), _guess_mime(), _kind(), _looks_like_html(), _looks_like_svg(), _reencode_image(), SafeUpload (+9 more)
+Cohesion: 0.22
+Nodes (3): 84366(), Lt(), Ot()
 
 ### Community 79 - "packaging.py"
-Cohesion: 0.31
-Nodes (8): _make_user_and_game(), 第六批回归：混合表达按 claim 分流、反义方向词不错并、强化后向量跟随文本。, 强化改写 summary 后向量必须跟随（否则同义认领随时间漂移）。, 以后默认像素风，这次先把跳跃调高" —— 持久偏好入档（user 影子/game），     临时部分路由到 task 作用域，而不是整条丢弃。, 跳跃不要太高" vs "跳跃不要太低"：embedding 高相似 + 同为否定句，     方向冲突守卫必须阻止 value 复用（否则反向偏好被当成强化）。, test_mixed_ephemeral_feedback_keeps_persistent_claim(), test_opposite_direction_feedback_not_merged_as_reinforcement(), test_reinforce_refreshes_embedding_with_summary()
+Cohesion: 0.21
+Nodes (14): create_memory(), delete_memory(), get_memory_profile_history(), get_memory_settings(), list_memories(), list_memory_profiles(), Session, update_memory() (+6 more)
 
 ### Community 80 - "Three.js Vendor 43"
-Cohesion: 0.22
-Nodes (17): _bundle_references(), _content_type_for(), inject_csp(), _phaser_engine_bytes(), publish_generated(), publish_remix(), publish_revision(), 产物打包上传到对象存储。  - write_bundle：单文件 bundle（seed 示例游戏沿用） - publish_generated：多文件产 (+9 more)
+Cohesion: 0.10
+Nodes (28): _js_completeness_error(), BuildValidate —— 生成产物的确定性校验（docs/multi-agent_design.md §6.6）。  文件白名单 + forbidd, index.html 里 <script src> 的相对引用，按出现顺序（即浏览器加载顺序）。, script_srcs(), _skip_regex_literal(), validate_files(), _bundle_references(), _content_type_for() (+20 more)
 
 ### Community 81 - "Backend Users API"
 Cohesion: 0.07
@@ -515,10 +496,6 @@ Nodes (52): _apply_chunks(), author_enabled(), available_skills(), _build_author
 ### Community 82 - "Tests Test Rate Limit"
 Cohesion: 0.31
 Nodes (5): client, _CountingRedis, _Req, test_rate_limit_fails_open_when_redis_down(), test_rate_limit_raises_after_limit()
-
-### Community 83 - "Tests Test Social"
-Cohesion: 0.11
-Nodes (27): _asset_log_lines(), asset_processing_node(), _theme_cover(), begin_step(), current_step_id(), _payload_json(), 节点级实时追踪：每个节点开始写 running 步骤、结束翻 done，前端可见"正在运行"。  用装饰器包住每个 LangGraph 节点（graph.p, 用户已取消任务：在下一个节点边界中止整张图（pipeline 捕获后静默收尾）。 (+19 more)
 
 ### Community 84 - "Package Code"
 Cohesion: 0.22
@@ -529,24 +506,24 @@ Cohesion: 0.39
 Nodes (6): build_config(), _integer(), _number(), Deterministic game template renderer.  The model plans GameSpec/GameDesign. Code, render_files(), _template_ref()
 
 ### Community 86 - "Lt"
-Cohesion: 0.29
-Nodes (4): client(), _FakeRedis, 测试夹具：SQLite 内存库 + 覆盖 get_db / S3 / Celery / 限流，免起外部依赖。, 限流用：每次 incr 都返回 1，等于不限流。
+Cohesion: 0.28
+Nodes (12): _creds(), _enabled(), _fetch_profile(), _initial(), oauth_callback(), oauth_providers(), oauth_start(), Session (+4 more)
 
 ### Community 87 - "ph"
 Cohesion: 0.22
-Nodes (9): 12.1 证据、关联、状态与历史, 12.2 `memory_profiles`, 12.3 作用范围判断, 12.4 提取与准确性判断, 12.5 冲突状态机, 12.6 检索和 Prompt 组装, 12.7 用户控制, 12.8 自动更新验收指标 (+1 more)
+Nodes (9): 13.1 实施边界, 13.2 固定小模型提取, 13.3 成本控制, 13.4 结构化输出与程序裁决, 13.5 批量写入与失败降级, 13.6 实体索引, 13.7 三路 RRF, 13.8 验收要求 (+1 more)
 
 ### Community 88 - "Three.js Vendor 46"
 Cohesion: 0.09
 Nodes (21): 1.1 产品目标, 1.2 用户角色, 1. 测试内容, 1. 需求概览, 2.1 Auth, 2.2 Home, 2.3 Play, 2.4 Create (+13 more)
 
 ### Community 89 - "Three.js Vendor 47"
-Cohesion: 0.20
+Cohesion: 0.17
 Nodes (5): Gn(), jn(), kn, qn(), Wn()
 
 ### Community 90 - "批次 C：可观测性与成本"
-Cohesion: 0.15
-Nodes (18): activeTaskLogs(), activityMessageFromEvent(), clineToolLabel(), eventArray(), eventNumber(), eventString(), eventType(), fileChangeFromEvent() (+10 more)
+Cohesion: 0.09
+Nodes (3): equals(), ic, ml()
 
 ### Community 92 - "Three.js Vendor 49"
 Cohesion: 0.10
@@ -557,36 +534,36 @@ Cohesion: 0.38
 Nodes (6): 迁移链健康测试。  守住两条底线（旧 0001 基线曾用 create_all 引用当前模型，导致全新库 `alembic upgrade head` 在 00, 表 → (列名/可空/类型串, 索引名/唯一性)。类型串在同方言下双方应渲染一致。, _run_upgrade_head(), _schema_snapshot(), test_upgrade_head_replays_on_fresh_db_and_matches_orm(), Path
 
 ### Community 94 - "gate.py"
-Cohesion: 0.32
-Nodes (8): _balance_plan(), _coerce_spec(), _detect_genre(), _detect_theme(), _difficulty_factor(), _has_any(), _heuristic_spec(), intent_spec_node()
+Cohesion: 0.19
+Nodes (13): _balance_log_lines(), balance_plan_node(), _heuristic_design(), _merge_balance_into_design(), _simplify_design(), _classify_gameplay_failure(), gameplay_repair_node(), _nodes_facade_attr() (+5 more)
 
 ### Community 95 - "Agent Smoke"
 Cohesion: 0.31
 Nodes (7): Runtime smoke test for generated game.js bundles.  The check runs top-level Ja, Run game.js top-level code once.      Returns ok=True when loading is clean or, Smoke a whole bundle: concatenate its .js files in index.html <script> order., _run_in_child(), run_smoke(), run_smoke_files(), _signal_name()
 
 ### Community 96 - "sandbox_client.py"
-Cohesion: 0.31
-Nodes (10): _get_or_create_tag(), _get_or_create_user(), _prune_retired(), Game, User, Idempotent database seed for curated GameWeave sample games.  The API containe, Remove retired sample games and their remote artifacts. Idempotent., run() (+2 more)
+Cohesion: 0.25
+Nodes (8): A'. Token 硬预算（C3 之后，半天）, C1. Sentry（半天）, C2. 结构化日志（1 天）, C3. 按次 LLM usage 与成本（1.5 天，是 A' 预算的地基）, C4. OpenTelemetry（1–1.5 天）, C5. 失败链路（1 天）, C 批次验收, 批次 C：可观测性与成本
 
 ### Community 97 - "nh"
-Cohesion: 0.22
-Nodes (9): 13.1 实施边界, 13.2 固定小模型提取, 13.3 成本控制, 13.4 结构化输出与程序裁决, 13.5 批量写入与失败降级, 13.6 实体索引, 13.7 三路 RRF, 13.8 验收要求 (+1 more)
+Cohesion: 0.43
+Nodes (7): activityMessageFromEvent(), clineToolLabel(), eventArray(), eventNumber(), eventString(), eventType(), fileChangeFromEvent()
 
 ### Community 99 - "Follow"
 Cohesion: 0.04
-Nodes (12): Ce, clampPoint(), expandByPoint(), expandByScalar(), getCenter(), getSize(), he, isEmpty() (+4 more)
+Nodes (12): Ce, expandByPoint(), expandByScalar(), getCenter(), getSize(), he, isEmpty(), makeEmpty() (+4 more)
+
+### Community 101 - "qc"
+Cohesion: 0.33
+Nodes (6): 2.1 原文优先, 2.2 增量写入, 2.3 明确优先级, 2.4 记忆不是指令, 2.5 PostgreSQL 存储，向量服务可降级, 2. 设计原则
 
 ### Community 102 - "Backend Errors Core"
 Cohesion: 0.67
 Nodes (3): TaskErrorCode, Enum, str
 
-### Community 106 - "Three.js Vendor 55"
-Cohesion: 0.40
-Nodes (3): Settings, BaseSettings, Settings
-
 ### Community 107 - ".getX"
-Cohesion: 0.11
-Nodes (3): applyMatrix4(), Ji, Ki()
+Cohesion: 0.05
+Nodes (13): bl, Dh(), Io, Ja, lo, Po, tl(), translate() (+5 more)
 
 ### Community 108 - "Three.js Vendor 57"
 Cohesion: 0.12
@@ -596,21 +573,17 @@ Nodes (17): 6.10 GameCodeAgent (`code_generation`), 6.11 BuildValidateAgent (`bu
 Cohesion: 0.12
 Nodes (17): 1. 总体架构图, 2. 组件职责, 3. Create 生成时序图, 4.1 状态图（节点与回环）, 4.2 状态累积（每个节点追加的内容）, 4.3 Preview 反馈与增量修改, 4.4 Memory System, 4.5 一次运行时序 (+9 more)
 
-### Community 147 - "test_comment_moderation_blocks_in_enforce_mode"
-Cohesion: 0.83
-Nodes (3): _auth(), _seed_game(), test_comment_moderation_blocks_in_enforce_mode()
-
 ### Community 148 - "test_code_agent.py"
 Cohesion: 0.09
 Nodes (36): _files(), _outcome(), _patch(), _qa_result(), repair 内层 agent：会话工具语义 + 节点接线/回退（全部离线，不触网不依赖 SDK）。, test_agent_heartbeat_logs_bundle_activity(), test_build_input_labels_failure_source(), test_classify_gameplay_failure_runtime_vs_design() (+28 more)
 
 ### Community 149 - "2. 数据模型（逐表）"
-Cohesion: 0.13
-Nodes (15): 2.10 memory_items — 记忆条目, 2.11 memory_settings — 记忆设置, 2.12 memory_profiles — 当前生效记忆状态, 2.13 memory_profile_versions — Profile 历史, 2.14 加分表, 2.1 users — 用户, 2.2 oauth_accounts — 第三方账号绑定, 2.3 games — 游戏（含发布状态） (+7 more)
+Cohesion: 0.08
+Nodes (26): 1. 实体关系总览, 2.10 memory_items — 记忆条目, 2.11 memory_settings — 记忆设置, 2.12 memory_profiles — 当前生效记忆状态, 2.13 memory_profile_versions — Profile 历史, 2.14 加分表, 2.1 users — 用户, 2.2 oauth_accounts — 第三方账号绑定 (+18 more)
 
 ### Community 150 - "run_generation"
-Cohesion: 0.12
-Nodes (17): build_graph(), 固定 LangGraph 顶层工作流（docs/multi-agent_design.md §7.2）。  safety_intake → intent_s, _cleanup_cancelled_artifacts(), _json_object(), _load_resume_snapshot(), _load_revision_files(), 生成任务执行入口。  跑固定 LangGraph 工作流；每个节点由 tracing.logged 包装，开始/结束实时写 agent_steps / a, state_json → (node, state)。缺失/损坏一律 None，回落全新跑，不比旧路径差。 (+9 more)
+Cohesion: 0.24
+Nodes (10): _has_any(), _balance_plan(), _coerce_spec(), _controls_line(), _detect_genre(), _detect_theme(), _difficulty_factor(), _heuristic_spec() (+2 more)
 
 ### Community 151 - "GameWeave 部署指南"
 Cohesion: 0.15
@@ -644,6 +617,10 @@ Nodes (11): 1. 这是什么 / 为什么, 2. 总览, 3. 启用方式, 4.1 解锁�
 Cohesion: 0.20
 Nodes (10): 10. 前端 Create 页面展示, 11.1 iframe 安全策略, 11. Play Runtime 与远端产物协议, 16. 可观测性设计, 17. 目录结构（实现）, 18. 设计总结, 3. 总体架构, 5. LangGraph State 设计 (+2 more)
 
+### Community 162 - "Ja"
+Cohesion: 0.29
+Nodes (7): A1. sandbox-runner 服务（新组件 `sandbox/`）, A2. worker 集成与 fail-closed, A3. 资源限制铺满, A4. 每用户并发槽位, A5. 恶意样本回归集, A 批次验收, 批次 A：构建期真沙箱 + 资源限制
+
 ### Community 163 - "Settings"
 Cohesion: 0.40
 Nodes (4): Answer, Outcome, Q: gameplay QA 运行时报错为什么还是整包重生成而不是最小 patch, Source Nodes
@@ -652,9 +629,13 @@ Nodes (4): Answer, Outcome, Q: gameplay QA 运行时报错为什么还是整包�
 Cohesion: 0.25
 Nodes (7): Ops 查询手册, Repair / Replan 溯源链路, 失败任务浪费额, 日成本, 每个成功游戏均价, 节点失败率与尝试次数, 节点烧钱排行
 
+### Community 165 - "_l"
+Cohesion: 0.83
+Nodes (3): _auth(), _seed_game(), test_comment_moderation_blocks_in_enforce_mode()
+
 ### Community 166 - "ec"
-Cohesion: 0.09
-Nodes (8): bind(), getValue(), is(), nh, ns(), rs, setValue(), ts
+Cohesion: 0.07
+Nodes (10): ac(), is(), jl(), ns(), rc, rs, sc, setValue() (+2 more)
 
 ### Community 167 - "技术选型"
 Cohesion: 0.29
@@ -756,33 +737,33 @@ Nodes (14): comment_out(), _decimal_float(), _design_preview(), _dur(), _iso(), 
 Cohesion: 0.44
 Nodes (8): _auth(), _seed_game(), test_author_profile_and_games(), test_cannot_follow_self(), test_comments_flow(), test_follow_flow(), test_related_excludes_self(), test_score_and_leaderboard()
 
-### Community 203 - "7. 右侧 Preview / Status 面板"
-Cohesion: 0.36
-Nodes (7): follow(), get_profile(), get_user_games(), Session, unfollow(), Follow, 社交/互动模型：评论、分数（排行榜）、关注。
+### Community 205 - "memory.py"
+Cohesion: 0.40
+Nodes (3): memory_retrieval_node(), memory_update_node(), Memory retrieval and update nodes for the GameWeave LangGraph pipeline.
 
 ### Community 208 - "2. Multi-Agent Pattern 选择"
 Cohesion: 0.25
 Nodes (8): 2.1 为什么顶层不用纯 ReAct, 2.2 顶层采用固定 LangGraph Workflow, 2.3 局部使用 Plan-and-Execute（多段规划）, 2.4 局部使用两个 bounded ReAct repair loop, 2.5 Replan 的定位, 2.6 代码生成：模型优先（model-first）, 2.6 断点续跑（resume-from-failed-node）, 2. Multi-Agent Pattern 选择
 
 ## Knowledge Gaps
-- **530 isolated node(s):** `Ql`, `tc`, `client`, `migrate-export.sh script`, `migrate-import.sh script` (+525 more)
+- **526 isolated node(s):** `Ql`, `tc`, `client`, `migrate-export.sh script`, `migrate-import.sh script` (+521 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **29 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **45 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `i()` connect `Agent Pipeline` to `Three.js Vendor`, `Three.js Vendor 47`, `Three.js Vendor 21`, `Three.js Vendor 22`, `Backend Memory API`, `ec`, `Three.js Vendor 5`, `Three.js Vendor 29`, `Three.js Vendor 9`, `Backend Auth API`, `Backend Telemetry Core`, `Three.js Vendor 10`, `Three.js Vendor 12`, `Three.js Vendor 14`, `Three.js Vendor 32`, `Three.js Vendor 15`, `Backend Schemas`, `Three.js Vendor 19`?**
-  _High betweenness centrality (0.347) - this node is a cross-community bridge._
-- **Why does `delta()` connect `Three.js Vendor 14` to `Three.js Vendor`, `Three.js Vendor 12`, `Three.js Vendor 2`?**
-  _High betweenness centrality (0.161) - this node is a cross-community bridge._
-- **Why does `chat()` connect `Three.js Vendor 2` to `Three.js Vendor 14`?**
-  _High betweenness centrality (0.161) - this node is a cross-community bridge._
+- **Why does `i()` connect `Agent Pipeline` to `Three.js Vendor`, `Three.js Vendor 21`, `Three.js Vendor 22`, `Backend Memory API`, `bs`, `ec`, `Three.js Vendor 5`, `Three.js Vendor 6`, `Three.js Vendor 41`, `.getX`, `Three.js Vendor 26`, `Three.js Vendor 29`, `Three.js Vendor 9`, `Three.js Vendor 10`, `Main Code`, `Three.js Vendor 12`, `Three.js Vendor 32`, `Three.js Vendor 47`?**
+  _High betweenness centrality (0.341) - this node is a cross-community bridge._
+- **Why does `delta()` connect `Three.js Vendor 27` to `Three.js Vendor`, `Three.js Vendor 12`, `Three.js Vendor 2`?**
+  _High betweenness centrality (0.186) - this node is a cross-community bridge._
+- **Why does `chat()` connect `Three.js Vendor 2` to `Three.js Vendor 27`?**
+  _High betweenness centrality (0.186) - this node is a cross-community bridge._
 - **Are the 92 inferred relationships involving `i()` (e.g. with `12217()` and `14036()`) actually correct?**
   _`i()` has 92 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 63 inferred relationships involving `db_session_factory()` (e.g. with `test_comment_moderation_blocks_in_enforce_mode()` and `test_safety_intake_blocks_prompt_and_records_event()`) actually correct?**
   _`db_session_factory()` has 63 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `可运行游戏 bundle 模板 + 创意→bundle 的启发式选择。  游戏代码移植自项目设计稿 handoff（gamedata.js）。生产中 Cod`, `修复回环的内层工具循环 Agent（OpenAI Agents SDK）。  外层 LangGraph 拓扑不变（graph.py：顶层固定，安全/校验/发`, `解析/应用失败。消息原样回给模型，所以写成可执行的重试指引。` to the rest of the system?**
-  _638 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _640 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Three.js Vendor` be split into smaller, more focused modules?**
-  _Cohesion score 0.02289305352934575 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.02677681241988321 - nodes in this community are weakly interconnected._

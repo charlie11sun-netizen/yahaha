@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useEffect } from "react";
 
+import "./homepage.css";
+
 const VIDEO_URL = "/gameweave/homepage/hero-scroll.mp4";
 
 export default function HomePage() {

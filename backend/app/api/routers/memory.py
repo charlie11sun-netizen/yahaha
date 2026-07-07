@@ -4,10 +4,17 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, rate_limit
 from app.db.session import get_db
 from app.schemas import (
+    MemoryItemOut,
+    MemoryListOut,
     MemoryCreateIn,
+    MemoryProfileHistoryOut,
+    MemoryProfileListOut,
+    MemoryProfileOut,
     MemoryProfileUpdateIn,
     MemorySettingsIn,
+    MemorySettingsOut,
     MemoryUpdateIn,
+    OkOut,
 )
 from app.services import memory as memory_service
 from app.services import content_safety
@@ -17,14 +24,14 @@ from app.services import memory_profiles as profile_service
 router = APIRouter(prefix="/memory", tags=["memory"])
 
 
-@router.get("/settings")
+@router.get("/settings", response_model=MemorySettingsOut, response_model_exclude_unset=True)
 def get_memory_settings(user=Depends(get_current_user), db: Session = Depends(get_db)):
     settings = memory_service.get_or_create_settings(db, user.id)
     db.commit()
     return memory_service.settings_out(settings)
 
 
-@router.patch("/settings")
+@router.patch("/settings", response_model=MemorySettingsOut, response_model_exclude_unset=True)
 def update_memory_settings(
     body: MemorySettingsIn,
     user=Depends(get_current_user),
@@ -40,7 +47,7 @@ def update_memory_settings(
     return memory_service.settings_out(settings)
 
 
-@router.get("")
+@router.get("", response_model=MemoryListOut, response_model_exclude_unset=True)
 def list_memories(
     scope_type: str | None = None,
     scope_id: str | None = None,
@@ -64,7 +71,12 @@ def list_memories(
     return {"items": [memory_service.memory_out(item) for item in items]}
 
 
-@router.post("", dependencies=[Depends(rate_limit(60, 3600, "memory_create"))])
+@router.post(
+    "",
+    response_model=MemoryItemOut,
+    response_model_exclude_unset=True,
+    dependencies=[Depends(rate_limit(60, 3600, "memory_create"))],
+)
 def create_memory(body: MemoryCreateIn, user=Depends(get_current_user), db: Session = Depends(get_db)):
     if body.scope_type == "user" and body.scope_id:
         raise HTTPException(status_code=400, detail="User-scope memory must not include scope_id")
@@ -106,7 +118,7 @@ def create_memory(body: MemoryCreateIn, user=Depends(get_current_user), db: Sess
     return memory_service.memory_out(item)
 
 
-@router.get("/profiles")
+@router.get("/profiles", response_model=MemoryProfileListOut, response_model_exclude_unset=True)
 def list_memory_profiles(
     status: str | None = Query(default=None),
     scope_type: str | None = None,
@@ -127,7 +139,11 @@ def list_memory_profiles(
     return {"items": [profile_service.profile_out(profile) for profile in profiles]}
 
 
-@router.get("/profiles/{profile_id}/history")
+@router.get(
+    "/profiles/{profile_id}/history",
+    response_model=MemoryProfileHistoryOut,
+    response_model_exclude_unset=True,
+)
 def get_memory_profile_history(
     profile_id: str,
     user=Depends(get_current_user),
@@ -139,7 +155,7 @@ def get_memory_profile_history(
     return {"items": [profile_service.version_out(item) for item in profile_service.profile_history(db, profile.id)]}
 
 
-@router.patch("/profiles/{profile_id}")
+@router.patch("/profiles/{profile_id}", response_model=MemoryProfileOut, response_model_exclude_unset=True)
 def update_memory_profile(
     profile_id: str,
     body: MemoryProfileUpdateIn,
@@ -165,7 +181,7 @@ def update_memory_profile(
     return profile_service.profile_out(profile)
 
 
-@router.patch("/{memory_id}")
+@router.patch("/{memory_id}", response_model=MemoryItemOut, response_model_exclude_unset=True)
 def update_memory(
     memory_id: str,
     body: MemoryUpdateIn,
@@ -210,7 +226,7 @@ def update_memory(
     return memory_service.memory_out(item)
 
 
-@router.delete("/{memory_id}")
+@router.delete("/{memory_id}", response_model=OkOut, response_model_exclude_unset=True)
 def delete_memory(memory_id: str, user=Depends(get_current_user), db: Session = Depends(get_db)):
     item = memory_service.get_owned_memory(db, user.id, memory_id)
     if not item:
