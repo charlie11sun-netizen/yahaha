@@ -1,16 +1,34 @@
 import json
+import os
 from datetime import timedelta
 
-from sqlalchemy import case, func
+from sqlalchemy import case, func, literal
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.models import Comment, Favorite, Game, GameVersion, Like, PlayEvent, Score, Tag
 from app.models.common import GameStatus, now_utc
+from app.models.game import game_tags
 from app.services import content_safety
 from app.services.errors import ServiceError
+from app.services.pagination import normalize_pagination
+from app.services.runtime_urls import (
+    game_file_token,
+    game_file_url,
+    game_manifest_url,
+    normalize_game_file_path,
+    verify_game_file_token,
+)
 from app.storage import s3
+
+
+_FILE_CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".json": "application/json",
+}
 
 
 def published_games_query(db: Session):
@@ -53,8 +71,7 @@ def list_games(db: Session, *, q: str = "", tag: str = "All", sort: str = "newes
         query = query.order_by(Game.plays_count.desc(), Game.created_at.desc())
     else:
         query = query.order_by(Game.published_at.desc(), Game.created_at.desc())
-    limit = max(1, min(limit, 60))
-    offset = max(0, offset)
+    limit, offset = normalize_pagination(limit, offset)
     return query.offset(offset).limit(limit).all(), total, offset, limit
 
 
@@ -84,18 +101,38 @@ def list_tag_names(db: Session) -> list[str]:
     return [name for (name,) in rows]
 
 
-def list_user_games(db: Session, user) -> list[Game]:
-    return db.query(Game).filter(Game.author_id == user.id).order_by(Game.created_at.desc()).all()
+def list_user_games(db: Session, user, *, limit: int = 24, offset: int = 0) -> tuple[list[Game], int, int, int]:
+    limit, offset = normalize_pagination(limit, offset)
+    query = db.query(Game).filter(Game.author_id == user.id)
+    total = query.count()
+    page = query.order_by(Game.created_at.desc()).offset(offset).limit(limit).all()
+    return page, total, offset, limit
 
 
-def list_user_favorites(db: Session, user) -> list[Game]:
-    return (
+def list_public_user_games(
+    db: Session,
+    user_id: str,
+    *,
+    limit: int = 24,
+    offset: int = 0,
+) -> tuple[list[Game], int, int, int]:
+    limit, offset = normalize_pagination(limit, offset)
+    query = db.query(Game).filter(Game.author_id == user_id, Game.status == GameStatus.PUBLISHED)
+    total = query.count()
+    page = query.order_by(Game.published_at.desc(), Game.created_at.desc()).offset(offset).limit(limit).all()
+    return page, total, offset, limit
+
+
+def list_user_favorites(db: Session, user, *, limit: int = 24, offset: int = 0) -> tuple[list[Game], int, int, int]:
+    limit, offset = normalize_pagination(limit, offset)
+    query = (
         db.query(Game)
         .join(Favorite, Favorite.game_id == Game.id)
         .filter(Favorite.user_id == user.id, Game.status == GameStatus.PUBLISHED)
-        .order_by(Favorite.created_at.desc())
-        .all()
     )
+    total = query.count()
+    page = query.order_by(Favorite.created_at.desc()).offset(offset).limit(limit).all()
+    return page, total, offset, limit
 
 
 def get_game_detail_state(db: Session, game_id: str, user=None) -> tuple[Game, bool, bool]:
@@ -299,13 +336,32 @@ def delete_comment(db: Session, game_id: str, comment_id: str, user) -> None:
 
 def related_games(db: Session, game_id: str, user=None, *, limit: int = 6) -> list[Game]:
     game = visible_game(db, game_id, user)
-    tag_names = {tag.name for tag in game.tags}
-    scored = []
-    for candidate in published_games_query(db).filter(Game.id != game.id).all():
-        overlap = len(tag_names & {tag.name for tag in candidate.tags}) + (1 if candidate.genre == game.genre else 0)
-        scored.append((overlap, candidate.plays_count, candidate))
-    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return [candidate for _, _, candidate in scored[: max(1, min(limit, 12))]]
+    limit, _ = normalize_pagination(limit, 0, max_limit=12)
+    tag_ids = [tag.id for tag in game.tags]
+    if tag_ids:
+        tag_overlap_subq = (
+            db.query(
+                game_tags.c.game_id.label("game_id"),
+                func.count(game_tags.c.tag_id).label("tag_overlap"),
+            )
+            .filter(game_tags.c.tag_id.in_(tag_ids))
+            .group_by(game_tags.c.game_id)
+            .subquery()
+        )
+        tag_overlap = func.coalesce(tag_overlap_subq.c.tag_overlap, 0)
+        query = published_games_query(db).outerjoin(tag_overlap_subq, tag_overlap_subq.c.game_id == Game.id)
+    else:
+        tag_overlap = literal(0)
+        query = published_games_query(db)
+
+    genre_match = case((Game.genre == game.genre, 1), else_=0)
+    score = tag_overlap + genre_match
+    return (
+        query.filter(Game.id != game.id)
+        .order_by(score.desc(), Game.plays_count.desc(), Game.published_at.desc(), Game.created_at.desc())
+        .limit(limit)
+        .all()
+    )
 
 
 def submit_score(db: Session, game_id: str, user, *, player_name: str | None, points: int) -> None:
@@ -333,6 +389,38 @@ def leaderboard(db: Session, game_id: str, user=None) -> list[Score]:
     )
 
 
+def _content_type_for_game_file(path: str) -> str:
+    return _FILE_CONTENT_TYPES.get(os.path.splitext(path)[1].lower(), "application/octet-stream")
+
+
+def _manifest_with_runtime_urls(data: dict, *, game: Game, version: str) -> dict:
+    out = dict(data)
+    token = game_file_token(game.id, version)
+    try:
+        entry = normalize_game_file_path(str(out.get("entry") or "index.html"))
+    except ValueError:
+        entry = "index.html"
+    out["entry"] = entry
+    out["entry_url"] = game_file_url(game.id, version, entry, token=token)
+    out["_url"] = game_manifest_url(game.id, version)
+
+    signed_files = []
+    for item in out.get("files") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            path = normalize_game_file_path(str(item.get("path") or ""))
+        except ValueError:
+            continue
+        signed = dict(item)
+        signed["path"] = path
+        signed["url"] = game_file_url(game.id, version, path, token=token)
+        signed_files.append(signed)
+    if signed_files:
+        out["files"] = signed_files
+    return out
+
+
 def game_manifest(db: Session, game_id: str, user=None, *, version: str | None = None) -> dict:
     game = visible_game(db, game_id, user)
     selected_version = version or game.current_version
@@ -345,8 +433,7 @@ def game_manifest(db: Session, game_id: str, user=None, *, version: str | None =
         try:
             data = json.loads(raw.decode("utf-8"))
             data["_source"] = "oss"
-            data["_url"] = s3.public_url(key)
-            return data
+            return _manifest_with_runtime_urls(data, game=game, version=selected_version)
         except Exception:  # noqa: BLE001
             pass
 
@@ -358,6 +445,26 @@ def game_manifest(db: Session, game_id: str, user=None, *, version: str | None =
         "runtime": row.runtime,
         "sha256": row.sha256,
         "size": row.size_bytes,
+        "entry_url": game_file_url(game.id, selected_version, row.entry or "index.html"),
         "_source": "db",
-        "_url": s3.public_url(key),
+        "_url": game_manifest_url(game.id, selected_version),
     }
+
+
+def game_file(db: Session, game_id: str, token: str, version: str, file_path: str) -> tuple[bytes, str]:
+    if not verify_game_file_token(token, game_id, version):
+        raise ServiceError(403, "Invalid or expired file token")
+    game = db.get(Game, game_id)
+    if not game:
+        raise ServiceError(404, "Game not found")
+    row = db.query(GameVersion).filter_by(game_id=game.id, version=version).first()
+    if not row:
+        raise ServiceError(404, "Version not found")
+    try:
+        path = normalize_game_file_path(file_path)
+    except ValueError as exc:
+        raise ServiceError(404, "File not found") from exc
+    raw = s3.get_object(f"games/{game.id}/{version}/{path}")
+    if raw is None:
+        raise ServiceError(404, "File not found")
+    return raw, _content_type_for_game_file(path)

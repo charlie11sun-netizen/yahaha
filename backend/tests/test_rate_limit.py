@@ -32,7 +32,7 @@ def test_rate_limit_raises_after_limit(monkeypatch):
     assert exc.value.status_code == 429
 
 
-def test_rate_limit_fails_open_when_redis_down(monkeypatch):
+def test_rate_limit_fails_closed_when_redis_down(monkeypatch):
     import redis as redis_lib
 
     def boom():
@@ -40,4 +40,20 @@ def test_rate_limit_fails_open_when_redis_down(monkeypatch):
 
     monkeypatch.setattr(deps, "_get_rl_redis", boom)
     dep = deps.rate_limit(limit=1, window=60, scope="unit2")
-    dep(_Req())  # 不应抛异常（fail-open）
+    with pytest.raises(HTTPException) as exc:
+        dep(_Req())
+    assert exc.value.status_code == 503
+    assert exc.value.detail == "RATE_LIMIT_UNAVAILABLE"
+
+
+def test_rate_limit_can_fail_open_when_explicitly_configured(monkeypatch):
+    import redis as redis_lib
+    from app.core.config import settings
+
+    def boom():
+        raise redis_lib.RedisError("down")
+
+    monkeypatch.setattr(settings, "RATE_LIMIT_FAIL_OPEN", True)
+    monkeypatch.setattr(deps, "_get_rl_redis", boom)
+    dep = deps.rate_limit(limit=1, window=60, scope="unit3")
+    dep(_Req())

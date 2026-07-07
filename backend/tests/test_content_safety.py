@@ -89,3 +89,70 @@ def test_comment_moderation_blocks_in_enforce_mode(client, db_session_factory, m
     event = db.query(ModerationEvent).filter_by(surface="comment").one()
     assert event.action == "block"
     db.close()
+
+
+def test_comment_moderation_provider_error_fails_closed_in_enforce_mode(client, db_session_factory, monkeypatch):
+    from app.core.config import settings
+    from app.models import Comment
+
+    def broken_chat(*_args, **_kwargs):
+        raise RuntimeError("moderation provider down")
+
+    headers = _auth(client, email="moderation-error@test.com")
+    monkeypatch.setattr(settings, "MODERATION_PROVIDER", "llm")
+    monkeypatch.setattr(settings, "MODERATION_MODE", "enforce")
+    monkeypatch.setattr("app.agents.llm.chat", broken_chat)
+    game_id = _seed_game(db_session_factory)
+
+    response = client.post(
+        f"/games/{game_id}/comments",
+        json={"body": "normal comment"},
+        headers=headers,
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "MODERATION_UNAVAILABLE"
+    db = db_session_factory()
+    assert db.query(Comment).count() == 0
+    event = db.query(ModerationEvent).filter_by(surface="comment").one()
+    assert event.action == "error"
+    assert "provider_error" in event.categories
+    db.close()
+
+
+def test_safety_intake_provider_error_fails_closed_in_enforce_mode(db_session_factory, monkeypatch):
+    from app.agents.nodes import safety_intake_node
+    from app.core.config import settings
+
+    def broken_chat(*_args, **_kwargs):
+        raise RuntimeError("moderation provider down")
+
+    monkeypatch.setattr(settings, "MODERATION_PROVIDER", "llm")
+    monkeypatch.setattr(settings, "MODERATION_MODE", "enforce")
+    monkeypatch.setattr("app.agents.llm.chat", broken_chat)
+    monkeypatch.setattr("app.db.session.SessionLocal", db_session_factory)
+
+    db = db_session_factory()
+    user = User(email="prompt-provider-error@test.com", display_name="P", avatar_initial="P")
+    db.add(user)
+    db.commit()
+    user_id = user.id
+    db.close()
+
+    result = safety_intake_node(
+        {
+            "prompt": "make a cozy puzzle game",
+            "user_id": user_id,
+            "task_id": "task-provider-error",
+            "task_kind": "generation",
+            "asset_ids": [],
+        }
+    )
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "SAFETY_REJECTED"
+    assert result["error_message"] == "Content moderation is unavailable"
+    db = db_session_factory()
+    event = db.query(ModerationEvent).filter_by(surface="task.idea").one()
+    assert event.action == "error"
+    db.close()

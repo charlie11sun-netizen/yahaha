@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_optional_user, rate_limit
@@ -78,13 +78,33 @@ def list_tags(db: Session = Depends(get_db)):
 
 
 @router.get("/me/games", response_model=GameCollectionOut, response_model_exclude_unset=True)
-def my_games(user=Depends(get_current_user), db: Session = Depends(get_db)):
-    return {"items": [game_card(game) for game in game_actions.list_user_games(db, user)]}
+def my_games(
+    limit: int = 24,
+    offset: int = 0,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    page, total, offset, limit = game_actions.list_user_games(db, user, limit=limit, offset=offset)
+    return {
+        "items": [game_card(game) for game in page],
+        "total": total,
+        "has_more": offset + limit < total,
+    }
 
 
 @router.get("/me/favorites", response_model=GameCollectionOut, response_model_exclude_unset=True)
-def my_favorites(user=Depends(get_current_user), db: Session = Depends(get_db)):
-    return {"items": [game_card(game) for game in game_actions.list_user_favorites(db, user)]}
+def my_favorites(
+    limit: int = 24,
+    offset: int = 0,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    page, total, offset, limit = game_actions.list_user_favorites(db, user, limit=limit, offset=offset)
+    return {
+        "items": [game_card(game) for game in page],
+        "total": total,
+        "has_more": offset + limit < total,
+    }
 
 
 @router.get("/games/{game_id}", response_model=GameDetailOut, response_model_exclude_unset=True)
@@ -240,6 +260,12 @@ def submit_score(game_id: str, body: ScoreIn, user=Depends(get_optional_user), d
 def leaderboard(game_id: str, user=Depends(get_optional_user), db: Session = Depends(get_db)):
     rows = _run(lambda: game_actions.leaderboard(db, game_id, user))
     return {"items": [score_out(score, rank=i + 1) for i, score in enumerate(rows)]}
+
+
+@router.get("/games/{game_id}/files/{token}/{version}/{file_path:path}")
+def game_file(game_id: str, token: str, version: str, file_path: str, db: Session = Depends(get_db)):
+    body, media_type = _run(lambda: game_actions.game_file(db, game_id, token, version, file_path))
+    return Response(content=body, media_type=media_type)
 
 
 @router.get("/games/{game_id}/manifest", response_model=GameManifestOut, response_model_exclude_unset=True)

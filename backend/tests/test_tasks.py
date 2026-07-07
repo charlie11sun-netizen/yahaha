@@ -15,6 +15,36 @@ def test_create_and_list_task(client):
     assert any(t["id"] == tid for t in items)
 
 
+def test_list_tasks_paginates(client, db_session_factory):
+    from app.models import GenerationTask
+    from app.models.common import TaskStatus
+
+    reg = client.post(
+        "/auth/register",
+        json={"email": "task-page@test.com", "password": "secret1", "display_name": "TP"},
+    ).json()
+    headers = {"Authorization": f"Bearer {reg['token']}"}
+    db = db_session_factory()
+    for index in range(3):
+        db.add(
+            GenerationTask(
+                user_id=reg["user"]["id"],
+                idea=f"paged task {index}",
+                status=TaskStatus.SUCCEEDED,
+            )
+        )
+    db.commit()
+    db.close()
+
+    first = client.get("/tasks?limit=2", headers=headers).json()
+    assert len(first["items"]) == 2
+    assert first["total"] == 3
+    assert first["has_more"] is True
+    second = client.get("/tasks?limit=2&offset=2", headers=headers).json()
+    assert len(second["items"]) == 1
+    assert second["has_more"] is False
+
+
 def test_create_task_dimension_3d(client):
     h = _auth(client)
     r = client.post("/tasks", json={"idea": "a 3d fps", "asset_ids": [], "dimension": "3d"}, headers=h)
@@ -35,6 +65,18 @@ def test_create_task_dimension_invalid_rejected(client):
     h = _auth(client)
     r = client.post("/tasks", json={"idea": "x", "asset_ids": [], "dimension": "4d"}, headers=h)
     assert r.status_code == 422
+
+
+def test_create_task_rejects_oversized_prompt_before_persisting(client, db_session_factory):
+    from app.models import GenerationTask
+
+    h = _auth(client)
+    r = client.post("/tasks", json={"idea": "x" * 2001, "asset_ids": []}, headers=h)
+    assert r.status_code == 422
+
+    db = db_session_factory()
+    assert db.query(GenerationTask).count() == 0
+    db.close()
 
 
 def test_create_remix_task_from_published_source(client, db_session_factory):
@@ -139,6 +181,24 @@ def test_third_active_task_for_same_user_rejected(client):
     r = client.post("/tasks", json={"idea": "three", "asset_ids": []}, headers=h)
     assert r.status_code == 409
     assert r.json()["detail"] == "TOO_MANY_ACTIVE_TASKS"
+
+
+def test_create_task_acquires_user_quota_advisory_lock(client, monkeypatch):
+    reg = client.post(
+        "/auth/register",
+        json={"email": "task-lock@test.com", "password": "secret1", "display_name": "TL"},
+    ).json()
+    headers = {"Authorization": f"Bearer {reg['token']}"}
+    locks = []
+    monkeypatch.setattr(
+        "app.services.task_actions._acquire_advisory_xact_lock",
+        lambda _db, namespace, identity: locks.append((namespace, identity)),
+    )
+
+    response = client.post("/tasks", json={"idea": "locked task", "asset_ids": []}, headers=headers)
+
+    assert response.status_code == 200
+    assert locks == [("task_active_user", reg["user"]["id"])]
 
 
 def test_three_engine_vendored_and_injected():
@@ -289,6 +349,62 @@ def test_create_revision_task_preserves_raw_feedback(client, db_session_factory)
     assert revision.result_game_id == game_id
     assert revision.spec_json == '{"title":"Revision Test","genre":"arcade"}'
     db.close()
+
+
+def test_revision_acquires_quota_and_game_advisory_locks(client, db_session_factory, monkeypatch):
+    from app.models import GenerationTask
+
+    headers = _auth(client)
+    source_task_id, game_id, _ = _completed_preview(client, db_session_factory, headers)
+    db = db_session_factory()
+    user_id = db.get(GenerationTask, source_task_id).user_id
+    db.close()
+    locks = []
+    monkeypatch.setattr(
+        "app.services.task_actions._acquire_advisory_xact_lock",
+        lambda _db, namespace, identity: locks.append((namespace, identity)),
+    )
+
+    response = client.post(
+        f"/tasks/{source_task_id}/revise",
+        json={"feedback": "make it faster"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert locks == [("task_active_user", user_id), ("task_revision_game", game_id)]
+
+
+def test_revision_rejects_existing_active_revision(client, db_session_factory):
+    from app.models import GenerationTask
+    from app.models.common import TaskStatus
+
+    headers = _auth(client)
+    source_task_id, game_id, _ = _completed_preview(client, db_session_factory, headers)
+    db = db_session_factory()
+    source = db.get(GenerationTask, source_task_id)
+    db.add(
+        GenerationTask(
+            user_id=source.user_id,
+            idea=source.idea,
+            task_kind="revision",
+            base_game_id=game_id,
+            result_game_id=game_id,
+            feedback_text="already running",
+            status=TaskStatus.PENDING,
+        )
+    )
+    db.commit()
+    db.close()
+
+    response = client.post(
+        f"/tasks/{source_task_id}/revise",
+        json={"feedback": "make it faster"},
+        headers=headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "A revision is already running for this preview"
 
 
 def test_revision_rejects_stale_preview_task(client, db_session_factory):

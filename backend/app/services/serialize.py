@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timezone
 
 from app.core.config import settings
+from app.services.runtime_urls import game_file_url, game_manifest_url
 from app.services.upload_safety import presigned_asset_url
 from app.storage import s3
 
@@ -98,7 +99,7 @@ def game_card(g) -> dict:
         "likes_str": fmt(g.likes_count),
         "published_at": g.published_at.isoformat() if g.published_at else None,
         "date": relative_time(g.published_at or g.created_at),
-        "manifest_url": s3.manifest_url(g.id, g.current_version),
+        "manifest_url": game_manifest_url(g.id),
         "oss_path": f"oss://{settings.S3_BUCKET}/games/{g.id}/{g.current_version}/manifest.json",
         "remixed_from_game_id": getattr(g, "remixed_from_game_id", None),
         "remixed_from_version": getattr(g, "remixed_from_version", None),
@@ -108,7 +109,7 @@ def game_card(g) -> dict:
 def game_detail(g) -> dict:
     d = game_card(g)
     d["prompt"] = g.prompt
-    d["bundle_url"] = s3.public_url(f"games/{g.id}/{g.current_version}/index.html")
+    d["bundle_url"] = game_file_url(g.id, g.current_version, "index.html")
     source = getattr(g, "remixed_from", None)
     d["remixed_from"] = (
         {
@@ -260,7 +261,7 @@ def task_out(t, include_details: bool = True) -> dict:
         pass
 
     game = t.result_game
-    manifest_url = s3.manifest_url(game.id, game.current_version) if game else None
+    manifest_url = game_manifest_url(game.id) if game else None
     preview_url = f"/play/{game.id}" if game else None
     game_title = (game.title if game else None) or spec.get("title") or ""
 

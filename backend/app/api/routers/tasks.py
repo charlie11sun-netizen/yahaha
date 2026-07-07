@@ -31,9 +31,18 @@ def create_task(body: TaskCreateIn, user=Depends(get_current_user), db: Session 
 
 
 @router.get("", response_model=TaskListOut, response_model_exclude_unset=True)
-def list_tasks(user=Depends(get_current_user), db: Session = Depends(get_db)):
-    tasks = task_actions.list_tasks(db, user)
-    return {"items": [task_out(task, include_details=False) for task in tasks]}
+def list_tasks(
+    limit: int = 24,
+    offset: int = 0,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    tasks, total, offset, limit = task_actions.list_tasks(db, user, limit=limit, offset=offset)
+    return {
+        "items": [task_out(task, include_details=False) for task in tasks],
+        "total": total,
+        "has_more": offset + limit < total,
+    }
 
 
 @router.get("/{task_id}", response_model=TaskOut, response_model_exclude_unset=True)

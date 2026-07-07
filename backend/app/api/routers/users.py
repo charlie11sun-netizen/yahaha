@@ -9,6 +9,7 @@ from app.db.session import get_db
 from app.models import Follow, Game, User
 from app.models.common import GameStatus
 from app.schemas import FollowOut, GameCollectionOut, PublicUserProfileOut
+from app.services import game_actions
 from app.services.serialize import game_card
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -42,14 +43,18 @@ def get_profile(user_id: str, viewer=Depends(get_optional_user), db: Session = D
 
 
 @router.get("/{user_id}/games", response_model=GameCollectionOut, response_model_exclude_unset=True)
-def get_user_games(user_id: str, db: Session = Depends(get_db)):
-    games = (
-        db.query(Game)
-        .filter(Game.author_id == user_id, Game.status == GameStatus.PUBLISHED)
-        .order_by(Game.published_at.desc(), Game.created_at.desc())
-        .all()
+def get_user_games(user_id: str, limit: int = 24, offset: int = 0, db: Session = Depends(get_db)):
+    page, total, offset, limit = game_actions.list_public_user_games(
+        db,
+        user_id,
+        limit=limit,
+        offset=offset,
     )
-    return {"items": [game_card(g) for g in games]}
+    return {
+        "items": [game_card(g) for g in page],
+        "total": total,
+        "has_more": offset + limit < total,
+    }
 
 
 @router.post("/{user_id}/follow", response_model=FollowOut, response_model_exclude_unset=True)

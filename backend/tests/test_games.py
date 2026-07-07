@@ -1,3 +1,6 @@
+import json
+from urllib.parse import urlsplit
+
 from app.core.config import settings
 from app.models import Game, GameVersion, User
 from app.models.common import GameSource, GameStatus, now_utc
@@ -61,6 +64,19 @@ def test_list_pagination(client, db_session_factory):
     assert page2["has_more"] is False
 
 
+def test_my_games_paginates(client, db_session_factory):
+    h, uid = _auth(client, email="my-games-page@test.com")
+    for i in range(3):
+        _seed_game(db_session_factory, title=f"MyPaged{i}", author_id=uid)
+    data = client.get("/me/games?limit=2", headers=h).json()
+    assert len(data["items"]) == 2
+    assert data["total"] == 3
+    assert data["has_more"] is True
+    page2 = client.get("/me/games?limit=2&offset=2", headers=h).json()
+    assert len(page2["items"]) == 1
+    assert page2["has_more"] is False
+
+
 def test_get_game(client, db_session_factory):
     gid = _seed_game(db_session_factory)
     assert client.get(f"/games/{gid}").json()["id"] == gid
@@ -96,6 +112,49 @@ def test_manifest_endpoint(client, db_session_factory):
     body = r.json()
     assert body["entry"] == "index.html"
     assert body["_source"] == "oss"
+
+
+def test_manifest_returns_tokenized_api_file_urls(client, db_session_factory, monkeypatch):
+    h, uid = _auth(client, email="private-preview@test.com")
+    gid = _seed_game(db_session_factory, title="PrivatePreview", status=GameStatus.PREVIEW, author_id=uid)
+
+    def fake_get_object(key):
+        if key.endswith("/manifest.json"):
+            return json.dumps(
+                {
+                    "entry": "index.html",
+                    "runtime": "iframe-html",
+                    "entry_url": "https://oss.test/leaked/index.html",
+                    "files": [{"path": "game.js", "url": "https://oss.test/leaked/game.js"}],
+                }
+            ).encode("utf-8")
+        if key.endswith("/index.html"):
+            return b"<!doctype html><script src=\"game.js\"></script>"
+        if key.endswith("/game.js"):
+            return b"console.log('ok')"
+        return None
+
+    monkeypatch.setattr("app.services.game_actions.s3.get_object", fake_get_object)
+    response = client.get(f"/games/{gid}/manifest", headers=h)
+
+    assert response.status_code == 200
+    manifest = response.json()
+    assert "oss.test" not in manifest["entry_url"]
+    assert f"/games/{gid}/files/" in manifest["entry_url"]
+    assert "oss.test" not in manifest["files"][0]["url"]
+    assert f"/games/{gid}/files/" in manifest["files"][0]["url"]
+
+    entry_path = urlsplit(manifest["entry_url"]).path
+    monkeypatch.setattr(settings, "SITE_PASSWORD", "secret")
+    monkeypatch.setattr(settings, "GATE_PUBLIC_BROWSE", False)
+    entry_response = client.get(entry_path)
+    assert entry_response.status_code == 200
+    assert "text/html" in entry_response.headers["content-type"]
+    assert "X-Frame-Options" not in entry_response.headers
+
+    parts = entry_path.split("/")
+    parts[4] = "bad-token"
+    assert client.get("/".join(parts)).status_code == 403
 
 
 def test_owner_can_list_and_activate_versions(client, db_session_factory):

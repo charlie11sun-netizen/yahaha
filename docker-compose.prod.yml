@@ -56,9 +56,8 @@ services:
     volumes:
       - miniodata:/data
 
-  # Create the bucket and make only the games prefix anonymously readable so the
-  # sandboxed <iframe> can load bundles cross-origin (the site gate covers the
-  # app + API; raw bundle URLs in object storage are UUID-obscured but public).
+  # Create the bucket and keep it private. Game bundles are served through
+  # short-lived API file URLs after the API has checked game visibility.
   createbuckets:
     image: minio/mc
     depends_on:
@@ -68,7 +67,6 @@ services:
       until mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin}; do echo 'waiting for minio...'; sleep 2; done;
       mc mb --ignore-existing local/${S3_BUCKET:-gameweave};
       mc anonymous set none local/${S3_BUCKET:-gameweave};
-      mc anonymous set download local/${S3_BUCKET:-gameweave}/games;
       echo 'bucket ready';
       exit 0;
       "
@@ -97,8 +95,7 @@ services:
       AUTO_CREATE_ALL: "false"
       REDIS_URL: redis://redis:6379/0
       S3_ENDPOINT: http://minio:9000
-      # Public address browsers use to fetch game bundles. MUST be reachable from
-      # the visitor's browser (server IP or domain), e.g. http://YOUR_HOST:9000
+      # Public address used only for short-lived signed object URLs.
       S3_PUBLIC_ENDPOINT: ${PUBLIC_S3_URL:?set PUBLIC_S3_URL in .env}
       CORS_ORIGINS: ${PUBLIC_WEB_URL:?set PUBLIC_WEB_URL in .env}
       FRONTEND_BASE_URL: ${PUBLIC_WEB_URL}

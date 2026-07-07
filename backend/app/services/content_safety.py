@@ -52,6 +52,10 @@ class ModerationDecision:
     def blocked(self) -> bool:
         return self.action == "block"
 
+    @property
+    def errored(self) -> bool:
+        return self.action == "error"
+
 
 def input_sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -265,7 +269,10 @@ def ensure_allowed(
         user_id=user_id,
         object_id=object_id,
     )
-    if decision.blocked and (should_enforce() if enforce is None else enforce):
+    effective_enforce = should_enforce() if enforce is None else enforce
+    if effective_enforce and (decision.blocked or decision.errored):
         db.commit()
+        if decision.errored:
+            raise HTTPException(status_code=503, detail="MODERATION_UNAVAILABLE")
         raise HTTPException(status_code=422, detail="MODERATION_BLOCKED")
     return decision

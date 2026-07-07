@@ -10,7 +10,7 @@ from sqlalchemy import text
 import app.models  # noqa: F401  注册所有表到 Base.metadata
 from app.api.routers import auth, games, memory, oauth, tasks, uploads, users
 from app.core.config import settings
-from app.core.gate import gate_enabled, public_browse_request, verify_gate_token
+from app.core.gate import game_file_request, gate_enabled, public_browse_request, verify_gate_token
 from app.core.telemetry import (
     bind_context,
     clear_context,
@@ -56,6 +56,7 @@ async def site_gate(request, call_next):
         exempt = (
             path in _GATE_EXEMPT_EXACT
             or path.startswith(_GATE_EXEMPT_PREFIXES)
+            or game_file_request(request.method, path)
             or public_browse_request(request.method, path)
         )
         if not exempt and not verify_gate_token(request.headers.get("X-Gate-Token")):
@@ -67,7 +68,8 @@ async def site_gate(request, call_next):
 async def security_headers(request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
+    if not game_file_request(request.method, request.url.path):
+        response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     return response

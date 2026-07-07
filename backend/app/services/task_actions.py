@@ -1,5 +1,7 @@
 import json
+from hashlib import blake2b
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -9,6 +11,10 @@ from app.models import Asset, Game, GameVersion, GenerationTask
 from app.models.common import GameStatus, TaskStatus, now_utc
 from app.schemas import TaskCreateIn, TaskRevisionIn
 from app.services.errors import ServiceError
+from app.services.pagination import normalize_pagination
+
+
+ACTIVE_TASK_STATUSES = (TaskStatus.PENDING, TaskStatus.RUNNING)
 
 
 def enqueue_generation(task_id: str, queue) -> None:
@@ -28,20 +34,51 @@ def owned_task(db: Session, task_id: str, user) -> GenerationTask:
     return task
 
 
+def _advisory_lock_key(namespace: str, identity: str) -> int:
+    digest = blake2b(f"{namespace}:{identity}".encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, byteorder="big", signed=True)
+
+
+def _acquire_advisory_xact_lock(db: Session, namespace: str, identity: str) -> None:
+    bind = db.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(:lock_key)"),
+        {"lock_key": _advisory_lock_key(namespace, identity)},
+    )
+
+
 def ensure_active_task_slot(db: Session, user_id: str) -> None:
     max_active = int(settings.MAX_ACTIVE_TASKS_PER_USER or 0)
     if max_active <= 0:
         return
+    _acquire_advisory_xact_lock(db, "task_active_user", user_id)
     active_count = (
         db.query(GenerationTask)
         .filter(
             GenerationTask.user_id == user_id,
-            GenerationTask.status.in_([TaskStatus.PENDING, TaskStatus.RUNNING]),
+            GenerationTask.status.in_(ACTIVE_TASK_STATUSES),
         )
         .count()
     )
     if active_count >= max_active:
         raise ServiceError(409, "TOO_MANY_ACTIVE_TASKS")
+
+
+def ensure_no_active_revision(db: Session, game_id: str) -> None:
+    _acquire_advisory_xact_lock(db, "task_revision_game", game_id)
+    active = (
+        db.query(GenerationTask)
+        .filter(
+            GenerationTask.base_game_id == game_id,
+            GenerationTask.task_kind == "revision",
+            GenerationTask.status.in_(ACTIVE_TASK_STATUSES),
+        )
+        .first()
+    )
+    if active:
+        raise ServiceError(409, "A revision is already running for this preview")
 
 
 def _source_spec_json(source: Game) -> str:
@@ -127,13 +164,12 @@ def create_task(db: Session, body: TaskCreateIn, user, *, queue) -> GenerationTa
     return task
 
 
-def list_tasks(db: Session, user) -> list[GenerationTask]:
-    return (
-        db.query(GenerationTask)
-        .filter_by(user_id=user.id)
-        .order_by(GenerationTask.created_at.desc())
-        .all()
-    )
+def list_tasks(db: Session, user, *, limit: int = 24, offset: int = 0) -> tuple[list[GenerationTask], int, int, int]:
+    limit, offset = normalize_pagination(limit, offset)
+    query = db.query(GenerationTask).filter_by(user_id=user.id)
+    total = query.count()
+    page = query.order_by(GenerationTask.created_at.desc()).offset(offset).limit(limit).all()
+    return page, total, offset, limit
 
 
 def get_task(db: Session, task_id: str, user) -> GenerationTask:
@@ -152,17 +188,7 @@ def revise_task(db: Session, task_id: str, body: TaskRevisionIn, user, *, queue)
         raise ServiceError(409, "This task is not the game's current preview version")
 
     ensure_active_task_slot(db, user.id)
-    active = (
-        db.query(GenerationTask)
-        .filter(
-            GenerationTask.base_game_id == game.id,
-            GenerationTask.task_kind == "revision",
-            GenerationTask.status.in_([TaskStatus.PENDING, TaskStatus.RUNNING]),
-        )
-        .first()
-    )
-    if active:
-        raise ServiceError(409, "A revision is already running for this preview")
+    ensure_no_active_revision(db, game.id)
 
     feedback = body.feedback.strip()
     revision = GenerationTask(

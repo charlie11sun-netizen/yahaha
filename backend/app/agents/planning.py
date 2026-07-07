@@ -618,6 +618,7 @@ def safety_intake_node(state: dict) -> dict:
             "_logs": ["prompt exceeds 2000 chars -> rejected"],
         }
     moderation_log = "moderation skipped: unable to persist event"
+    moderation_unavailable = None
     try:
         from app.db.session import SessionLocal
 
@@ -636,9 +637,11 @@ def safety_intake_node(state: dict) -> dict:
                 user_id=state.get("user_id"),
                 object_id=state.get("task_id"),
             )
+            if decision.errored and content_safety.should_enforce():
+                moderation_unavailable = ("prompt", "", decision)
             asset_blocked = None
             asset_ids = state.get("asset_ids") or []
-            if asset_ids:
+            if asset_ids and not moderation_unavailable:
                 from app.models import Asset
 
                 for asset in db.query(Asset).filter(Asset.id.in_(asset_ids)).all():
@@ -651,6 +654,9 @@ def safety_intake_node(state: dict) -> dict:
                     )
                     if asset_decision.blocked:
                         asset_blocked = (asset.filename, asset_decision)
+                        break
+                    if asset_decision.errored and content_safety.should_enforce():
+                        moderation_unavailable = ("asset", asset.filename, asset_decision)
                         break
             db.commit()
         finally:
@@ -678,8 +684,34 @@ def safety_intake_node(state: dict) -> dict:
                     f"asset filename blocked: {_clip(filename, 80)} categories={asset_categories}",
                 ],
             }
+        if moderation_unavailable:
+            scope, filename, failure_decision = moderation_unavailable
+            failure_categories = ", ".join(failure_decision.categories.keys()) or "none"
+            target = "prompt" if scope == "prompt" else f"asset filename: {_clip(filename, 80)}"
+            return {
+                "status": "failed",
+                "error_code": TaskErrorCode.SAFETY_REJECTED.value,
+                "error_message": "Content moderation is unavailable",
+                "_agent": "SafetyIntakeAgent",
+                "_logs": [
+                    moderation_log,
+                    f"moderation unavailable for {target}; categories={failure_categories}",
+                    "generation stopped because moderation could not verify the input",
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
-        moderation_log = f"moderation failed open: {_clip(exc, 120)}"
+        moderation_log = f"moderation failed: {_clip(exc, 120)}"
+        if content_safety.should_enforce():
+            return {
+                "status": "failed",
+                "error_code": TaskErrorCode.SAFETY_REJECTED.value,
+                "error_message": "Content moderation is unavailable",
+                "_agent": "SafetyIntakeAgent",
+                "_logs": [
+                    moderation_log,
+                    "generation stopped because moderation could not verify the input",
+                ],
+            }
     cues = _prompt_cues(prompt)
     return {
         "normalized_prompt": prompt.strip(),

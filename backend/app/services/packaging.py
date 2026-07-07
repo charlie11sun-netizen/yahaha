@@ -9,6 +9,7 @@ import json
 import os
 
 from app.models.common import now_utc
+from app.services.runtime_urls import game_manifest_url
 from app.storage import s3
 
 _CONTENT_TYPE = {
@@ -175,7 +176,7 @@ def publish_generated(state: dict) -> tuple[str, str, str]:
         # 不再新建第二个 Game / 重传 bundle。
         existing = db.query(GameVersion).filter_by(source_task_id=state.get("task_id")).first()
         if existing:
-            return existing.game_id, existing.id, s3.manifest_url(existing.game_id, existing.version)
+            return existing.game_id, existing.id, game_manifest_url(existing.game_id, existing.version)
 
         game = Game(
             author_id=state.get("user_id"), title=title, summary=summary, genre=genre, cover=cover,
@@ -201,7 +202,7 @@ def publish_generated(state: dict) -> tuple[str, str, str]:
             s3.put_object(key, content, _content_type_for(f["path"]))
             total_bytes += len(content.encode("utf-8"))
             uploaded.append({
-                "path": f["path"], "url": s3.public_url(key),
+                "path": f["path"],
                 "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
             })
 
@@ -212,7 +213,7 @@ def publish_generated(state: dict) -> tuple[str, str, str]:
                 ekey = f"{prefix}/three.min.js"
                 s3.put_object(ekey, engine, _CONTENT_TYPE["three.min.js"])
                 uploaded.append({
-                    "path": "three.min.js", "url": s3.public_url(ekey),
+                    "path": "three.min.js",
                     "sha256": hashlib.sha256(engine).hexdigest(),
                 })
         elif _bundle_references(files, "phaser.min.js"):
@@ -221,7 +222,7 @@ def publish_generated(state: dict) -> tuple[str, str, str]:
                 ekey = f"{prefix}/phaser.min.js"
                 s3.put_object(ekey, engine, _CONTENT_TYPE["phaser.min.js"])
                 uploaded.append({
-                    "path": "phaser.min.js", "url": s3.public_url(ekey),
+                    "path": "phaser.min.js",
                     "sha256": hashlib.sha256(engine).hexdigest(),
                 })
 
@@ -238,13 +239,13 @@ def publish_generated(state: dict) -> tuple[str, str, str]:
 
         manifest = {
             "schema_version": "game-manifest/v1", "game_id": gid, "version_id": vid, "title": title,
-            "runtime": "iframe-html", "entry": "index.html", "entry_url": s3.public_url(f"{prefix}/index.html"),
+            "runtime": "iframe-html", "entry": "index.html",
             "files": uploaded, "assets": asset_manifest.get("assets", []),
             "permissions": {"network": False, "storage": False, "cookies": False},
         }
         s3.put_object(f"{prefix}/manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2), "application/json")
         db.commit()
-        return gid, vid, s3.manifest_url(gid, "v1")
+        return gid, vid, game_manifest_url(gid, "v1")
     finally:
         db.close()
 
@@ -272,7 +273,7 @@ def publish_revision(state: dict) -> tuple[str, str, str, str]:
                 existing.game_id,
                 existing.id,
                 existing.version,
-                s3.manifest_url(existing.game_id, existing.version),
+                game_manifest_url(existing.game_id, existing.version),
             )
 
         game = db.get(Game, game_id)
@@ -307,7 +308,6 @@ def publish_revision(state: dict) -> tuple[str, str, str, str]:
             size_bytes += len(encoded)
             uploaded.append({
                 "path": path,
-                "url": s3.public_url(key),
                 "sha256": hashlib.sha256(encoded).hexdigest(),
             })
 
@@ -318,7 +318,6 @@ def publish_revision(state: dict) -> tuple[str, str, str, str]:
                 s3.put_object(engine_key, engine, _CONTENT_TYPE["three.min.js"])
                 uploaded.append({
                     "path": "three.min.js",
-                    "url": s3.public_url(engine_key),
                     "sha256": hashlib.sha256(engine).hexdigest(),
                 })
         elif _bundle_references(files, "phaser.min.js"):
@@ -328,7 +327,6 @@ def publish_revision(state: dict) -> tuple[str, str, str, str]:
                 s3.put_object(engine_key, engine, _CONTENT_TYPE["phaser.min.js"])
                 uploaded.append({
                     "path": "phaser.min.js",
-                    "url": s3.public_url(engine_key),
                     "sha256": hashlib.sha256(engine).hexdigest(),
                 })
 
@@ -353,7 +351,6 @@ def publish_revision(state: dict) -> tuple[str, str, str, str]:
             "title": game.title,
             "runtime": "iframe-html",
             "entry": "index.html",
-            "entry_url": s3.public_url(f"{prefix}/index.html"),
             "files": uploaded,
             "permissions": {"network": False, "storage": False, "cookies": False},
             "revision": {
@@ -369,7 +366,7 @@ def publish_revision(state: dict) -> tuple[str, str, str, str]:
         game.current_version = version_name
         game.status = GameStatus.PREVIEW
         db.commit()
-        return game.id, version.id, version_name, s3.manifest_url(game.id, version_name)
+        return game.id, version.id, version_name, game_manifest_url(game.id, version_name)
     finally:
         db.close()
 
@@ -390,7 +387,7 @@ def publish_remix(state: dict) -> tuple[str, str, str]:
     try:
         existing = db.query(GameVersion).filter_by(source_task_id=state.get("task_id")).first()
         if existing:
-            return existing.game_id, existing.id, s3.manifest_url(existing.game_id, existing.version)
+            return existing.game_id, existing.id, game_manifest_url(existing.game_id, existing.version)
 
         source = db.get(Game, source_game_id)
         if not source or (source.status != GameStatus.PUBLISHED and source.author_id != state.get("user_id")):
@@ -449,7 +446,6 @@ def publish_remix(state: dict) -> tuple[str, str, str]:
             size_bytes += len(encoded)
             uploaded.append({
                 "path": path,
-                "url": s3.public_url(key),
                 "sha256": hashlib.sha256(encoded).hexdigest(),
             })
 
@@ -460,7 +456,6 @@ def publish_remix(state: dict) -> tuple[str, str, str]:
                 s3.put_object(key, engine, _CONTENT_TYPE["three.min.js"])
                 uploaded.append({
                     "path": "three.min.js",
-                    "url": s3.public_url(key),
                     "sha256": hashlib.sha256(engine).hexdigest(),
                 })
         elif _bundle_references(files, "phaser.min.js"):
@@ -470,7 +465,6 @@ def publish_remix(state: dict) -> tuple[str, str, str]:
                 s3.put_object(key, engine, _CONTENT_TYPE["phaser.min.js"])
                 uploaded.append({
                     "path": "phaser.min.js",
-                    "url": s3.public_url(key),
                     "sha256": hashlib.sha256(engine).hexdigest(),
                 })
 
@@ -495,7 +489,6 @@ def publish_remix(state: dict) -> tuple[str, str, str]:
             "title": title,
             "runtime": "iframe-html",
             "entry": "index.html",
-            "entry_url": s3.public_url(f"{prefix}/index.html"),
             "files": uploaded,
             "permissions": {"network": False, "storage": False, "cookies": False},
             "remix": {
@@ -510,6 +503,6 @@ def publish_remix(state: dict) -> tuple[str, str, str]:
             "application/json",
         )
         db.commit()
-        return game.id, version.id, s3.manifest_url(game.id, "v1")
+        return game.id, version.id, game_manifest_url(game.id, "v1")
     finally:
         db.close()

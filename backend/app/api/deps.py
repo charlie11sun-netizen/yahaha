@@ -22,7 +22,7 @@ def _get_rl_redis() -> "redis_lib.Redis":
 
 
 def rate_limit(limit: int, window: int, scope: str):
-    """基于 Redis 的简单 IP 限流依赖工厂；Redis 不可用时放行(fail-open)。"""
+    """基于 Redis 的简单 IP 限流依赖工厂；默认 Redis 不可用时拒绝请求。"""
 
     def _dep(request: Request) -> None:
         client = request.client.host if request.client else "anon"
@@ -32,8 +32,13 @@ def rate_limit(limit: int, window: int, scope: str):
             count = r.incr(key)
             if count == 1:
                 r.expire(key, window)
-        except redis_lib.RedisError:
-            return
+        except redis_lib.RedisError as exc:
+            if settings.RATE_LIMIT_FAIL_OPEN:
+                return
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="RATE_LIMIT_UNAVAILABLE",
+            ) from exc
         if count > limit:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,

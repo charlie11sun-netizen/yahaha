@@ -40,6 +40,11 @@ def public_browse_request(method: str, path: str) -> bool:
     return False
 
 
+def game_file_request(method: str, path: str) -> bool:
+    method = method.upper()
+    return method == "GET" and path.startswith("/games/") and "/files/" in path
+
+
 def _token(password: str) -> str:
     return hashlib.sha256(f"gameweave-gate:v1:{password}".encode()).hexdigest()
 

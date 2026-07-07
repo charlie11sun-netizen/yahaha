@@ -12,6 +12,7 @@ class Settings(BaseSettings):
 
     # Redis / Celery
     REDIS_URL: str = "redis://localhost:6379/0"
+    RATE_LIMIT_FAIL_OPEN: bool = False
     WORKER_MAX_MEMORY_PER_CHILD: int = 500_000
     CELERY_VISIBILITY_TIMEOUT: int = 7200
     GENERATION_TASK_SOFT_TIME_LIMIT: int = 3600

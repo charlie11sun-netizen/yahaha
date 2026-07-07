@@ -42,7 +42,7 @@ class ScoreIn(BaseModel):
 
 
 class TaskCreateIn(BaseModel):
-    idea: str = Field(min_length=1)
+    idea: str = Field(min_length=1, max_length=2000)
     asset_ids: list[str] = []
     dimension: Literal["2d", "3d"] = "2d"  # 2D Canvas 还是 3D WebGL(Three.js)
     task_kind: Literal["generation", "remix"] = "generation"
@@ -115,6 +115,8 @@ class GameListOut(BaseModel):
 
 class GameCollectionOut(BaseModel):
     items: list[GameCardOut]
+    total: int | None = None
+    has_more: bool | None = None
 
 
 class GameStatsOut(BaseModel):
@@ -297,6 +299,8 @@ class TaskOut(BaseModel):
 
 class TaskListOut(BaseModel):
     items: list[TaskOut]
+    total: int | None = None
+    has_more: bool | None = None
 
 
 MemoryScopeLiteral = Literal["user", "game", "task"]

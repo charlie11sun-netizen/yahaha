@@ -86,8 +86,8 @@ def delete_prefix(prefix: str) -> int:
 
 
 def public_url(key: str) -> str:
-    """浏览器可直接访问的远端地址（桶 games 前缀已设匿名只读）。"""
-    return f"{settings.S3_PUBLIC_ENDPOINT}/{settings.S3_BUCKET}/{key}"
+    """Backward-compatible browser URL for private objects."""
+    return presigned_url(key)
 
 
 def presigned_url(
@@ -112,4 +112,6 @@ def game_prefix(game_id: str, version: str) -> str:
 
 
 def manifest_url(game_id: str, version: str) -> str:
-    return public_url(f"{game_prefix(game_id, version)}/manifest.json")
+    from app.services.runtime_urls import game_manifest_url
+
+    return game_manifest_url(game_id, version)
