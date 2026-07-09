@@ -11,24 +11,15 @@ import {
   Minimize2,
   RefreshCw,
   Share2,
-  ShieldCheck,
   Trophy,
 } from "lucide-react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
-import type { Game } from "@/lib/types";
-
-type Phase = "loading" | "ready" | "error";
-type RuntimeKey = "manifest" | "sandbox" | "bundle";
-type RuntimeStatus = "pending" | "running" | "ready" | "failed";
-
-const INITIAL_RUNTIME: Record<RuntimeKey, RuntimeStatus> = {
-  manifest: "pending",
-  sandbox: "pending",
-  bundle: "pending",
-};
+import type { Game, GameManifest } from "@/lib/types";
+import { ActivityFeed, RuntimeList } from "./_components/PlayPanels";
+import { INITIAL_RUNTIME, coverBg, type Phase, type RuntimeKey, type RuntimeStatus } from "./_lib/play-runtime";
 
 export default function PlayPage() {
   const { id } = useParams() as { id: string };
@@ -68,9 +59,7 @@ export default function PlayPage() {
     setActivity(["Fetching manifest from object storage…"]);
 
     // 真实拉取 manifest（后端从 OSS 读取），替代此前的纯动画
-    let manifest:
-      | { entry?: string; entry_url?: string; runtime?: string; sha256?: string; _source?: string; files?: { path: string }[] }
-      | null = null;
+    let manifest: GameManifest | null = null;
     try {
       manifest = requestedVersion
         ? await api.gameManifestVersion(nextGame.id, requestedVersion)
@@ -339,53 +328,4 @@ export default function PlayPage() {
       </main>
     </div>
   );
-}
-
-function RuntimeList({
-  compact = false,
-  runtime,
-}: {
-  compact?: boolean;
-  runtime: Record<RuntimeKey, RuntimeStatus>;
-}) {
-  const rows: { key: RuntimeKey; label: string }[] = [
-    { key: "manifest", label: "Manifest" },
-    { key: "sandbox", label: "Sandbox" },
-    { key: "bundle", label: "Bundle" },
-  ];
-
-  return (
-    <div className={`pf-play-runtime${compact ? " is-compact" : ""}`}>
-      {rows.map((row) => (
-        <div className={`pf-play-runtime-row is-${runtime[row.key]}`} key={row.key}>
-          {runtime[row.key] === "ready" ? <CircleCheck size={17} /> : runtime[row.key] === "failed" ? <CircleAlert size={17} /> : runtime[row.key] === "running" ? <LoaderCircle className="pf-spin" size={17} /> : <ShieldCheck size={17} />}
-          <span>{row.label}</span>
-          <strong>{runtimeLabel(runtime[row.key])}</strong>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ActivityFeed({ lines }: { lines: string[] }) {
-  if (!lines.length) return null;
-  return (
-    <div className="pf-play-activity">
-      {lines.map((line, index) => (
-        <p key={`${index}-${line}`}>{line}</p>
-      ))}
-    </div>
-  );
-}
-
-function runtimeLabel(status: RuntimeStatus) {
-  if (status === "ready") return "Ready";
-  if (status === "running") return "Running";
-  if (status === "failed") return "Failed";
-  return "Pending";
-}
-
-function coverBg(cover: string) {
-  if (cover && (cover.startsWith("/") || cover.startsWith("http"))) return `url("${cover}") center / cover`;
-  return cover || "linear-gradient(135deg,#101844,#4f7dff)";
 }

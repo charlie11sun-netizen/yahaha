@@ -17,6 +17,7 @@ build/
 *.tsbuildinfo
 npm-debug.log*
 yarn-error.log*
+frontend/.openapi.json
 
 # Python
 __pycache__/

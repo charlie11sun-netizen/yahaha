@@ -197,7 +197,7 @@ export function CreateInput({
             <div className="pf-uploaded-assets">
               {files.map((file) => (
                 <div className="pf-uploaded-asset" key={file.id}>
-                  {file.kind === "image" ? (
+                  {file.kind === "image" && file.url ? (
                     <img alt="" src={file.url} />
                   ) : (
                     <span>

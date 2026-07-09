@@ -1,345 +1,46 @@
-export interface User {
-  id: string;
-  name: string;
-  email: string;
-  init: string;
-  created_at?: string | null;
-}
+import type { components } from "./api-types";
 
-export interface Game {
-  id: string;
-  title: string;
-  summary: string;
-  genre: string;
-  cover: string;
-  version: string;
-  source: string;
-  from_create: boolean;
-  status: string;
-  author: string;
-  author_init: string;
-  author_id: string;
-  tags: string[];
-  plays: number;
-  plays_str: string;
-  likes: number;
-  likes_str: string;
-  published_at: string | null;
-  date: string;
-  manifest_url: string;
-  oss_path: string;
-  prompt?: string | null;
-  bundle_url?: string;
-  liked?: boolean;
-  favorited?: boolean;
-  remixed_from_game_id?: string | null;
-  remixed_from_version?: string | null;
-  remixed_from?: {
-    id: string;
-    title: string;
-    author: string;
-    version?: string | null;
-  } | null;
-  remix_count?: number;
-}
+type Schemas = components["schemas"];
+type GameCard = Schemas["GameCardOut"];
+type GameDetail = Schemas["GameDetailOut"];
 
-export interface GameVersion {
-  version: string;
-  created_at?: string | null;
-  size_bytes: number;
-  sha256: string;
-  is_current: boolean;
-}
+export type User = Schemas["UserOut"];
 
-export interface GameManifestFile {
-  path: string;
-  url?: string;
-  sha256?: string;
-}
+// Frontend views intentionally accept both list cards and detail payloads.
+// Endpoint-specific response types remain available below for tighter callers.
+export type Game = GameCard & Partial<Omit<GameDetail, keyof GameCard>>;
+export type GameDetailResponse = GameDetail;
+export type GameListResponse = Schemas["GameListOut"];
+export type GameCollectionResponse = Schemas["GameCollectionOut"];
+export type GameVersion = Schemas["GameVersionOut"];
+export type GameVersionListResponse = Schemas["GameVersionListOut"];
+export type GameManifestFile = Schemas["GameManifestFileOut"];
+export type GameManifest = Schemas["GameManifestOut"];
 
-export interface GameManifest {
-  entry?: string;
-  entry_url?: string;
-  runtime?: string;
-  sha256?: string;
-  title?: string;
-  files?: GameManifestFile[];
-  _source?: string;
-  _url?: string;
-}
+export type Step = Schemas["TaskStepOut"];
+export type StepSummary = Schemas["TaskStepSummaryOut"];
+export type AgentLogItem = Schemas["AgentLogItemOut"];
+export type AgentLogEvent = NonNullable<Schemas["AgentLogEntryOut"]["event"]>;
+export type AgentLogEntry = Schemas["AgentLogEntryOut"];
+export type DesignPreview = Schemas["DesignPreviewOut"];
+export type TaskAsset = Schemas["TaskAssetOut"];
+export type Task = Schemas["TaskOut"];
+export type TaskListResponse = Schemas["TaskListOut"];
+export type TaskIdResponse = Schemas["TaskIdOut"];
+export type TaskRetryResponse = Schemas["TaskRetryOut"];
 
-export interface Step {
-  seq: number;
-  agent: string;
-  name: string;
-  status: string;
-  logs: string[];
-}
+export type AgentBundleFile = Schemas["AgentBundleFileOut"];
+export type AgentFileContext = Schemas["AgentFileContextOut"];
+export type AgentBundleMetadata = Schemas["AgentBundleMetadataOut"];
 
-export interface StepSummary {
-  step: string;
-  title: string;
-  status: "pending" | "running" | "completed" | "failed";
-  summary?: string | null;
-}
-
-export interface AgentLogItem {
-  agent_name: string;
-  step: string;
-  message: string;
-  created_at?: string;
-  duration?: string | null;
-  status: string;
-  lines: string[];
-  entries?: AgentLogEntry[];
-}
-
-export type AgentLogEvent =
-  | {
-      type: "file_change";
-      action: "created" | "modified" | "deleted";
-      path: string;
-      added?: number;
-      deleted?: number;
-      bytes?: number;
-      chunks?: number;
-      detail?: string;
-      diff?: string | null;
-      diff_format?: "unified" | "omitted_large" | "empty" | string;
-      cline_tool?: string;
-      files_in_context?: AgentFileContext[];
-      status?: string;
-      tool?: string;
-    }
-  | {
-      type: "turn_state";
-      phase: "idle" | "streaming" | "awaiting_approval" | "awaiting_followup" | "completed" | "error" | "resumable" | string;
-      message?: string;
-      status?: string;
-      source?: string;
-      reason?: string;
-      tool_count?: number;
-      bundle?: AgentBundleMetadata;
-      checks_ok?: boolean;
-      changed?: string[];
-    }
-  | {
-      type: "heartbeat";
-      phase?: string;
-      elapsed_seconds?: number;
-      idle_seconds?: number;
-      file_count?: number;
-      changed_count?: number;
-      checks?: string;
-      files_in_context?: AgentFileContext[];
-      status?: string;
-    }
-  | {
-      type: "check";
-      checks_ok?: boolean;
-      smoke_ok?: boolean;
-      static_errors?: number;
-      static_ok?: boolean;
-      bundle?: AgentBundleMetadata;
-      status?: string;
-      tool?: string;
-    }
-  | {
-      type: "tool";
-      tool?: string;
-      cline_tool?: string;
-      path?: string;
-      name?: string;
-      bytes?: number;
-      query?: string;
-      file_pattern?: string;
-      files?: AgentBundleFile[];
-      script_refs?: string[];
-      files_in_context?: AgentFileContext[];
-      matches?: Array<{ path?: string; line?: number; text?: string }>;
-      status?: string;
-    }
-  | {
-      type: "usage";
-      input_tokens?: number;
-      output_tokens?: number;
-      total_tokens?: number;
-      cached_tokens?: number;
-      requests?: number;
-      cache_percent?: number;
-      status?: string;
-    }
-  | {
-      type: "error";
-      message?: string;
-      source?: string;
-      status?: string;
-    }
-  | {
-      type: "notice";
-      message?: string;
-      reason?: string;
-      status?: string;
-    }
-  | Record<string, unknown>;
-
-export interface AgentBundleFile {
-  path: string;
-  bytes?: number;
-  lines?: number;
-  kind?: string;
-  referenced?: boolean;
-}
-
-export interface AgentFileContext {
-  path: string;
-  record_state?: "active" | "stale" | string;
-  record_source?: "read_tool" | "cline_edited" | "file_mentioned" | "user_edited" | string;
-  bytes?: number;
-  lines?: number;
-  deleted?: boolean;
-  updated_at?: number;
-  cline_read_date?: number | null;
-  cline_edit_date?: number | null;
-}
-
-export interface AgentBundleMetadata {
-  files?: AgentBundleFile[];
-  script_refs?: string[];
-  files_in_context?: AgentFileContext[];
-}
-
-export interface AgentLogEntry {
-  line: string;
-  level?: string;
-  created_at?: string | null;
-  event?: AgentLogEvent | null;
-}
-
-export interface DesignPreview {
-  title: string;
-  fields: { label: string; value: string }[];
-}
-
-export interface TaskAsset {
-  name: string;
-  type: "uploaded" | "generated" | "default";
-  status: string;
-  kind?: string;
-  url?: string;
-}
-
-export interface Task {
-  id: string;
-  status: string;
-  task_kind?: "generation" | "revision" | "remix";
-  base_game_id?: string | null;
-  base_version?: string | null;
-  feedback_text?: string | null;
-  feedback_brief?: string | null;
-  created_at?: string;
-  updated_at?: string;
-  started_at?: string | null;
-  finished_at?: string | null;
-  current_step: number;
-  current_agent?: string | null;
-  repair_attempts?: number;
-  max_repair_attempts?: number;
-  replan_attempts?: number;
-  max_replan_attempts?: number;
-  tokens: number;
-  error: string | null;
-  error_code?: string | null;
-  idea: string;
-  dimension?: "2d" | "3d";
-  progress?: number;
-  game_title?: string;
-  manifest_url?: string | null;
-  preview_url?: string | null;
-  step_summaries?: StepSummary[];
-  design?: DesignPreview | null;
-  assets?: TaskAsset[];
-  logs?: AgentLogItem[];
-  steps: Step[];
-  game: Game | null;
-}
-
-export interface UploadedAsset {
-  id: string;
-  name: string;
-  kind: string;
-  size: number;
-  url: string;
-}
-
-export interface Comment {
-  id: string;
-  body: string;
-  created_at?: string | null;
-  ago: string;
-  author: string;
-  author_init: string;
-  author_id: string;
-}
-
-export interface MemoryItem {
-  id: string;
-  scope_type: "user" | "game" | "task";
-  scope_id?: string | null;
-  category: "style" | "mechanics" | "controls" | "difficulty" | "content" | "constraints" | "feedback";
-  raw_text: string;
-  extracted_text?: string | null;
-  source_type: string;
-  source_task_id?: string | null;
-  source_game_id?: string | null;
-  source_version?: string | null;
-  importance: number;
-  confidence: number;
-  pinned: boolean;
-  status: string;
-  created_at?: string | null;
-  updated_at?: string | null;
-}
-
-export interface MemorySettings {
-  enabled: boolean;
-  allow_cross_game_memory: boolean;
-  allow_memory_extraction: boolean;
-  retention_days?: number | null;
-}
-
-export interface MemoryProfile {
-  id: string;
-  scope_type: "user" | "game" | "task";
-  scope_id?: string | null;
-  profile_key: string;
-  category: MemoryItem["category"];
-  value_text: string;
-  summary_text: string;
-  evidence_span: string;
-  confidence: number;
-  scope_confidence: number;
-  explicitness: "manual" | "explicit" | "inferred";
-  status: "active" | "candidate" | "superseded" | "deleted";
-  source_memory_id: string;
-  conflicts_with_id?: string | null;
-  support_count: number;
-  utility_score: number;
-  utility_observation_count: number;
-  last_supported_at?: string | null;
-  expires_at?: string | null;
-  version: number;
-  created_at?: string | null;
-  updated_at?: string | null;
-}
-
-export interface MemoryProfileVersion {
-  id: string;
-  profile_id: string;
-  version: number;
-  operation: string;
-  snapshot: Record<string, unknown>;
-  source_memory_id?: string | null;
-  reason?: string | null;
-  created_at?: string | null;
-}
+export type UploadedAsset = Schemas["UploadedAssetOut"];
+export type UploadResponse = Schemas["UploadOut"];
+export type Comment = Schemas["CommentOut"];
+export type CommentListResponse = Schemas["CommentListOut"];
+export type MemoryItem = Schemas["MemoryItemOut"];
+export type MemoryListResponse = Schemas["MemoryListOut"];
+export type MemorySettings = Schemas["MemorySettingsOut"];
+export type MemoryProfile = Schemas["MemoryProfileOut"];
+export type MemoryProfileListResponse = Schemas["MemoryProfileListOut"];
+export type MemoryProfileVersion = Schemas["MemoryProfileVersionOut"];
+export type MemoryProfileHistoryResponse = Schemas["MemoryProfileHistoryOut"];

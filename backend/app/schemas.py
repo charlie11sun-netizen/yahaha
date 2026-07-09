@@ -1,5 +1,5 @@
 """请求体 Schema（响应统一用 services/serialize.py 输出 dict）。"""
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -231,11 +231,150 @@ class TaskAssetOut(BaseModel):
     url: str | None = None
 
 
+class AgentBundleFileOut(BaseModel):
+    path: str | None = None
+    bytes: int | None = None
+    lines: int | None = None
+    kind: str | None = None
+    referenced: bool | None = None
+
+
+class AgentFileContextOut(BaseModel):
+    path: str | None = None
+    record_state: str | None = None
+    record_source: str | None = None
+    bytes: int | None = None
+    lines: int | None = None
+    deleted: bool | None = None
+    updated_at: int | None = None
+    cline_read_date: int | None = None
+    cline_edit_date: int | None = None
+
+
+class AgentBundleMetadataOut(BaseModel):
+    files: list[AgentBundleFileOut] | None = None
+    script_refs: list[str] | None = None
+    files_in_context: list[AgentFileContextOut] | None = None
+
+
+class AgentSearchMatchOut(BaseModel):
+    path: str | None = None
+    line: int | None = None
+    text: str | None = None
+
+
+class _AgentLogEventBaseOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    seq: int | None = None
+    status: str | None = None
+
+
+class AgentFileChangeEventOut(_AgentLogEventBaseOut):
+    type: Literal["file_change"]
+    action: Literal["created", "modified", "deleted"] | None = None
+    path: str | None = None
+    added: int | None = None
+    deleted: int | None = None
+    bytes: int | None = None
+    chunks: int | None = None
+    detail: str | None = None
+    diff: str | None = None
+    diff_format: Literal["unified", "omitted_large", "empty"] | None = None
+    cline_tool: str | None = None
+    files_in_context: list[AgentFileContextOut] | None = None
+    tool: str | None = None
+
+
+class AgentTurnStateEventOut(_AgentLogEventBaseOut):
+    type: Literal["turn_state"]
+    phase: str | None = None
+    message: str | None = None
+    source: str | None = None
+    reason: str | None = None
+    agent: str | None = None
+    tool_count: int | None = None
+    bundle: AgentBundleMetadataOut | None = None
+    checks_ok: bool | None = None
+    changed: list[str] | None = None
+
+
+class AgentHeartbeatEventOut(_AgentLogEventBaseOut):
+    type: Literal["heartbeat"]
+    phase: str | None = None
+    elapsed_seconds: int | None = None
+    idle_seconds: int | None = None
+    file_count: int | None = None
+    changed_count: int | None = None
+    checks: str | None = None
+    files_in_context: list[AgentFileContextOut] | None = None
+
+
+class AgentCheckEventOut(_AgentLogEventBaseOut):
+    type: Literal["check"]
+    tool: str | None = None
+    static_ok: bool | None = None
+    static_errors: int | None = None
+    smoke_ok: bool | None = None
+    checks_ok: bool | None = None
+    bundle: AgentBundleMetadataOut | None = None
+
+
+class AgentToolEventOut(_AgentLogEventBaseOut):
+    type: Literal["tool"]
+    tool: str | None = None
+    cline_tool: str | None = None
+    path: str | None = None
+    name: str | None = None
+    bytes: int | None = None
+    query: str | None = None
+    file_pattern: str | None = None
+    files: list[AgentBundleFileOut] | None = None
+    script_refs: list[str] | None = None
+    files_in_context: list[AgentFileContextOut] | None = None
+    matches: list[AgentSearchMatchOut] | None = None
+
+
+class AgentUsageEventOut(_AgentLogEventBaseOut):
+    type: Literal["usage"]
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    cached_tokens: int | None = None
+    requests: int | None = None
+    cache_percent: int | None = None
+
+
+class AgentErrorEventOut(_AgentLogEventBaseOut):
+    type: Literal["error"]
+    message: str | None = None
+    source: str | None = None
+
+
+class AgentNoticeEventOut(_AgentLogEventBaseOut):
+    type: Literal["notice"]
+    message: str | None = None
+    reason: str | None = None
+
+
+AgentLogEventOut = Annotated[
+    AgentFileChangeEventOut
+    | AgentTurnStateEventOut
+    | AgentHeartbeatEventOut
+    | AgentCheckEventOut
+    | AgentToolEventOut
+    | AgentUsageEventOut
+    | AgentErrorEventOut
+    | AgentNoticeEventOut,
+    Field(discriminator="type"),
+]
+
+
 class AgentLogEntryOut(BaseModel):
     line: str
     level: str | None = None
     created_at: str | None = None
-    event: dict[str, Any] | None = None
+    event: AgentLogEventOut | None = None
 
 
 class AgentLogItemOut(BaseModel):

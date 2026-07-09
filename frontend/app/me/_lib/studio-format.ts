@@ -8,7 +8,7 @@ export function avatarChoices(name: string) {
   return Array.from(new Set([initial, "AI", "PF", "XP", "01", "GG"]));
 }
 
-export function coverStyle(cover?: string): CSSProperties {
+export function coverStyle(cover?: string | null): CSSProperties {
   if (!cover) {
     return {
       background: "linear-gradient(135deg, #101844, #4f7dff 52%, #8be8f1)",
@@ -31,7 +31,7 @@ export function shortId(id: string) {
   return `GEN-${id.replace(/-/g, "").slice(0, 4).toUpperCase()}`;
 }
 
-export function formatBytes(value: number) {
+export function formatBytes(value?: number | null) {
   if (!value) return "0 B";
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;

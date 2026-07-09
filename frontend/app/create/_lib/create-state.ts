@@ -438,7 +438,7 @@ export function latestAgentContext(logs: AgentLogItem[]): AgentContextSummary {
   return { files, filesInContext, scriptRefs };
 }
 
-export function contextSourceLabel(source: string | undefined) {
+export function contextSourceLabel(source: string | null | undefined) {
   switch (source) {
     case "read_tool":
       return "read";
