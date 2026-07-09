@@ -13,7 +13,7 @@ import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "@fontsource/ibm-plex-mono/600.css";
 import "./globals.css";
-import "./legacy-pf.css";
+import "./app-shell.css";
 import AppShell from "./app-shell";
 import Providers from "./providers";
 

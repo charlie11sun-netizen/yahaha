@@ -7,11 +7,11 @@ import time
 from dataclasses import dataclass
 
 import redis as redis_lib
-from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models import ModerationEvent
+from app.services.errors import ServiceError
 
 BLOCKLIST_PATTERNS: list[tuple[str, str]] = [
     (r"ignore (previous|all) (instructions|prompts)", "prompt_injection"),
@@ -273,6 +273,6 @@ def ensure_allowed(
     if effective_enforce and (decision.blocked or decision.errored):
         db.commit()
         if decision.errored:
-            raise HTTPException(status_code=503, detail="MODERATION_UNAVAILABLE")
-        raise HTTPException(status_code=422, detail="MODERATION_BLOCKED")
+            raise ServiceError(503, "MODERATION_UNAVAILABLE")
+        raise ServiceError(422, "MODERATION_BLOCKED")
     return decision

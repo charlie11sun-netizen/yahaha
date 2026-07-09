@@ -2,7 +2,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
@@ -22,6 +22,7 @@ from app.core.telemetry import (
 )
 from app.db.base import Base
 from app.db.session import engine
+from app.services.errors import ServiceError
 from app.storage.s3 import ensure_bucket
 
 configure_logging()
@@ -39,6 +40,11 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="GameWeave API", version="0.1.0", lifespan=lifespan)
 init_otel(service_name="gameweave-api", fastapi_app=app, sqlalchemy_engine=engine)
+
+
+@app.exception_handler(ServiceError)
+async def service_error_handler(_request: Request, exc: ServiceError):
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 # Front-door site gate: when SITE_PASSWORD is set, every request must carry a
 # valid X-Gate-Token (the web front-end attaches it after unlock). Exempts CORS

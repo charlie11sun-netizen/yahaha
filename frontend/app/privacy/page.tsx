@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
-import type { ReactNode } from "react";
+
+import { LegalPage } from "@/app/_components/LegalPage";
 
 export const metadata: Metadata = { title: "Privacy Policy - GameWeave AI" };
 
@@ -26,15 +27,4 @@ export default function PrivacyPage() {
     </LegalShell>
   );
 }
-
-function LegalShell({ children, title, updated }: { children: ReactNode; title: string; updated: string }) {
-  return (
-    <main className="pf-legal-page">
-      <article className="pf-legal-card">
-        <h1>{title}</h1>
-        <p className="pf-legal-updated">Last updated {updated}</p>
-        <div className="pf-legal-content">{children}</div>
-      </article>
-    </main>
-  );
-}
+const LegalShell = LegalPage;

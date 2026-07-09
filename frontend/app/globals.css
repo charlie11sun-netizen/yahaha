@@ -103,7 +103,12 @@
   --pf-purple: #7c5cff;
   --pf-blue: #4f7dff;
   --pf-grad: linear-gradient(135deg, #7b5cff 0%, #3f7dff 100%);
+  --pf-grad-vivid: linear-gradient(120deg, #a855f7 0%, #7c5cff 42%, #4f7dff 100%);
   --pf-shadow: 0 22px 55px rgba(46, 52, 105, 0.1);
+  --pf-shadow-md: 0 22px 52px rgba(40, 48, 110, 0.13);
+  --pf-glow: 0 14px 30px rgba(108, 92, 255, 0.34);
+  --pf-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --pf-dur: 0.22s;
 }
 
 /* Keep reset in @layer base so Tailwind utilities can override it. */
@@ -164,7 +169,19 @@ img {
   border-radius: 999px;
 }
 
-/* App shell is intentionally global; route-specific pf styles live in legacy-pf.css. */
+@keyframes pf-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* App shell is global. New route styles should stay local or shared. */
 .app-root-layout {
   background:
     linear-gradient(180deg, rgba(247, 250, 255, 0.94) 0%, rgba(255, 255, 255, 0.98) 42%, rgba(246, 248, 254, 0.94) 100%);

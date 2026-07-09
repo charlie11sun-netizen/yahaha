@@ -1,6 +1,8 @@
 """请求体 Schema（响应统一用 services/serialize.py 输出 dict）。"""
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
+from fastapi_users import schemas as fastapi_users_schemas
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
@@ -485,6 +487,24 @@ class UserOut(BaseModel):
     email: EmailStr
     init: str
     created_at: str | None = None
+
+
+class FastAPIUserRead(fastapi_users_schemas.BaseUser[str]):
+    display_name: str
+    avatar_initial: str
+    name: str
+    init: str
+    created_at: datetime | None = None
+
+
+class FastAPIUserCreate(fastapi_users_schemas.BaseUserCreate):
+    display_name: str = Field(min_length=1, max_length=120)
+    avatar: str | None = Field(default=None, max_length=8)
+
+
+class FastAPIUserUpdate(fastapi_users_schemas.BaseUserUpdate):
+    display_name: str | None = Field(default=None, min_length=1, max_length=120)
+    avatar: str | None = Field(default=None, max_length=8)
 
 
 class AuthOut(BaseModel):

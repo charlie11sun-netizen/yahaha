@@ -1,15 +1,10 @@
 import redis as redis_lib
 from fastapi import Depends, HTTPException, Request, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.security import decode_token
 from app.core.telemetry import bind_context
-from app.db.session import get_db
+from app.core.users import current_user_dependency, optional_user_dependency
 from app.models import User
-
-bearer = HTTPBearer(auto_error=False)
 
 _rl_redis: "redis_lib.Redis | None" = None
 
@@ -22,7 +17,7 @@ def _get_rl_redis() -> "redis_lib.Redis":
 
 
 def rate_limit(limit: int, window: int, scope: str):
-    """基于 Redis 的简单 IP 限流依赖工厂；默认 Redis 不可用时拒绝请求。"""
+    """Redis-backed IP rate limiter dependency."""
 
     def _dep(request: Request) -> None:
         client = request.client.host if request.client else "anon"
@@ -48,32 +43,14 @@ def rate_limit(limit: int, window: int, scope: str):
     return _dep
 
 
-def _user_from_creds(creds: HTTPAuthorizationCredentials | None, db: Session) -> User | None:
-    if not creds:
-        return None
-    uid = decode_token(creds.credentials)
-    if not uid:
-        return None
-    return db.get(User, uid)
-
-
-def get_current_user(
-    creds: HTTPAuthorizationCredentials | None = Depends(bearer),
-    db: Session = Depends(get_db),
-) -> User:
-    user = _user_from_creds(creds, db)
+def get_current_user(user: User | None = Depends(current_user_dependency)) -> User:
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    # "禁用"必须对持旧 JWT 的会话全局生效，而不只在密码登录那一刻检查
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
     bind_context(user_id=user.id)
     return user
 
 
-def get_optional_user(
-    creds: HTTPAuthorizationCredentials | None = Depends(bearer),
-    db: Session = Depends(get_db),
-) -> User | None:
-    user = _user_from_creds(creds, db)
+def get_optional_user(user: User | None = Depends(optional_user_dependency)) -> User | None:
     return user if user and user.is_active else None

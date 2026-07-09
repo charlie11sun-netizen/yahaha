@@ -16,9 +16,13 @@ import {
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
 import { coverBackgroundValue } from "@/lib/cover";
 import type { Game, GameManifest } from "@/lib/types";
+import { cn } from "@/lib/utils";
 import { ActivityFeed, RuntimeList } from "./_components/PlayPanels";
 import { INITIAL_RUNTIME, type Phase, type RuntimeKey, type RuntimeStatus } from "./_lib/play-runtime";
 
@@ -57,19 +61,18 @@ export default function PlayPage() {
   const runLoad = async (nextGame: Game) => {
     setPhase("loading");
     setRuntime({ manifest: "running", sandbox: "pending", bundle: "pending" });
-    setActivity(["Fetching manifest from object storage…"]);
+    setActivity(["Fetching manifest from object storage..."]);
 
-    // 真实拉取 manifest（后端从 OSS 读取），替代此前的纯动画
     let manifest: GameManifest | null = null;
     try {
       manifest = requestedVersion
         ? await api.gameManifestVersion(nextGame.id, requestedVersion)
         : await api.gameManifest(nextGame.id);
       patchRuntime("manifest", "ready");
-      const sha = manifest.sha256 ? ` · sha256=${String(manifest.sha256).slice(0, 12)}` : "";
-      const fileCount = manifest.files?.length ? ` · files=${manifest.files.length}` : "";
+      const sha = manifest.sha256 ? ` sha256=${String(manifest.sha256).slice(0, 12)}` : "";
+      const fileCount = manifest.files?.length ? ` files=${manifest.files.length}` : "";
       addActivity(
-        `Manifest ${manifest._source === "oss" ? "fetched from OSS" : "resolved"} ✓ entry=${manifest.entry || "index.html"} · runtime=${manifest.runtime || "iframe"}${fileCount}${sha}`,
+        `Manifest ${manifest._source === "oss" ? "fetched from OSS" : "resolved"} entry=${manifest.entry || "index.html"} runtime=${manifest.runtime || "iframe"}${fileCount}${sha}`,
       );
     } catch {
       patchRuntime("manifest", "failed");
@@ -78,8 +81,6 @@ export default function PlayPage() {
       return;
     }
 
-    // 舞台状态绑定真实事件：bundle 状态由 iframe onLoad 翻转，
-    // 不再用 setTimeout 表演"已挂载"（真 404 时旧 UI 已显示 Bundle mounted）。
     if (!manifest) {
       setPhase("error");
       return;
@@ -94,9 +95,9 @@ export default function PlayPage() {
     }
     setBundleUrl(nextBundleUrl);
     patchRuntime("sandbox", "ready");
-    addActivity("Sandboxed iframe prepared (scripts only, no same-origin)");
+    addActivity("Sandboxed iframe prepared");
     patchRuntime("bundle", "running");
-    addActivity("Mounting bundle from object storage…");
+    addActivity("Mounting bundle from object storage...");
     setIframeKey((key) => key + 1);
     setPhase("ready");
   };
@@ -107,7 +108,7 @@ export default function PlayPage() {
   };
 
   useEffect(() => {
-    if (game) runLoad(game);
+    if (game) void runLoad(game);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [game?.id, game?.bundle_url, requestedVersion]);
 
@@ -135,15 +136,13 @@ export default function PlayPage() {
     if (error) setPhase("error");
   }, [error]);
 
-  // iframe 游戏可回传分数：window.parent.postMessage({type:"gameweave:score", points, name})
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
-      // 只信任游戏 iframe 本身发来的消息，其他窗口引用（opener、嵌入内容）不得刷榜
       if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
-      const d = event.data;
-      if (d && typeof d === "object" && d.type === "gameweave:score" && typeof d.points === "number") {
+      const data = event.data;
+      if (data && typeof data === "object" && data.type === "gameweave:score" && typeof data.points === "number") {
         api
-          .submitScore(id, Math.max(0, Math.floor(d.points)), typeof d.name === "string" ? d.name : undefined)
+          .submitScore(id, Math.max(0, Math.floor(data.points)), typeof data.name === "string" ? data.name : undefined)
           .then(() => qc.invalidateQueries({ queryKey: ["leaderboard", id] }))
           .catch(() => {});
       }
@@ -154,8 +153,7 @@ export default function PlayPage() {
 
   const restart = () => {
     if (!game) return;
-    // played 不重置：plays 统计的是"一次游玩会话"，点 Restart 不该 +1
-    runLoad(game);
+    void runLoad(game);
   };
 
   const recordPlay = () => {
@@ -198,95 +196,140 @@ export default function PlayPage() {
   };
 
   return (
-    <div className="pf-play-page">
-      <header className="pf-play-topbar">
-        <button className="pf-play-brand" onClick={() => router.push("/")} type="button">
-          <span>
-            <Box size={18} />
-          </span>
-          <strong>GameWeave AI</strong>
-        </button>
-        <div className="pf-play-game-meta">
-          <h1>{game?.title || "Loading game"}</h1>
-          <p>{game ? `by ${game.author} . ${requestedVersion || game.version}` : "Preparing browser runtime"}</p>
-        </div>
-        <div className="pf-play-actions">
-          <button onClick={() => router.back()} type="button">
-            <ArrowLeft size={17} />
-            Exit
+    <main className="min-h-screen bg-slate-100">
+      <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 px-5 py-3 backdrop-blur">
+        <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-4">
+          <button className="flex items-center gap-3 rounded-lg text-left" onClick={() => router.push("/")} type="button">
+            <span className="flex size-9 items-center justify-center rounded-lg bg-indigo-600 text-white shadow-lg shadow-indigo-500/25">
+              <Box size={18} />
+            </span>
+            <strong className="font-display text-base font-semibold tracking-normal text-slate-950">GameWeave AI</strong>
           </button>
-          <button disabled={!game || phase !== "ready"} onClick={restart} type="button">
-            <RefreshCw size={17} />
-            Restart
-          </button>
-          <button disabled={!game || phase !== "ready"} onClick={toggleFullScreen} type="button">
-            {isFullScreen || isTheater ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
-            {isFullScreen || isTheater ? "Exit Fullscreen" : "Fullscreen"}
-          </button>
-          <button onClick={share} type="button">
-            <Share2 size={17} />
-            Share
-          </button>
+          <div className="min-w-0 flex-1">
+            <h1 className="line-clamp-1 font-display text-lg font-semibold tracking-normal text-slate-950">
+              {game?.title || "Loading game"}
+            </h1>
+            <p className="line-clamp-1 text-sm text-slate-500">
+              {game ? `by ${game.author} . ${requestedVersion || game.version}` : "Preparing browser runtime"}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button className="rounded-lg" onClick={() => router.back()} type="button" variant="outline">
+              <ArrowLeft size={17} />
+              Exit
+            </Button>
+            <Button className="rounded-lg" disabled={!game || phase !== "ready"} onClick={restart} type="button" variant="outline">
+              <RefreshCw size={17} />
+              Restart
+            </Button>
+            <Button className="rounded-lg" disabled={!game || phase !== "ready"} onClick={toggleFullScreen} type="button" variant="outline">
+              {isFullScreen || isTheater ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
+              {isFullScreen || isTheater ? "Exit Fullscreen" : "Fullscreen"}
+            </Button>
+            <Button className="rounded-lg" onClick={share} type="button" variant="outline">
+              <Share2 size={17} />
+              Share
+            </Button>
+          </div>
         </div>
       </header>
 
-      <main className="pf-play-main">
-        <section className="pf-play-info">
-          <div className="pf-play-title-card">
-            <div>
-              <h2>{game?.title || "Generated game"}</h2>
-              <p>{game?.summary || "GameWeave is loading the generated game bundle."}</p>
-            </div>
-            {game?.oss_path && <span>{game.oss_path}</span>}
-          </div>
-          <RuntimeList runtime={runtime} />
-          {(lbQ.data?.items?.length ?? 0) > 0 && (
-            <div className="pf-play-side-panel">
-              <h3>
-                <Trophy size={14} /> Leaderboard
-              </h3>
-              <ol className="pf-play-leaderboard">
-                {lbQ.data!.items.map((s) => (
-                  <li key={`${s.rank}-${s.name}`}>
-                    <span>{s.rank}. {s.name}</span>
-                    <strong>{s.points}</strong>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          )}
-          {(relatedQ.data?.items?.length ?? 0) > 0 && (
-            <div className="pf-play-side-panel">
-              <h3>More games</h3>
-              <div className="pf-play-related-list">
-                {relatedQ.data!.items.slice(0, 4).map((r) => (
-                  <button key={r.id} onClick={() => router.push(`/play/${r.id}`)} type="button">
-                    <span style={{ background: coverBackgroundValue(r.cover) }} />
-                    <b>{r.title}</b>
+      <div className="mx-auto grid max-w-[1600px] gap-5 px-5 py-5 xl:grid-cols-[360px_minmax(0,1fr)]">
+        <aside className={cn("space-y-5", isTheater && "hidden")}>
+          <Card className="rounded-lg border-slate-200 bg-white shadow-sm">
+            <CardContent className="space-y-3 p-5">
+              <div>
+                <h2 className="font-display text-xl font-semibold tracking-normal text-slate-950">{game?.title || "Generated game"}</h2>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  {game?.summary || "GameWeave is loading the generated game bundle."}
+                </p>
+              </div>
+              {game?.oss_path ? <p className="break-all font-mono text-xs text-slate-500">{game.oss_path}</p> : null}
+            </CardContent>
+          </Card>
+
+          <Card className="rounded-lg border-slate-200 bg-white shadow-sm">
+            <CardHeader>
+              <CardTitle className="font-display text-lg tracking-normal text-slate-950">Runtime</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <RuntimeList runtime={runtime} />
+            </CardContent>
+          </Card>
+
+          {(lbQ.data?.items?.length ?? 0) > 0 ? (
+            <Card className="rounded-lg border-slate-200 bg-white shadow-sm">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 font-display text-lg tracking-normal text-slate-950">
+                  <Trophy size={16} />
+                  Leaderboard
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ol className="space-y-2">
+                  {lbQ.data!.items.map((score) => (
+                    <li className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" key={`${score.rank}-${score.name}`}>
+                      <span className="min-w-0 truncate text-slate-700">
+                        {score.rank}. {score.name}
+                      </span>
+                      <strong className="font-semibold text-slate-950">{score.points}</strong>
+                    </li>
+                  ))}
+                </ol>
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {(relatedQ.data?.items?.length ?? 0) > 0 ? (
+            <Card className="rounded-lg border-slate-200 bg-white shadow-sm">
+              <CardHeader>
+                <CardTitle className="font-display text-lg tracking-normal text-slate-950">More games</CardTitle>
+              </CardHeader>
+              <CardContent className="grid gap-3">
+                {relatedQ.data!.items.slice(0, 4).map((related) => (
+                  <button
+                    className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white p-3 text-left transition hover:border-indigo-200 hover:bg-indigo-50/40"
+                    key={related.id}
+                    onClick={() => router.push(`/play/${related.id}`)}
+                    type="button"
+                  >
+                    <span className="h-12 w-16 shrink-0 rounded-md bg-slate-900 bg-cover bg-center" style={{ background: coverBackgroundValue(related.cover) }} />
+                    <b className="line-clamp-2 text-sm font-semibold text-slate-950">{related.title}</b>
                   </button>
                 ))}
-              </div>
-            </div>
-          )}
-        </section>
+              </CardContent>
+            </Card>
+          ) : null}
+        </aside>
 
-        <section className={`pf-play-stage-shell is-${phase}${isTheater ? " is-theater" : ""}`} ref={stageRef}>
-          {phase === "loading" && (
-            <div className="pf-play-loading">
-              <span className="pf-play-loader">
-                <LoaderCircle size={42} />
-              </span>
-              <h2>{isLoading ? "Finding game..." : "Preparing runtime..."}</h2>
-              <p>Validating the manifest, opening a sandbox, and mounting the generated bundle.</p>
+        <section
+          className={cn(
+            "relative min-h-[640px] overflow-hidden rounded-lg border border-slate-200 bg-slate-950 shadow-2xl shadow-slate-900/20",
+            isTheater && "fixed inset-0 z-[80] min-h-screen rounded-none border-0",
+          )}
+          ref={stageRef}
+        >
+          {phase === "loading" ? (
+            <div className="flex h-full min-h-[640px] flex-col items-center justify-center gap-5 p-6 text-center text-white">
+              <LoaderCircle className="size-12 animate-spin text-indigo-300" />
+              <div className="space-y-2">
+                <h2 className="font-display text-2xl font-semibold tracking-normal">
+                  {isLoading ? "Finding game..." : "Preparing runtime..."}
+                </h2>
+                <p className="max-w-xl text-sm leading-6 text-slate-300">
+                  Validating the manifest, opening a sandbox, and mounting the generated bundle.
+                </p>
+              </div>
               <RuntimeList runtime={runtime} compact />
               <ActivityFeed lines={activity} />
             </div>
-          )}
+          ) : null}
 
-          {phase === "ready" && game && bundleUrl && (
+          {phase === "ready" && game && bundleUrl ? (
             <>
               <iframe
                 allow="fullscreen"
+                className="h-full min-h-[640px] w-full border-0 bg-white"
                 key={iframeKey}
                 onLoad={onBundleLoaded}
                 ref={frameRef}
@@ -294,39 +337,43 @@ export default function PlayPage() {
                 src={bundleUrl}
                 title={game.title}
               />
-              <div className="pf-play-stage-status">
-                <span>
+              <div className="absolute bottom-4 left-4 right-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-white/15 bg-slate-950/85 px-4 py-3 text-sm text-white backdrop-blur">
+                <Badge className="gap-2 border-emerald-400/30 bg-emerald-400/15 text-emerald-100" variant="outline">
                   <CircleCheck size={15} />
                   Running in isolated preview
-                </span>
-                <button onClick={toggleFullScreen} type="button">
+                </Badge>
+                <Button className="rounded-lg border-white/20 bg-white/10 text-white hover:bg-white/20" onClick={toggleFullScreen} type="button" variant="outline">
                   {isFullScreen || isTheater ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
                   {isFullScreen || isTheater ? "Exit" : "Fullscreen"}
-                </button>
+                </Button>
               </div>
             </>
-          )}
+          ) : null}
 
-          {phase === "error" && (
-            <div className="pf-play-error">
-              <span>
+          {phase === "error" ? (
+            <div className="flex h-full min-h-[640px] flex-col items-center justify-center gap-5 p-6 text-center text-white">
+              <span className="flex size-14 items-center justify-center rounded-lg bg-rose-500/15 text-rose-200">
                 <CircleAlert size={30} />
               </span>
-              <h2>Could not load this game</h2>
-              <p>{error instanceof Error ? error.message : "The generated bundle could not be mounted. Try again or return to your studio."}</p>
-              <div>
-                <button className="is-primary" onClick={retry} type="button">
+              <div className="space-y-2">
+                <h2 className="font-display text-2xl font-semibold tracking-normal">Could not load this game</h2>
+                <p className="max-w-xl text-sm leading-6 text-slate-300">
+                  {error instanceof Error ? error.message : "The generated bundle could not be mounted. Try again or return to your studio."}
+                </p>
+              </div>
+              <div className="flex flex-wrap justify-center gap-3">
+                <Button className="rounded-lg" onClick={retry} type="button">
                   <RefreshCw size={16} />
                   Retry
-                </button>
-                <button onClick={() => router.push("/me?section=games")} type="button">
+                </Button>
+                <Button className="rounded-lg border-white/20 bg-white/10 text-white hover:bg-white/20" onClick={() => router.push("/me?section=games")} type="button" variant="outline">
                   Back to Studio
-                </button>
+                </Button>
               </div>
             </div>
-          )}
+          ) : null}
         </section>
-      </main>
-    </div>
+      </div>
+    </main>
   );
 }

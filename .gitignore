@@ -1,7 +1,7 @@
-# Claude Design 设计 handoff（留本地当参考，不进仓库）
+# Claude Design handoff (local reference, not committed)
 AI全栈工程师系统设计-handoff/
 
-# 环境变量 / 密钥（保留示例模板，真实 .env 不进仓库）
+# Environment variables / secrets
 .env
 .env.*
 !.env.example
@@ -28,8 +28,14 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+celerybeat-schedule
 
-# 操作系统 / 编辑器
+# Graphify: keep only the portable report and graph snapshot in Git.
+graphify-out/*
+!graphify-out/GRAPH_REPORT.md
+!graphify-out/graph.json
+
+# Operating system / editors
 .DS_Store
 Thumbs.db
 .idea/

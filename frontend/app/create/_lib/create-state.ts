@@ -582,9 +582,9 @@ export function getLiveFileChanges(task?: Task): FileChange[] {
 }
 
 export function fileChangeLabel(action: FileChange["action"]) {
-  if (action === "created") return "已创建";
-  if (action === "deleted") return "已删除";
-  return "正在编辑";
+  if (action === "created") return "Created";
+  if (action === "deleted") return "Deleted";
+  return "Edited";
 }
 
 export function visibleAgentLogs(task?: Task): AgentLogItem[] {

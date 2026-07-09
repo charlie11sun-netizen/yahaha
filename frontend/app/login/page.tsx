@@ -1,16 +1,19 @@
 "use client";
 
-import { Box, Code2, Sparkles } from "lucide-react";
+import { AlertCircle, Box, Code2, Loader2, Sparkles } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useState, type ReactNode } from "react";
 
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { ApiError, api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/lib/toast";
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ children, label }: { children: ReactNode; label: string }) {
   return (
-    <label className="pf-auth-field">
+    <label className="grid gap-2 text-sm font-semibold text-slate-700">
       <span>{label}</span>
       {children}
     </label>
@@ -25,7 +28,6 @@ function LoginInner() {
 
   const intent = params.get("intent");
   const rawNext = params.get("next");
-  // 只接受站内绝对路径，防开放重定向（"//evil.com" 也会被拒）
   const next = rawNext && rawNext.startsWith("/") && !rawNext.startsWith("//") ? rawNext : null;
   const postLoginTarget = next || (intent === "create" ? "/create" : "/explore");
   const [mode, setMode] = useState<"login" | "signup">(params.get("mode") === "signup" ? "signup" : "login");
@@ -54,8 +56,6 @@ function LoginInner() {
     if (fragment.has("token")) {
       window.history.replaceState(null, "", window.location.pathname + window.location.search);
     } else {
-      // token 走了 ?token= 查询参数：同样立刻从地址栏抹掉，
-      // 否则会留在浏览器历史，且可能进服务端访问日志
       const rest = new URLSearchParams(window.location.search);
       rest.delete("token");
       const qs = rest.toString();
@@ -113,89 +113,126 @@ function LoginInner() {
   };
 
   return (
-    <div className="pf-auth-page">
-      <section className="pf-auth-panel">
-        <div className="pf-auth-brand">
-          <span>
-            <Box size={22} />
-          </span>
-          <strong>GameWeave AI</strong>
-        </div>
-        <div className="pf-auth-copy">
-          <h1>{isSignup ? "Create your studio" : "Welcome back"}</h1>
-          <p>
-            Sign in to generate, publish, save, and tune browser games from one GameWeave workspace.
-          </p>
-        </div>
-        <div className="pf-auth-proof">
-          <span>
-            <Sparkles size={17} />
-            Multi-agent generation
-          </span>
-          <span>Sandboxed previews</span>
-          <span>One-click publishing</span>
-        </div>
-      </section>
+    <main className="flex min-h-[calc(100vh-61px)] items-center justify-center px-5 py-12 sm:px-8 lg:px-10">
+      <Card className="grid w-full max-w-5xl overflow-hidden rounded-lg border-slate-200/80 bg-white/95 py-0 shadow-2xl shadow-slate-900/10 lg:grid-cols-[1.05fr_0.95fr]">
+        <section className="flex min-h-[460px] flex-col justify-between bg-slate-950 p-7 text-white sm:p-10">
+          <div className="space-y-10">
+            <div className="flex items-center gap-3">
+              <span className="flex size-10 items-center justify-center rounded-lg bg-white text-indigo-600 shadow-lg shadow-indigo-500/20">
+                <Box size={22} />
+              </span>
+              <strong className="font-display text-lg font-semibold tracking-normal">GameWeave AI</strong>
+            </div>
+            <div className="max-w-md space-y-4">
+              <h1 className="font-display text-4xl font-semibold tracking-normal sm:text-5xl">
+                {isSignup ? "Create your studio" : "Welcome back"}
+              </h1>
+              <p className="text-base leading-7 text-slate-300">
+                Sign in to generate, publish, save, and tune browser games from one GameWeave workspace.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-3 pt-10 text-sm font-semibold text-slate-100">
+            <span className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/10 px-3 py-2">
+              <Sparkles size={17} />
+              Multi-agent generation
+            </span>
+            <span className="rounded-lg border border-white/15 bg-white/10 px-3 py-2">Sandboxed previews</span>
+            <span className="rounded-lg border border-white/15 bg-white/10 px-3 py-2">One-click publishing</span>
+          </div>
+        </section>
 
-      <section className="pf-auth-card" aria-label={isSignup ? "Create account" : "Log in"}>
-        <h2>{isSignup ? "Create account" : "Log in"}</h2>
-        <p>{isSignup ? "Start building playable ideas in minutes." : "Continue to your GameWeave studio."}</p>
-
-        <div className="pf-auth-oauth">
-          <button onClick={() => oauth("google")} type="button">
-            <span>G</span>
-            Continue with Google
-          </button>
-          <button onClick={() => oauth("github")} type="button">
-            <Code2 size={17} />
-            Continue with GitHub
-          </button>
-        </div>
-
-        <div className="pf-auth-divider">
-          <span />
-          <em>OR EMAIL</em>
-          <span />
-        </div>
-
-        {isSignup ? (
-          <Field label="Display name">
-            <input onChange={(event) => setName(event.target.value)} placeholder="Ada Lovelace" value={name} />
-          </Field>
-        ) : null}
-        <Field label="Email">
-          <input onChange={(event) => setEmail(event.target.value)} placeholder="you@studio.com" value={email} />
-        </Field>
-        <Field label="Password">
-          <input onChange={(event) => setPass(event.target.value)} placeholder="At least 6 characters" type="password" value={pass} />
-        </Field>
-
-        {err ? <div className="pf-auth-error">{err}</div> : null}
-
-        <button className="pf-auth-submit" disabled={submitting} onClick={submit} type="button">
-          {submitting ? "Please wait..." : isSignup ? "Create account" : "Log in"}
-        </button>
-
-        <div className="pf-auth-switch">
-          {isSignup ? "Already have an account?" : "New to GameWeave?"}
-          <button
-            onClick={() => {
-              setMode(isSignup ? "login" : "signup");
-              setErr("");
+        <CardContent className="px-6 py-8 sm:px-10 sm:py-10">
+          <form
+            className="mx-auto flex max-w-md flex-col gap-6"
+            aria-label={isSignup ? "Create account" : "Log in"}
+            onSubmit={(event) => {
+              event.preventDefault();
+              void submit();
             }}
-            type="button"
           >
-            {isSignup ? "Log in" : "Create one"}
-          </button>
-        </div>
-      </section>
-    </div>
+            <div className="space-y-2">
+              <h2 className="font-display text-3xl font-semibold tracking-normal text-slate-950">
+                {isSignup ? "Create account" : "Log in"}
+              </h2>
+              <p className="text-sm leading-6 text-slate-600">
+                {isSignup ? "Start building playable ideas in minutes." : "Continue to your GameWeave studio."}
+              </p>
+            </div>
+
+            <div className="grid gap-3">
+              <Button className="h-11 justify-start rounded-lg" onClick={() => void oauth("google")} type="button" variant="outline">
+                <span className="flex size-6 items-center justify-center rounded-full bg-slate-950 text-xs font-bold text-white">G</span>
+                Continue with Google
+              </Button>
+              <Button className="h-11 justify-start rounded-lg" onClick={() => void oauth("github")} type="button" variant="outline">
+                <Code2 size={17} />
+                Continue with GitHub
+              </Button>
+            </div>
+
+            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-xs font-bold uppercase tracking-[0.18em] text-slate-400">
+              <span className="h-px bg-slate-200" />
+              OR EMAIL
+              <span className="h-px bg-slate-200" />
+            </div>
+
+            <div className="grid gap-4">
+              {isSignup ? (
+                <Field label="Display name">
+                  <Input onChange={(event) => setName(event.target.value)} placeholder="Ada Lovelace" value={name} />
+                </Field>
+              ) : null}
+              <Field label="Email">
+                <Input onChange={(event) => setEmail(event.target.value)} placeholder="you@studio.com" value={email} />
+              </Field>
+              <Field label="Password">
+                <Input onChange={(event) => setPass(event.target.value)} placeholder="At least 6 characters" type="password" value={pass} />
+              </Field>
+            </div>
+
+            {err ? (
+              <div className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">
+                <AlertCircle className="mt-0.5 size-4 shrink-0" />
+                {err}
+              </div>
+            ) : null}
+
+            <Button className="h-11 rounded-lg" disabled={submitting} type="submit">
+              {submitting ? <Loader2 className="size-4 animate-spin" /> : null}
+              {submitting ? "Please wait..." : isSignup ? "Create account" : "Log in"}
+            </Button>
+
+            <div className="flex flex-wrap items-center justify-center gap-2 text-sm text-slate-600">
+              {isSignup ? "Already have an account?" : "New to GameWeave?"}
+              <Button
+                className="h-auto px-0 py-0 font-semibold"
+                onClick={() => {
+                  setMode(isSignup ? "login" : "signup");
+                  setErr("");
+                }}
+                type="button"
+                variant="link"
+              >
+                {isSignup ? "Log in" : "Create one"}
+              </Button>
+            </div>
+          </form>
+        </CardContent>
+      </Card>
+    </main>
   );
 }
 
 export default function LoginPage() {
   return (
-    <Suspense fallback={null}>
+    <Suspense
+      fallback={
+        <main className="flex min-h-[calc(100vh-61px)] items-center justify-center px-5 py-12">
+          <Loader2 className="size-6 animate-spin text-indigo-600" />
+        </main>
+      }
+    >
       <LoginInner />
     </Suspense>
   );

@@ -83,3 +83,36 @@ def test_delete_account(client):
     h = {"Authorization": f"Bearer {token}"}
     assert client.delete("/auth/me", headers=h).status_code == 200
     assert client.get("/auth/me", headers=h).status_code == 401
+
+
+def test_fastapi_users_jwt_login_and_me(client):
+    _register(client)
+    login = client.post(
+        "/auth/jwt/login",
+        data={"username": "a@b.com", "password": "secret1"},
+    )
+    assert login.status_code == 200
+    token = login.json()["access_token"]
+    me = client.get("/auth/users/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.status_code == 200
+    body = me.json()
+    assert body["email"] == "a@b.com"
+    assert body["display_name"] == "Ada"
+    assert body["is_active"] is True
+    assert body["is_superuser"] is False
+    assert body["is_verified"] is False
+
+
+def test_fastapi_users_register_reset_and_verify_routes(client):
+    created = client.post(
+        "/auth/users/register",
+        json={"email": "native@x.com", "password": "secret1", "display_name": "Native"},
+    )
+    assert created.status_code == 201
+    assert created.json()["display_name"] == "Native"
+
+    forgot = client.post("/auth/users/forgot-password", json={"email": "native@x.com"})
+    assert forgot.status_code == 202
+
+    request_verify = client.post("/auth/users/request-verify-token", json={"email": "native@x.com"})
+    assert request_verify.status_code == 202

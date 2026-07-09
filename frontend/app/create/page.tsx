@@ -11,8 +11,8 @@ import {
   TaskMissingCard,
   TasksDrawer,
 } from "./_components/CreatePanels";
-import { useCreateTaskQuery, useCreateTasksQuery } from "./_lib/use-create-queries";
 import { useNow } from "./_lib/create-state";
+import { useCreateTaskQuery, useCreateTasksQuery } from "./_lib/use-create-queries";
 import { api, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/lib/toast";
@@ -93,7 +93,6 @@ function CreatePageInner() {
     setTaskId(null);
   }, [resumeLast, taskParam]);
 
-  // 输入页顶部的"继续上次任务"横幅：站内导航离开再回来时，进行中的任务不再凭空消失
   const [lastTaskId, setLastTaskId] = useState<string | null>(null);
   useEffect(() => {
     setLastTaskId(taskId ? null : localStorage.getItem(LAST_TASK_KEY));
@@ -121,10 +120,8 @@ function CreatePageInner() {
   const taskQuery = useCreateTaskQuery(taskId);
   const taskMissing = taskQuery.isMissing;
   const tasksQuery = useCreateTasksQuery(tasksOpen);
-
   const task = taskQuery.data;
-
-  const MAX_ASSETS = 6; // 与后端 uploads.MAX_FILES 对齐
+  const MAX_ASSETS = 6;
 
   const pickFiles = async (picked: FileList | File[] | null) => {
     if (!picked || picked.length === 0 || uploading) return;
@@ -141,10 +138,9 @@ function CreatePageInner() {
       const dropped = selected.length - Math.min(selected.length, room);
       flash(
         `${result.assets.length} asset${result.assets.length === 1 ? "" : "s"} uploaded` +
-          (dropped > 0 ? ` (${dropped} skipped — max ${MAX_ASSETS})` : ""),
+          (dropped > 0 ? ` (${dropped} skipped, max ${MAX_ASSETS})` : ""),
       );
     } catch (error) {
-      // 把后端 413/415 的具体原因透传给用户，而不是笼统的 "Upload failed"
       flash(error instanceof ApiError ? `Upload failed: ${error.message}` : "Upload failed", { error: true });
     } finally {
       setUploading(false);
@@ -207,7 +203,7 @@ function CreatePageInner() {
       await queryClient.invalidateQueries({ queryKey: ["games"] });
       await queryClient.invalidateQueries({ queryKey: ["stats"] });
       flash(`${task.game.title} published`);
-      router.push("/explore"); // 游戏列表在 /explore，首页是营销落地页
+      router.push("/explore");
     } catch {
       flash("Publish failed", { error: true });
     } finally {
@@ -255,11 +251,13 @@ function CreatePageInner() {
   if (loading || !user) return null;
 
   return (
-    <div className="pf-create-page">
-      <section className="pf-create-shell">
-        <header className="pf-create-header">
-          <h1>Create with AI</h1>
-          <p>Describe your idea, upload references, and generate a playable web game.</p>
+    <main className="px-5 py-8 sm:px-8 lg:px-10">
+      <section className="mx-auto flex w-full max-w-7xl flex-col gap-8">
+        <header>
+          <h1 className="font-display text-4xl font-semibold tracking-normal text-slate-950 sm:text-5xl">Create with AI</h1>
+          <p className="mt-3 max-w-2xl text-base leading-7 text-slate-600">
+            Describe your idea, upload references, and generate a playable web game.
+          </p>
         </header>
 
         {taskId && taskMissing ? (
@@ -302,8 +300,8 @@ function CreatePageInner() {
         )}
       </section>
 
-      {activityOpen && <ActivityDrawer onClose={() => setActivityOpen(false)} task={task} />}
-      {tasksOpen && (
+      {activityOpen ? <ActivityDrawer onClose={() => setActivityOpen(false)} task={task} /> : null}
+      {tasksOpen ? (
         <TasksDrawer
           currentTaskId={taskId}
           loading={tasksQuery.isLoading}
@@ -312,7 +310,7 @@ function CreatePageInner() {
           onResume={resumeTask}
           tasks={tasksQuery.data?.items ?? []}
         />
-      )}
-    </div>
+      ) : null}
+    </main>
   );
 }
