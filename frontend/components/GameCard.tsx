@@ -2,14 +2,14 @@
 
 import { Play, Sparkles } from "lucide-react";
 import { useRouter } from "next/navigation";
-import type { CSSProperties } from "react";
 
+import { coverBackgroundStyle } from "@/lib/cover";
 import type { Game } from "@/lib/types";
 
 export default function GameCard({ game }: { game: Game }) {
   const router = useRouter();
   const isPublished = game.status === "published";
-  const coverStyle = coverBackground(game.cover);
+  const coverStyle = coverBackgroundStyle(game.cover);
 
   return (
     <article className="pf-library-card">
@@ -60,12 +60,4 @@ export default function GameCard({ game }: { game: Game }) {
       </div>
     </article>
   );
-}
-
-function coverBackground(cover?: string | null): CSSProperties {
-  if (!cover) return { background: "linear-gradient(135deg,#101844,#4f7dff)" };
-  if (cover.startsWith("/") || cover.startsWith("http://") || cover.startsWith("https://")) {
-    return { backgroundImage: `url("${cover}")` };
-  }
-  return { background: cover };
 }

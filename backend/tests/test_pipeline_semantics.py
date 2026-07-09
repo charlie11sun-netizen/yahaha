@@ -3,15 +3,9 @@
 这些行为共同保证：取消不再烧 LLM / 不留孤儿游戏；acks_late 重投递不会
 双跑同一任务（重复 Game、重复 bundle、memory 证据重复计数）。
 """
+from conftest import auth_headers
+
 import pytest
-
-
-def _auth(client):
-    token = client.post(
-        "/auth/register",
-        json={"email": "p0@t.com", "password": "secret1", "display_name": "P0"},
-    ).json()["token"]
-    return {"Authorization": f"Bearer {token}"}
 
 
 def _make_task(client, headers):
@@ -31,7 +25,7 @@ def test_begin_step_aborts_cancelled_task(client, db_session_factory, monkeypatc
     from app.models import AgentStep, GenerationTask
     from app.models.common import TaskStatus
 
-    headers = _auth(client)
+    headers = auth_headers(client, email="p0@t.com", display_name="P0")
     task_id = _make_task(client, headers)
     db = db_session_factory()
     db.get(GenerationTask, task_id).status = TaskStatus.CANCELLED
@@ -52,7 +46,7 @@ def test_begin_step_aborts_when_token_budget_exceeded(client, db_session_factory
     from app.core.config import settings
     from app.models import AgentStep, GenerationTask
 
-    headers = _auth(client)
+    headers = auth_headers(client, email="p0@t.com", display_name="P0")
     task_id = _make_task(client, headers)
     db = db_session_factory()
     task = db.get(GenerationTask, task_id)
@@ -75,7 +69,7 @@ def test_run_generation_skips_terminal_task(client, db_session_factory, monkeypa
     from app.models import GenerationTask
     from app.models.common import TaskStatus
 
-    headers = _auth(client)
+    headers = auth_headers(client, email="p0@t.com", display_name="P0")
     task_id = _make_task(client, headers)
     db = db_session_factory()
     db.get(GenerationTask, task_id).status = TaskStatus.SUCCEEDED
@@ -100,7 +94,7 @@ def test_run_generation_rerun_clears_stale_steps(client, db_session_factory, mon
     from app.models import AgentStep, GenerationTask
     from app.models.common import StepStatus, TaskStatus
 
-    headers = _auth(client)
+    headers = auth_headers(client, email="p0@t.com", display_name="P0")
     task_id = _make_task(client, headers)
     db = db_session_factory()
     task = db.get(GenerationTask, task_id)
@@ -130,7 +124,7 @@ def test_cancel_mid_publish_cleans_orphan_game(client, db_session_factory, monke
     from app.models.common import GameSource, GameStatus, TaskStatus
     from app.storage import s3
 
-    headers = _auth(client)
+    headers = auth_headers(client, email="p0@t.com", display_name="P0")
     task_id = _make_task(client, headers)
     created = {}
 
@@ -167,7 +161,7 @@ def test_publish_generated_idempotent_by_source_task(client, db_session_factory,
     from app.models import Game, User
     from app.services import packaging
 
-    _auth(client)
+    auth_headers(client, email="p0@t.com", display_name="P0")
     db = db_session_factory()
     user_id = db.query(User).first().id
     db.close()
@@ -219,7 +213,7 @@ def test_begin_step_persists_resume_snapshot(client, db_session_factory, monkeyp
     from app.agents import tracing
     from app.models import GenerationTask
 
-    headers = _auth(client)
+    headers = auth_headers(client, email="p0@t.com", display_name="P0")
     task_id = _make_task(client, headers)
     monkeypatch.setattr("app.agents.tracing.SessionLocal", db_session_factory)
     state = {"task_id": task_id, "game_spec": {"title": "S"}, "_logs": ["private"], "_resume_node": "x"}
@@ -250,7 +244,7 @@ def test_run_generation_resumes_from_snapshot(client, db_session_factory, monkey
     from app.models import AgentStep, GenerationTask
     from app.models.common import StepStatus, TaskStatus
 
-    headers = _auth(client)
+    headers = auth_headers(client, email="p0@t.com", display_name="P0")
     task_id = _make_task(client, headers)
     db = db_session_factory()
     task = db.get(GenerationTask, task_id)
@@ -291,7 +285,7 @@ def test_run_generation_clears_snapshot_on_success(client, db_session_factory, m
     from app.models import GenerationTask
     from app.models.common import TaskStatus
 
-    headers = _auth(client)
+    headers = auth_headers(client, email="p0@t.com", display_name="P0")
     task_id = _make_task(client, headers)
     db = db_session_factory()
     task = db.get(GenerationTask, task_id)
@@ -320,7 +314,7 @@ def test_retry_endpoint_resumes_and_resets_budgets(client, db_session_factory):
     from app.models import AgentStep, GenerationTask
     from app.models.common import StepStatus, TaskStatus
 
-    headers = _auth(client)
+    headers = auth_headers(client, email="p0@t.com", display_name="P0")
     task_id = _make_task(client, headers)
     db = db_session_factory()
     task = db.get(GenerationTask, task_id)
@@ -354,7 +348,7 @@ def test_retry_endpoint_from_scratch_keeps_old_semantics(client, db_session_fact
     from app.models import AgentStep, GenerationTask
     from app.models.common import StepStatus, TaskStatus
 
-    headers = _auth(client)
+    headers = auth_headers(client, email="p0@t.com", display_name="P0")
     task_id = _make_task(client, headers)
     db = db_session_factory()
     task = db.get(GenerationTask, task_id)
@@ -383,7 +377,7 @@ def test_graph_resume_entry_jumps_to_failed_node(client, db_session_factory, mon
     from app.agents.graph import build_graph
     from app.models import AgentStep, User
 
-    headers = _auth(client)
+    headers = auth_headers(client, email="p0@t.com", display_name="P0")
     task_id = _make_task(client, headers)
     db = db_session_factory()
     user_id = db.query(User).first().id
@@ -433,7 +427,7 @@ def test_capture_success_memories_idempotent(client, db_session_factory):
     from app.models.common import GameSource, GameStatus, TaskStatus
     from app.services.memory import capture_success_memories
 
-    headers = _auth(client)
+    headers = auth_headers(client, email="p0@t.com", display_name="P0")
     task_id = _make_task(client, headers)
     db = db_session_factory()
     task = db.get(GenerationTask, task_id)

@@ -17,7 +17,6 @@ import { useState } from "react";
 import type { ElementType, ReactNode } from "react";
 
 import {
-  coverStyle,
   formatBytes,
   memoryDate,
   memoryScopeLabel,
@@ -28,6 +27,7 @@ import {
   taskStep,
 } from "../_lib/studio-format";
 import { api } from "@/lib/api";
+import { coverBackgroundStyle, STUDIO_COVER_BACKGROUND } from "@/lib/cover";
 import { useToast } from "@/lib/toast";
 import type { Game, GameVersion, MemoryItem, MemoryProfile, MemorySettings, Task } from "@/lib/types";
 
@@ -169,7 +169,7 @@ function StudioGameCard({
       <button
         className="pf-studio-game-cover"
         onClick={() => router.push(isPublished ? `/games/${game.id}` : `/play/${game.id}`)}
-        style={coverStyle(game.cover)}
+        style={coverBackgroundStyle(game.cover, STUDIO_COVER_BACKGROUND)}
         type="button"
       >
         <span className={`pf-studio-status is-${isPublished ? "published" : "draft"}`}>

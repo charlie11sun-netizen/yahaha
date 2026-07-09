@@ -10,6 +10,7 @@ import {
   WandSparkles,
 } from "lucide-react";
 
+import { coverImageSource } from "@/lib/cover";
 import type { Game as ApiGame } from "@/lib/types";
 
 export const SHELL = "mx-auto w-full max-w-[1240px] px-5 sm:px-8 lg:px-10";
@@ -202,7 +203,7 @@ export function toHomeGame(game: ApiGame): HomeGame {
 }
 
 export function artForGame(game: ApiGame): BoundArt {
-  const cover = imageSource(game.cover);
+  const cover = coverImageSource(game.cover);
   if (cover) return { image: cover, thumb: cover, hero: cover };
 
   const titleKey = normalizeArtKey(game.title);
@@ -215,12 +216,6 @@ export function artForGame(game: ApiGame): BoundArt {
 
   const stableSeed = `${game.id || game.title}|${game.genre}|${game.tags.join("|")}`;
   return boundArtPool[stableHash(stableSeed) % boundArtPool.length];
-}
-
-export function imageSource(cover?: string | null) {
-  if (!cover || cover.includes("gradient(")) return null;
-  if (cover.startsWith("http://") || cover.startsWith("https://") || cover.startsWith("/")) return cover;
-  return null;
 }
 
 export function heroImageForGame(game: HomeGame) {

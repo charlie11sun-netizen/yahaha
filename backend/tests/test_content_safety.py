@@ -1,37 +1,6 @@
-from app.models import Game, ModerationEvent, User
-from app.models.common import GameSource, GameStatus, now_utc
+from conftest import auth_headers, seed_game
 
-
-def _auth(client, email="moderation@test.com"):
-    token = client.post(
-        "/auth/register",
-        json={"email": email, "password": "secret1", "display_name": "Safe"},
-    ).json()["token"]
-    return {"Authorization": f"Bearer {token}"}
-
-
-def _seed_game(factory):
-    db = factory()
-    user = User(email="moderated-author@test.com", display_name="Author", avatar_initial="A")
-    db.add(user)
-    db.flush()
-    game = Game(
-        author_id=user.id,
-        title="Safe Game",
-        summary="safe",
-        genre="arcade",
-        status=GameStatus.PUBLISHED,
-        current_version="v1",
-        source=GameSource.SEED,
-        plays_count=0,
-        likes_count=0,
-        published_at=now_utc(),
-    )
-    db.add(game)
-    db.commit()
-    gid = game.id
-    db.close()
-    return gid
+from app.models import ModerationEvent, User
 
 
 def test_safety_intake_blocks_prompt_and_records_event(db_session_factory, monkeypatch):
@@ -73,8 +42,16 @@ def test_comment_moderation_blocks_in_enforce_mode(client, db_session_factory, m
 
     monkeypatch.setattr(settings, "MODERATION_PROVIDER", "blocklist")
     monkeypatch.setattr(settings, "MODERATION_MODE", "enforce")
-    game_id = _seed_game(db_session_factory)
-    headers = _auth(client)
+    game_id = seed_game(
+        db_session_factory,
+        title="Safe Game",
+        summary="safe",
+        plays=0,
+        likes=0,
+        author_email="moderated-author@test.com",
+        with_version=False,
+    )
+    headers = auth_headers(client, email="moderation@test.com", display_name="Safe")
 
     response = client.post(
         f"/games/{game_id}/comments",
@@ -98,11 +75,19 @@ def test_comment_moderation_provider_error_fails_closed_in_enforce_mode(client, 
     def broken_chat(*_args, **_kwargs):
         raise RuntimeError("moderation provider down")
 
-    headers = _auth(client, email="moderation-error@test.com")
+    headers = auth_headers(client, email="moderation-error@test.com", display_name="Safe")
     monkeypatch.setattr(settings, "MODERATION_PROVIDER", "llm")
     monkeypatch.setattr(settings, "MODERATION_MODE", "enforce")
     monkeypatch.setattr("app.agents.llm.chat", broken_chat)
-    game_id = _seed_game(db_session_factory)
+    game_id = seed_game(
+        db_session_factory,
+        title="Safe Game",
+        summary="safe",
+        plays=0,
+        likes=0,
+        author_email="moderated-author@test.com",
+        with_version=False,
+    )
 
     response = client.post(
         f"/games/{game_id}/comments",

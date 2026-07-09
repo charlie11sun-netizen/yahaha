@@ -1,13 +1,8 @@
-def _auth(client):
-    token = client.post(
-        "/auth/register",
-        json={"email": "t@t.com", "password": "secret1", "display_name": "T"},
-    ).json()["token"]
-    return {"Authorization": f"Bearer {token}"}
+from conftest import auth_headers, auth_user
 
 
 def test_create_and_list_task(client):
-    h = _auth(client)
+    h = auth_headers(client, email="t@t.com", display_name="T")
     r = client.post("/tasks", json={"idea": "a platformer", "asset_ids": []}, headers=h)
     assert r.status_code == 200
     tid = r.json()["task_id"]
@@ -19,16 +14,12 @@ def test_list_tasks_paginates(client, db_session_factory):
     from app.models import GenerationTask
     from app.models.common import TaskStatus
 
-    reg = client.post(
-        "/auth/register",
-        json={"email": "task-page@test.com", "password": "secret1", "display_name": "TP"},
-    ).json()
-    headers = {"Authorization": f"Bearer {reg['token']}"}
+    headers, user_id = auth_user(client, email="task-page@test.com", display_name="TP")
     db = db_session_factory()
     for index in range(3):
         db.add(
             GenerationTask(
-                user_id=reg["user"]["id"],
+                user_id=user_id,
                 idea=f"paged task {index}",
                 status=TaskStatus.SUCCEEDED,
             )
@@ -46,7 +37,7 @@ def test_list_tasks_paginates(client, db_session_factory):
 
 
 def test_create_task_dimension_3d(client):
-    h = _auth(client)
+    h = auth_headers(client, email="t@t.com", display_name="T")
     r = client.post("/tasks", json={"idea": "a 3d fps", "asset_ids": [], "dimension": "3d"}, headers=h)
     assert r.status_code == 200
     tid = r.json()["task_id"]
@@ -55,14 +46,14 @@ def test_create_task_dimension_3d(client):
 
 
 def test_create_task_dimension_defaults_2d(client):
-    h = _auth(client)
+    h = auth_headers(client, email="t@t.com", display_name="T")
     tid = client.post("/tasks", json={"idea": "a platformer", "asset_ids": []}, headers=h).json()["task_id"]
     t = client.get(f"/tasks/{tid}", headers=h).json()
     assert t["dimension"] == "2d"
 
 
 def test_create_task_dimension_invalid_rejected(client):
-    h = _auth(client)
+    h = auth_headers(client, email="t@t.com", display_name="T")
     r = client.post("/tasks", json={"idea": "x", "asset_ids": [], "dimension": "4d"}, headers=h)
     assert r.status_code == 422
 
@@ -70,7 +61,7 @@ def test_create_task_dimension_invalid_rejected(client):
 def test_create_task_rejects_oversized_prompt_before_persisting(client, db_session_factory):
     from app.models import GenerationTask
 
-    h = _auth(client)
+    h = auth_headers(client, email="t@t.com", display_name="T")
     r = client.post("/tasks", json={"idea": "x" * 2001, "asset_ids": []}, headers=h)
     assert r.status_code == 422
 
@@ -83,7 +74,7 @@ def test_create_remix_task_from_published_source(client, db_session_factory):
     from app.models import Game, GameVersion, GenerationTask, User
     from app.models.common import GameSource, GameStatus
 
-    headers = _auth(client)
+    headers = auth_headers(client, email="t@t.com", display_name="T")
     db = db_session_factory()
     owner = User(email="remix-source@example.com", display_name="Source", avatar_initial="S")
     db.add(owner)
@@ -137,7 +128,7 @@ def test_remix_private_source_requires_owner(client, db_session_factory):
     from app.models import Game, GameVersion, User
     from app.models.common import GameSource, GameStatus
 
-    headers = _auth(client)
+    headers = auth_headers(client, email="t@t.com", display_name="T")
     db = db_session_factory()
     owner = User(email="private-source@example.com", display_name="Source", avatar_initial="S")
     db.add(owner)
@@ -175,7 +166,7 @@ def test_remix_private_source_requires_owner(client, db_session_factory):
 
 
 def test_third_active_task_for_same_user_rejected(client):
-    h = _auth(client)
+    h = auth_headers(client, email="t@t.com", display_name="T")
     assert client.post("/tasks", json={"idea": "one", "asset_ids": []}, headers=h).status_code == 200
     assert client.post("/tasks", json={"idea": "two", "asset_ids": []}, headers=h).status_code == 200
     r = client.post("/tasks", json={"idea": "three", "asset_ids": []}, headers=h)
@@ -184,11 +175,7 @@ def test_third_active_task_for_same_user_rejected(client):
 
 
 def test_create_task_acquires_user_quota_advisory_lock(client, monkeypatch):
-    reg = client.post(
-        "/auth/register",
-        json={"email": "task-lock@test.com", "password": "secret1", "display_name": "TL"},
-    ).json()
-    headers = {"Authorization": f"Bearer {reg['token']}"}
+    headers, user_id = auth_user(client, email="task-lock@test.com", display_name="TL")
     locks = []
     monkeypatch.setattr(
         "app.services.task_actions._acquire_advisory_xact_lock",
@@ -198,7 +185,7 @@ def test_create_task_acquires_user_quota_advisory_lock(client, monkeypatch):
     response = client.post("/tasks", json={"idea": "locked task", "asset_ids": []}, headers=headers)
 
     assert response.status_code == 200
-    assert locks == [("task_active_user", reg["user"]["id"])]
+    assert locks == [("task_active_user", user_id)]
 
 
 def test_three_engine_vendored_and_injected():
@@ -268,7 +255,7 @@ def test_runtime_smoke_degrades_open_when_engine_process_aborts(monkeypatch):
 
 
 def test_delete_active_task_rejected(client):
-    h = _auth(client)
+    h = auth_headers(client, email="t@t.com", display_name="T")
     tid = client.post("/tasks", json={"idea": "x", "asset_ids": []}, headers=h).json()["task_id"]
     # 任务创建后处于 pending（generate 被 mock 不会真正运行），活动任务禁止直接删除
     assert client.delete(f"/tasks/{tid}", headers=h).status_code == 400
@@ -278,7 +265,7 @@ def test_delete_terminal_task(client, db_session_factory):
     from app.models import GenerationTask
     from app.models.common import TaskStatus
 
-    h = _auth(client)
+    h = auth_headers(client, email="t@t.com", display_name="T")
     tid = client.post("/tasks", json={"idea": "x", "asset_ids": []}, headers=h).json()["task_id"]
     db = db_session_factory()
     task = db.get(GenerationTask, tid)
@@ -331,7 +318,7 @@ def _completed_preview(client, db_session_factory, headers):
 def test_create_revision_task_preserves_raw_feedback(client, db_session_factory):
     from app.models import GenerationTask
 
-    headers = _auth(client)
+    headers = auth_headers(client, email="t@t.com", display_name="T")
     source_task_id, game_id, _ = _completed_preview(client, db_session_factory, headers)
     feedback = "跳跃有点笨重；想更轻快，但不要明显跳得更高。"
     response = client.post(
@@ -354,7 +341,7 @@ def test_create_revision_task_preserves_raw_feedback(client, db_session_factory)
 def test_revision_acquires_quota_and_game_advisory_locks(client, db_session_factory, monkeypatch):
     from app.models import GenerationTask
 
-    headers = _auth(client)
+    headers = auth_headers(client, email="t@t.com", display_name="T")
     source_task_id, game_id, _ = _completed_preview(client, db_session_factory, headers)
     db = db_session_factory()
     user_id = db.get(GenerationTask, source_task_id).user_id
@@ -379,7 +366,7 @@ def test_revision_rejects_existing_active_revision(client, db_session_factory):
     from app.models import GenerationTask
     from app.models.common import TaskStatus
 
-    headers = _auth(client)
+    headers = auth_headers(client, email="t@t.com", display_name="T")
     source_task_id, game_id, _ = _completed_preview(client, db_session_factory, headers)
     db = db_session_factory()
     source = db.get(GenerationTask, source_task_id)
@@ -408,7 +395,7 @@ def test_revision_rejects_existing_active_revision(client, db_session_factory):
 
 
 def test_revision_rejects_stale_preview_task(client, db_session_factory):
-    headers = _auth(client)
+    headers = auth_headers(client, email="t@t.com", display_name="T")
     source_task_id, game_id, _ = _completed_preview(client, db_session_factory, headers)
     from app.models import Game
 
@@ -454,7 +441,7 @@ def test_publish_revision_creates_immutable_next_version(client, db_session_fact
     from app.models import Game, GenerationTask
     from app.services import packaging
 
-    headers = _auth(client)
+    headers = auth_headers(client, email="t@t.com", display_name="T")
     source_task_id, game_id, _ = _completed_preview(client, db_session_factory, headers)
     db = db_session_factory()
     source = db.get(GenerationTask, source_task_id)

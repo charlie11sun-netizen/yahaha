@@ -1,23 +1,9 @@
-import type { CSSProperties } from "react";
-
 import type { MemoryItem, MemoryProfile, Task } from "@/lib/types";
 
 
 export function avatarChoices(name: string) {
   const initial = (name.trim().slice(0, 1) || "A").toUpperCase();
   return Array.from(new Set([initial, "AI", "PF", "XP", "01", "GG"]));
-}
-
-export function coverStyle(cover?: string | null): CSSProperties {
-  if (!cover) {
-    return {
-      background: "linear-gradient(135deg, #101844, #4f7dff 52%, #8be8f1)",
-    };
-  }
-  if (cover.startsWith("/") || cover.startsWith("http://") || cover.startsWith("https://")) {
-    return { backgroundImage: `url("${cover}")` };
-  }
-  return { background: cover };
 }
 
 export function joinedDate(value?: string | null) {

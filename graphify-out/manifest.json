@@ -330,8 +330,8 @@
     "semantic_hash": "459df62f2b36422cb27965af7f67787e"
   },
   "backend/tests/conftest.py": {
-    "mtime": 1783301149.0798626,
-    "ast_hash": "84e416f86e597c46ea066f08e3570272",
+    "mtime": 1783560333.0782807,
+    "ast_hash": "6983479d01514b62ab8c6b253502f7d2",
     "semantic_hash": ""
   },
   "backend/tests/fixtures/malicious_bundles/dead_loop/game.js": {
@@ -370,19 +370,19 @@
     "semantic_hash": "74b77414804d29d1678c2509fb053ef2"
   },
   "backend/tests/test_content_safety.py": {
-    "mtime": 1783393495.2385461,
-    "ast_hash": "cc7246be5494a9c724cea4ac3b2834ae",
+    "mtime": 1783560039.63767,
+    "ast_hash": "79e98d2bcb392f965e89762b086f5bed",
     "semantic_hash": ""
   },
   "backend/tests/test_games.py": {
-    "mtime": 1783399223.936275,
-    "ast_hash": "6f2df2062b83bc9c8cd457343eb299b6",
+    "mtime": 1783559806.2436988,
+    "ast_hash": "98b142e7b329eb95d24e983f1bb9ab7c",
     "semantic_hash": ""
   },
   "backend/tests/test_memory.py": {
-    "mtime": 1783043913.4402816,
-    "ast_hash": "87ad1250ca2d9db5946bdcce5f077403",
-    "semantic_hash": "87ad1250ca2d9db5946bdcce5f077403"
+    "mtime": 1783559874.3883896,
+    "ast_hash": "777c4d95fb9c2bf1eb941a11c97c269f",
+    "semantic_hash": ""
   },
   "backend/tests/test_memory_refinements.py": {
     "mtime": 1783052710.3044424,
@@ -405,8 +405,8 @@
     "semantic_hash": ""
   },
   "backend/tests/test_pipeline_semantics.py": {
-    "mtime": 1783301149.0818634,
-    "ast_hash": "c397edc1862afd7a4c2fb7110a84c128",
+    "mtime": 1783559908.7325382,
+    "ast_hash": "22f027cbaeb5fd820b200cf986509978",
     "semantic_hash": ""
   },
   "backend/tests/test_rate_limit.py": {
@@ -430,24 +430,24 @@
     "semantic_hash": "933cbd72b7db9465fa87efb4d831c5cc"
   },
   "backend/tests/test_social.py": {
-    "mtime": 1783395194.4361963,
-    "ast_hash": "d9fd02ed33336dbd2f0e8da7132c91b5",
+    "mtime": 1783560035.609425,
+    "ast_hash": "fb69ffea2aa7ec24dca8bc345a7197d9",
     "semantic_hash": ""
   },
   "backend/tests/test_tasks.py": {
-    "mtime": 1783397777.9805973,
-    "ast_hash": "9201d29ff111cfb5c3783b97d03bc09c",
+    "mtime": 1783560498.348702,
+    "ast_hash": "f40fab185f60e9439d506ed77ba115ef",
     "semantic_hash": ""
   },
   "backend/tests/test_uploads.py": {
-    "mtime": 1783064022.819849,
-    "ast_hash": "8a7cfef02d08c6ee3986041eb63ce3d2",
-    "semantic_hash": "8a7cfef02d08c6ee3986041eb63ce3d2"
+    "mtime": 1783559891.230747,
+    "ast_hash": "1158394407c281e2eb93270e3fc0a154",
+    "semantic_hash": ""
   },
   "backend/tests/test_visibility_and_semantics.py": {
-    "mtime": 1783049409.6461587,
-    "ast_hash": "bfa7fd7982ee3287705005498b7c6470",
-    "semantic_hash": "bfa7fd7982ee3287705005498b7c6470"
+    "mtime": 1783560151.728799,
+    "ast_hash": "209f41d781925f10de2bc648a886d94f",
+    "semantic_hash": ""
   },
   "deploy/migrate-export.sh": {
     "mtime": 1782896172.7847118,
@@ -530,8 +530,8 @@
     "semantic_hash": "3cb56ee3a7a42d964915c81692644cbd"
   },
   "frontend/app/games/[id]/page.tsx": {
-    "mtime": 1783518476.522519,
-    "ast_hash": "850e75f2ab6389a1a4cd54b6ab7a7547",
+    "mtime": 1783559336.298641,
+    "ast_hash": "dc8a6be1cb4710a34aa2a3a38fd70c4a",
     "semantic_hash": ""
   },
   "frontend/app/gate/page.tsx": {
@@ -570,8 +570,8 @@
     "semantic_hash": ""
   },
   "frontend/app/play/[id]/page.tsx": {
-    "mtime": 1783520082.2235155,
-    "ast_hash": "b1faf6d31db4b61af83c58516d7be569",
+    "mtime": 1783559366.7014828,
+    "ast_hash": "d32a5a067d824bde6481601a730d93f1",
     "semantic_hash": ""
   },
   "frontend/app/privacy/page.tsx": {
@@ -600,8 +600,8 @@
     "semantic_hash": "3655122449d2294d8cf26cd52eeb730e"
   },
   "frontend/components/GameCard.tsx": {
-    "mtime": 1783520018.5749848,
-    "ast_hash": "344c8e5a7fad7c038bfefecf0b88b5e3",
+    "mtime": 1783559336.2936406,
+    "ast_hash": "42c45ce63281b263655014b754cca10c",
     "semantic_hash": ""
   },
   "frontend/components/Nav.tsx": {
@@ -1135,13 +1135,13 @@
     "semantic_hash": ""
   },
   "frontend/app/me/_components/StudioPanels.tsx": {
-    "mtime": 1783385912.9106832,
-    "ast_hash": "ad2c8da3e902ffc2eef651216c713596",
+    "mtime": 1783559366.6994162,
+    "ast_hash": "0b012baf69248fb5e7a7791857849b78",
     "semantic_hash": ""
   },
   "frontend/app/me/_lib/studio-format.ts": {
-    "mtime": 1783520059.2615108,
-    "ast_hash": "9beaaf3651b1f31c471009d9128c2ed3",
+    "mtime": 1783559366.6977847,
+    "ast_hash": "f06c7895d0b6a3ffea0860e052352b1b",
     "semantic_hash": ""
   },
   "frontend/app/me/_lib/studio-state.ts": {
@@ -1280,18 +1280,13 @@
     "semantic_hash": ""
   },
   "frontend/app/explore/_lib/explore-data.ts": {
-    "mtime": 1783519989.1249242,
-    "ast_hash": "3078063bc5ce4884265c137e976c917e",
+    "mtime": 1783559336.2966402,
+    "ast_hash": "a1a8bb1564e323178737aa046dc9e744",
     "semantic_hash": ""
   },
   "frontend/app/games/[id]/_components/GameDetailPanels.tsx": {
-    "mtime": 1783518492.855451,
-    "ast_hash": "862b967a642a33c4c558bbac9b2cae8f",
-    "semantic_hash": ""
-  },
-  "frontend/app/games/[id]/_lib/game-detail-format.ts": {
-    "mtime": 1783520013.3651967,
-    "ast_hash": "ab71b33852a78350cf1d1fe1578e8753",
+    "mtime": 1783559336.299642,
+    "ast_hash": "ec34c941c7b0219e5a379afa4d3b9d84",
     "semantic_hash": ""
   },
   "frontend/app/play/[id]/_components/PlayPanels.tsx": {
@@ -1300,8 +1295,8 @@
     "semantic_hash": ""
   },
   "frontend/app/play/[id]/_lib/play-runtime.ts": {
-    "mtime": 1783520104.2425835,
-    "ast_hash": "39e57d4863e9e2a8aac56df4d3fb5307",
+    "mtime": 1783559366.7009318,
+    "ast_hash": "cd67098f64b7cc4c4627d1e87c1c7be4",
     "semantic_hash": ""
   },
   "backend/app/tools/__init__.py": {
@@ -1317,6 +1312,11 @@
   "frontend/lib/api-types.ts": {
     "mtime": 1783520607.5216136,
     "ast_hash": "7d78157654bccd64378f728050864e45",
+    "semantic_hash": ""
+  },
+  "frontend/lib/cover.ts": {
+    "mtime": 1783559336.2916398,
+    "ast_hash": "f3c1958665ad3437f6d946c146978cbb",
     "semantic_hash": ""
   }
 }

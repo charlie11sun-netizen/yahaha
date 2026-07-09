@@ -17,9 +17,10 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
+import { coverBackgroundValue } from "@/lib/cover";
 import type { Game, GameManifest } from "@/lib/types";
 import { ActivityFeed, RuntimeList } from "./_components/PlayPanels";
-import { INITIAL_RUNTIME, coverBg, type Phase, type RuntimeKey, type RuntimeStatus } from "./_lib/play-runtime";
+import { INITIAL_RUNTIME, type Phase, type RuntimeKey, type RuntimeStatus } from "./_lib/play-runtime";
 
 export default function PlayPage() {
   const { id } = useParams() as { id: string };
@@ -260,7 +261,7 @@ export default function PlayPage() {
               <div className="pf-play-related-list">
                 {relatedQ.data!.items.slice(0, 4).map((r) => (
                   <button key={r.id} onClick={() => router.push(`/play/${r.id}`)} type="button">
-                    <span style={{ background: coverBg(r.cover) }} />
+                    <span style={{ background: coverBackgroundValue(r.cover) }} />
                     <b>{r.title}</b>
                   </button>
                 ))}

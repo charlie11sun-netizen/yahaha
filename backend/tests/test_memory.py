@@ -1,13 +1,8 @@
-def _auth(client, email="mem@test.com"):
-    token = client.post(
-        "/auth/register",
-        json={"email": email, "password": "secret1", "display_name": "Mem"},
-    ).json()["token"]
-    return {"Authorization": f"Bearer {token}"}
+from conftest import auth_headers
 
 
 def test_memory_settings_defaults_and_update(client):
-    headers = _auth(client)
+    headers = auth_headers(client, email="mem@test.com", display_name="Mem")
 
     defaults = client.get("/memory/settings", headers=headers)
     assert defaults.status_code == 200
@@ -26,8 +21,8 @@ def test_memory_settings_defaults_and_update(client):
 
 
 def test_manual_memory_crud_and_user_isolation(client):
-    h1 = _auth(client, "a@test.com")
-    h2 = _auth(client, "b@test.com")
+    h1 = auth_headers(client, "a@test.com", display_name="Mem")
+    h2 = auth_headers(client, "b@test.com", display_name="Mem")
 
     created = client.post(
         "/memory",
@@ -519,8 +514,8 @@ def test_ambiguous_profile_conflict_auto_promotes_after_repeated_support(db_sess
 
 
 def test_memory_profile_api_history_and_user_isolation(client):
-    h1 = _auth(client, "profile-a@test.com")
-    h2 = _auth(client, "profile-b@test.com")
+    h1 = auth_headers(client, "profile-a@test.com", display_name="Mem")
+    h2 = auth_headers(client, "profile-b@test.com", display_name="Mem")
     created = client.post(
         "/memory",
         json={

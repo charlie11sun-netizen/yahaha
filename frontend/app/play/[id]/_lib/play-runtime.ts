@@ -15,8 +15,3 @@ export function runtimeLabel(status: RuntimeStatus) {
   if (status === "failed") return "Failed";
   return "Pending";
 }
-
-export function coverBg(cover?: string | null) {
-  if (cover && (cover.startsWith("/") || cover.startsWith("http"))) return `url("${cover}") center / cover`;
-  return cover || "linear-gradient(135deg,#101844,#4f7dff)";
-}

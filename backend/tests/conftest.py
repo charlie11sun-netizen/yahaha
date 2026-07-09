@@ -25,7 +25,109 @@ from app.api import deps  # noqa: E402
 from app.db.base import Base  # noqa: E402
 from app.db.session import get_db  # noqa: E402
 from app.main import app  # noqa: E402
+from app.models import Game, GameVersion, User  # noqa: E402
+from app.models.common import GameSource, GameStatus, now_utc  # noqa: E402
 from app.storage import s3  # noqa: E402
+
+
+def _register_user(
+    client,
+    email: str = "test@test.com",
+    password: str = "secret1",
+    display_name: str = "Test",
+):
+    return client.post(
+        "/auth/register",
+        json={"email": email, "password": password, "display_name": display_name},
+    ).json()
+
+
+def _token_headers(token: str):
+    return {"Authorization": f"Bearer {token}"}
+
+
+def auth_headers(
+    client,
+    email: str = "test@test.com",
+    password: str = "secret1",
+    display_name: str = "Test",
+):
+    reg = _register_user(client, email=email, password=password, display_name=display_name)
+    return _token_headers(reg["token"])
+
+
+def auth_user(
+    client,
+    email: str = "test@test.com",
+    password: str = "secret1",
+    display_name: str = "Test",
+):
+    reg = _register_user(client, email=email, password=password, display_name=display_name)
+    return _token_headers(reg["token"]), reg["user"]["id"]
+
+
+def seed_game(
+    factory,
+    title: str = "Test Game",
+    status=GameStatus.PUBLISHED,
+    plays: int = 5,
+    author_id: str | None = None,
+    *,
+    summary: str = "a summary",
+    genre: str = "arcade",
+    source=GameSource.SEED,
+    current_version: str = "v1",
+    likes: int = 0,
+    author_email: str | None = None,
+    author_name: str = "Author",
+    author_initial: str = "A",
+    with_version: bool = True,
+    return_author: bool = False,
+):
+    db = factory()
+    try:
+        if author_id is None:
+            user = User(
+                email=author_email or f"{title}@seed.com",
+                display_name=author_name,
+                avatar_initial=author_initial,
+            )
+            db.add(user)
+            db.flush()
+            author_id = user.id
+
+        game = Game(
+            author_id=author_id,
+            title=title,
+            summary=summary,
+            genre=genre,
+            status=status,
+            current_version=current_version,
+            source=source,
+            plays_count=plays,
+            likes_count=likes,
+            published_at=now_utc(),
+        )
+        db.add(game)
+        db.flush()
+
+        if with_version:
+            db.add(
+                GameVersion(
+                    game_id=game.id,
+                    version=current_version,
+                    manifest_key=f"games/{game.id}/{current_version}/manifest.json",
+                    bundle_key=f"games/{game.id}/{current_version}/index.html",
+                    sha256=f"sha-{current_version}",
+                    size_bytes=111,
+                )
+            )
+
+        db.commit()
+        result = (game.id, author_id) if return_author else game.id
+        return result
+    finally:
+        db.close()
 
 
 class _FakeRedis:

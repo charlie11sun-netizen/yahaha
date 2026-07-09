@@ -1,8 +1,8 @@
 import { MessageCircle, Trash2, UserRound } from "lucide-react";
 import type { ReactNode } from "react";
 
+import { coverBackgroundStyle } from "@/lib/cover";
 import type { Comment, Game } from "@/lib/types";
-import { coverBackground } from "../_lib/game-detail-format";
 
 export function Centered({ children }: { children: ReactNode }) {
   return <div className="pf-state-page">{children}</div>;
@@ -85,7 +85,7 @@ export function RelatedAndComments({
           <div className="pf-related-list">
             {related.slice(0, 5).map((game) => (
               <button key={game.id} onClick={() => onOpen(game.id)} type="button">
-                <span style={coverBackground(game.cover)} />
+                <span style={coverBackgroundStyle(game.cover)} />
                 <div>
                   <strong>{game.title}</strong>
                   <i>{game.plays_str} plays</i>

@@ -1,15 +1,8 @@
 import zipfile
 from io import BytesIO
 
+from conftest import auth_headers
 from PIL import Image
-
-
-def _auth(client):
-    token = client.post(
-        "/auth/register",
-        json={"email": "u@u.com", "password": "secret1", "display_name": "U"},
-    ).json()["token"]
-    return {"Authorization": f"Bearer {token}"}
 
 
 def _png_bytes() -> bytes:
@@ -28,7 +21,7 @@ def _jpeg_with_exif() -> bytes:
 
 
 def test_upload_ok(client):
-    h = _auth(client)
+    h = auth_headers(client, email="u@u.com", display_name="U")
     r = client.post("/uploads", files=[("files", ("a.png", _png_bytes(), "image/png"))], headers=h)
     assert r.status_code == 200
     assert r.json()["assets"][0]["name"] == "a.png"
@@ -36,20 +29,20 @@ def test_upload_ok(client):
 
 
 def test_upload_bad_type(client):
-    h = _auth(client)
+    h = auth_headers(client, email="u@u.com", display_name="U")
     r = client.post("/uploads", files=[("files", ("a.exe", b"x", "application/x-msdownload"))], headers=h)
     assert r.status_code == 415
 
 
 def test_upload_too_large(client):
-    h = _auth(client)
+    h = auth_headers(client, email="u@u.com", display_name="U")
     big = b"x" * (10 * 1024 * 1024 + 1)
     r = client.post("/uploads", files=[("files", ("big.png", big, "image/png"))], headers=h)
     assert r.status_code == 413
 
 
 def test_upload_rejects_html_spoofed_as_image(client):
-    h = _auth(client)
+    h = auth_headers(client, email="u@u.com", display_name="U")
     r = client.post(
         "/uploads",
         files=[("files", ("x.png", b"<!doctype html><script>alert(1)</script>", "image/png"))],
@@ -59,7 +52,7 @@ def test_upload_rejects_html_spoofed_as_image(client):
 
 
 def test_upload_rejects_svg_text_even_when_spoofed(client):
-    h = _auth(client)
+    h = auth_headers(client, email="u@u.com", display_name="U")
     r = client.post(
         "/uploads",
         files=[("files", ("x.png", b'<svg xmlns="http://www.w3.org/2000/svg"></svg>', "image/png"))],
@@ -71,7 +64,7 @@ def test_upload_rejects_svg_text_even_when_spoofed(client):
 def test_upload_reencodes_jpeg_and_strips_exif(client, monkeypatch):
     from app.storage import s3
 
-    h = _auth(client)
+    h = auth_headers(client, email="u@u.com", display_name="U")
     captured = {}
 
     def _capture(key, body, content_type):
@@ -92,7 +85,7 @@ def test_upload_reencodes_jpeg_and_strips_exif(client, monkeypatch):
 
 
 def test_upload_rejects_zip_bomb_ratio(client):
-    h = _auth(client)
+    h = auth_headers(client, email="u@u.com", display_name="U")
     data = BytesIO()
     with zipfile.ZipFile(data, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("huge.txt", b"0" * (1024 * 1024))
@@ -107,7 +100,7 @@ def test_upload_rejects_zip_bomb_ratio(client):
 def test_upload_non_image_presign_forces_attachment(client, monkeypatch):
     from app.storage import s3
 
-    h = _auth(client)
+    h = auth_headers(client, email="u@u.com", display_name="U")
     dispositions = []
 
     def _url(key, **kwargs):
@@ -127,7 +120,7 @@ def test_upload_non_image_presign_forces_attachment(client, monkeypatch):
 def test_upload_rejects_too_many_files_before_storage(client, monkeypatch):
     from app.storage import s3
 
-    h = _auth(client)
+    h = auth_headers(client, email="u@u.com", display_name="U")
     writes = []
     monkeypatch.setattr(s3, "put_object", lambda *args: writes.append(args))
     files = [("files", (f"{i}.txt", b"x", "text/plain")) for i in range(7)]
@@ -137,7 +130,7 @@ def test_upload_rejects_too_many_files_before_storage(client, monkeypatch):
 
 
 def test_upload_strips_path_from_client_filename(client):
-    h = _auth(client)
+    h = auth_headers(client, email="u@u.com", display_name="U")
     r = client.post(
         "/uploads", files=[("files", ("../unsafe.txt", b"safe", "text/plain"))], headers=h
     )

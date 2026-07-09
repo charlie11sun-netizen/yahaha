@@ -15,9 +15,9 @@ import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { coverBackgroundStyle } from "@/lib/cover";
 import { useToast } from "@/lib/toast";
 import { Centered, DetailStat, RelatedAndComments } from "./_components/GameDetailPanels";
-import { coverBackground } from "./_lib/game-detail-format";
 
 export default function DetailPage() {
   const { id } = useParams() as { id: string };
@@ -131,7 +131,7 @@ export default function DetailPage() {
 
         <section className="pf-detail-hero">
           <div className="pf-detail-media">
-            <div className="pf-detail-cover" style={coverBackground(game.cover)}>
+            <div className="pf-detail-cover" style={coverBackgroundStyle(game.cover)}>
               <span>{game.genre}</span>
             </div>
             <button className="pf-detail-play" onClick={() => router.push(`/play/${game.id}`)} type="button">

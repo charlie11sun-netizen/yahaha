@@ -1,14 +1,8 @@
 """第二批语义回归：可见性矩阵、预览不计数、is_active 全局生效、删除清理 OSS。"""
+from conftest import auth_user
+
 from app.models import Game, User
 from app.models.common import GameSource, GameStatus, now_utc
-
-
-def _auth(client, email="v@v.com", name="V"):
-    reg = client.post(
-        "/auth/register",
-        json={"email": email, "password": "secret1", "display_name": name},
-    ).json()
-    return {"Authorization": f"Bearer {reg['token']}"}, reg["user"]["id"]
 
 
 def _game(factory, author_id, status, title="Vis Game"):
@@ -33,8 +27,8 @@ def _game(factory, author_id, status, title="Vis Game"):
 
 def test_draft_subresources_hidden_from_non_author(client, db_session_factory):
     """draft/preview 的评论、排行、计分、manifest、play、related 与详情页同一条可见性规则。"""
-    author_h, author_id = _auth(client, email="author@v.com", name="A")
-    other_h, _ = _auth(client, email="other@v.com", name="B")
+    author_h, author_id = auth_user(client, email="author@v.com", display_name="A")
+    other_h, _ = auth_user(client, email="other@v.com", display_name="B")
     gid = _game(db_session_factory, author_id, GameStatus.PREVIEW)
 
     reads = [f"/games/{gid}/comments", f"/games/{gid}/leaderboard", f"/games/{gid}/manifest", f"/games/{gid}/related"]
@@ -50,7 +44,7 @@ def test_draft_subresources_hidden_from_non_author(client, db_session_factory):
 
 
 def test_author_preview_play_not_counted(client, db_session_factory):
-    author_h, author_id = _auth(client, email="prev@v.com", name="P")
+    author_h, author_id = auth_user(client, email="prev@v.com", display_name="P")
     gid = _game(db_session_factory, author_id, GameStatus.PREVIEW)
     r = client.post(f"/games/{gid}/play", headers=author_h).json()
     assert r["counted"] is False
@@ -60,7 +54,7 @@ def test_author_preview_play_not_counted(client, db_session_factory):
 
 
 def test_disabled_account_rejected_globally(client, db_session_factory):
-    h, uid = _auth(client, email="dis@v.com", name="D")
+    h, uid = auth_user(client, email="dis@v.com", display_name="D")
     db = db_session_factory()
     db.get(User, uid).is_active = False
     db.commit()
@@ -73,7 +67,7 @@ def test_disabled_account_rejected_globally(client, db_session_factory):
 def test_delete_game_cleans_object_storage(client, db_session_factory, monkeypatch):
     from app.api.routers import games as games_router
 
-    author_h, author_id = _auth(client, email="del@v.com", name="Del")
+    author_h, author_id = auth_user(client, email="del@v.com", display_name="Del")
     gid = _game(db_session_factory, author_id, GameStatus.PUBLISHED)
     deleted_prefixes: list[str] = []
     monkeypatch.setattr(games_router.s3, "delete_prefix", lambda p: deleted_prefixes.append(p) or 1)
@@ -83,9 +77,9 @@ def test_delete_game_cleans_object_storage(client, db_session_factory, monkeypat
 
 
 def test_like_unlike_roundtrip_consistent(client, db_session_factory):
-    _, author_id = _auth(client, email="lk-a@v.com", name="LA")
+    _, author_id = auth_user(client, email="lk-a@v.com", display_name="LA")
     gid = _game(db_session_factory, author_id, GameStatus.PUBLISHED)
-    h, _ = _auth(client, email="lk@v.com", name="L")
+    h, _ = auth_user(client, email="lk@v.com", display_name="L")
     assert client.post(f"/games/{gid}/like", headers=h).json()["likes"] == 1
     assert client.post(f"/games/{gid}/like", headers=h).json()["likes"] == 1  # 幂等
     assert client.delete(f"/games/{gid}/like", headers=h).json()["likes"] == 0
