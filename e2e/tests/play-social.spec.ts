@@ -13,7 +13,7 @@ test("seed game iframe loads without error state", async ({ page, request }) => 
 
 test("like and comment on a published game", async ({ page, request }) => {
   const auth = await register(request, "E2E Social");
-  await signInPage(page, auth.token);
+  await signInPage(page, auth.session);
   const game = await firstPublishedGame(request);
 
   await page.goto(`/games/${game.id}`);

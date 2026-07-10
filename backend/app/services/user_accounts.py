@@ -7,6 +7,7 @@ focused on the database adapter and authentication invariants.
 from collections.abc import AsyncGenerator
 
 from fastapi import Depends, Request
+from starlette.concurrency import run_in_threadpool
 
 from app.core.users import SyncSQLAlchemyUserDatabase, UserManager as CoreUserManager, get_user_db
 from app.models import Game, User
@@ -22,7 +23,8 @@ class UserManager(CoreUserManager):
     async def create(self, user_create, safe: bool = False, request: Request | None = None) -> User:
         display_name = getattr(user_create, "display_name", None)
         if display_name:
-            content_safety.ensure_allowed(
+            await run_in_threadpool(
+                content_safety.ensure_allowed,
                 self.user_db.session,
                 text=display_name,
                 surface="auth.register.display_name",
@@ -33,7 +35,8 @@ class UserManager(CoreUserManager):
         display_name = getattr(user_update, "display_name", None)
         avatar = getattr(user_update, "avatar", None)
         if display_name is not None:
-            content_safety.ensure_allowed(
+            await run_in_threadpool(
+                content_safety.ensure_allowed,
                 self.user_db.session,
                 text=display_name,
                 surface="user.display_name",
@@ -41,7 +44,8 @@ class UserManager(CoreUserManager):
                 object_id=user.id,
             )
         if avatar is not None and str(avatar).strip():
-            content_safety.ensure_allowed(
+            await run_in_threadpool(
+                content_safety.ensure_allowed,
                 self.user_db.session,
                 text=avatar,
                 surface="user.avatar",
@@ -51,19 +55,26 @@ class UserManager(CoreUserManager):
         return await super().update(user_update, user, safe=safe, request=request)
 
     async def on_before_delete(self, user: User, request: Request | None = None) -> None:
-        game_ids = [gid for (gid,) in self.user_db.session.query(Game.id).filter(Game.author_id == user.id)]
+        def load_game_ids():
+            return [gid for (gid,) in self.user_db.session.query(Game.id).filter(Game.author_id == user.id)]
+
+        game_ids = await run_in_threadpool(load_game_ids)
         self._delete_cleanup = (user.id, game_ids)
 
     async def on_after_delete(self, user: User, request: Request | None = None) -> None:
         if not self._delete_cleanup:
             return
         uid, game_ids = self._delete_cleanup
-        try:
-            for game_id in game_ids:
-                s3.delete_prefix(f"games/{game_id}/")
-            s3.delete_prefix(f"uploads/{uid}/")
-        except Exception:  # noqa: BLE001
-            pass
+
+        def cleanup_storage():
+            try:
+                for game_id in game_ids:
+                    s3.delete_prefix(f"games/{game_id}/")
+                s3.delete_prefix(f"uploads/{uid}/")
+            except Exception:  # noqa: BLE001
+                pass
+
+        await run_in_threadpool(cleanup_storage)
 
 
 async def get_user_manager(

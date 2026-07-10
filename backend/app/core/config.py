@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +22,8 @@ class Settings(BaseSettings):
     GENERATION_OUTBOX_SCAN_INTERVAL_SECONDS: float = 5.0
     GENERATION_OUTBOX_BATCH_SIZE: int = 100
     GENERATION_LOCK_RETRY_SECONDS: int = 3
+    TASK_EVENTS_ENABLED: bool = True
+    TASK_EVENTS_HEARTBEAT_SECONDS: float = 15.0
 
     # Object storage (S3 compatible)
     S3_ENDPOINT: str = "http://localhost:9000"           # 服务端访问 OSS
@@ -33,6 +37,10 @@ class Settings(BaseSettings):
     JWT_SECRET: str = "change-me-please-use-a-long-random-string"
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 10080
+    AUTH_COOKIE_NAME: str = "gameweave_session"
+    AUTH_COOKIE_SECURE: bool = False
+    AUTH_COOKIE_SAMESITE: Literal["lax", "strict", "none"] = "lax"
+    AUTH_COOKIE_DOMAIN: str = ""
 
     # Model service (OpenAI compatible)
     OPENAI_API_KEY: str = ""

@@ -103,6 +103,7 @@ services:
       CORS_ORIGINS: ${PUBLIC_WEB_URL:?set PUBLIC_WEB_URL in .env}
       FRONTEND_BASE_URL: ${PUBLIC_WEB_URL}
       OAUTH_REDIRECT_BASE: ${PUBLIC_API_URL:?set PUBLIC_API_URL in .env}
+      AUTH_COOKIE_SECURE: "true"
       ENABLE_OAUTH_DEMO: "false"
       # SITE_PASSWORD comes from .env (env_file). Backend requires X-Gate-Token when set.
       SITE_PASSWORD: ${SITE_PASSWORD:?set SITE_PASSWORD in .env — site must not be public}

@@ -140,6 +140,7 @@ def test_owner_can_list_and_activate_versions(client, db_session_factory):
     assert activated.status_code == 200
     assert activated.json()["version"] == "v2"
     assert client.get(f"/games/{gid}/manifest?version=v1", headers=h).status_code == 200
+    client.cookies.clear()
     assert client.get(f"/games/{gid}/manifest?version=v1").status_code == 403
 
 

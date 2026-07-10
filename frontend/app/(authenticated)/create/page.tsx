@@ -264,7 +264,11 @@ function CreatePageInner() {
           <TaskMissingCard onBack={editBrief} />
         ) : taskId ? (
           <CreateWorkspace
-            connectionStatus={taskQuery.isError ? "Reconnecting" : "Connected"}
+            connectionStatus={
+              taskQuery.isError || taskQuery.streamState === "reconnecting"
+                ? "Reconnecting"
+                : "Connected"
+            }
             files={files}
             now={now}
             onCancel={cancelTask}

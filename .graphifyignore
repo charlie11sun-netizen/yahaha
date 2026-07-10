@@ -1,0 +1,3 @@
+# Third-party minified browser runtimes are copied into generated game bundles.
+# They are implementation assets, not part of GameWeave's application architecture.
+/backend/app/agents/vendor/

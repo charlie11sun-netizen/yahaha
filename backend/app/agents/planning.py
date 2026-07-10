@@ -27,7 +27,6 @@ from app.agents.planning_nodes import (
     brief_expansion_node,
     content_plan_node,
     done_node,
-    entry_node_router,
     failed_node,
     feedback_understanding_node,
     game_design_node,
@@ -102,5 +101,4 @@ __all__ = [
     'failed_node',
     'done_node',
     'should_continue_after_safety',
-    'entry_node_router',
 ]

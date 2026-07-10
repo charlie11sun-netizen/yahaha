@@ -5,27 +5,70 @@ agent_steps / agent_logs（前端可见"正在运行"的那一步）。本函数
 mock（默认离线）与 real（USE_REAL_MODEL=true + GPT-5.5）走同一张图。
 """
 import json
+import logging
 
+from psycopg import Error as PsycopgError
+from psycopg_pool import PoolTimeout
+
+from app.agents.state import STEP_META
+from app.agents.tracing import TaskBudgetExceededError, TaskCancelledError
+from app.core.checkpointing import CheckpointStorageError, checkpoint_config, open_checkpointer
 from app.core.config import settings
 from app.core.errors import TaskErrorCode
 from app.core.telemetry import bind_context, clear_context
 from app.db.session import SessionLocal
 from app.models import GenerationTask
 from app.models.common import StepStatus, TaskStatus, now_utc
+from app.services.task_events import publish_task_event
+
+logger = logging.getLogger(__name__)
 
 
-def _load_resume_snapshot(raw: str | None) -> tuple[str, dict] | None:
-    """state_json → (node, state)。缺失/损坏一律 None，回落全新跑，不比旧路径差。"""
-    try:
-        payload = json.loads(raw or "")
-    except Exception:  # noqa: BLE001
+def _node_for_step(step) -> str | None:
+    if step is None:
         return None
-    if not isinstance(payload, dict):
-        return None
-    node, state = payload.get("node"), payload.get("state")
-    if isinstance(node, str) and node and isinstance(state, dict) and state:
-        return node, state
+    for node_name, (agent, display) in STEP_META.items():
+        if step.agent == agent and step.name == display:
+            return node_name
     return None
+
+
+def _checkpoint_plan(graph, task_id: str, failed_node: str | None) -> tuple[dict | None, dict | None]:
+    """Return (resume_config, completed_final) for a durable task thread.
+
+    An exception or worker crash leaves the latest checkpoint pointing at the
+    node that must run. A graph-level failure reaches END normally, so replay
+    uses the historical checkpoint immediately before the recorded failed step.
+    """
+
+    history = list(graph.get_state_history(checkpoint_config(task_id)))
+    if not history:
+        return None, None
+
+    latest = history[0]
+    if not latest.next and latest.values.get("status") == "succeeded":
+        return None, dict(latest.values)
+    if latest.next and tuple(latest.next) != ("failed",):
+        return latest.config, None
+
+    if failed_node:
+        for snapshot in history:
+            if tuple(snapshot.next) == (failed_node,):
+                return snapshot.config, None
+
+    # Defensive fallback for a legacy/partially recorded step stream: choose
+    # the newest real workflow node, never the terminal failure handler.
+    for snapshot in history:
+        if snapshot.next and tuple(snapshot.next) != ("failed",):
+            return snapshot.config, None
+    return None, None
+
+
+def _delete_checkpoint_best_effort(checkpointer, task_id: str) -> None:
+    try:
+        checkpointer.delete_thread(task_id)
+    except Exception:  # noqa: BLE001 - terminal task state must still commit
+        logger.exception("failed to delete terminal LangGraph checkpoint thread", extra={"generation_task_id": task_id})
 
 
 def _json_object(raw: str | None) -> dict:
@@ -76,7 +119,7 @@ def _cleanup_cancelled_artifacts(db, task, final: dict | None) -> None:
 
 def run_generation(task_id: str, expected_dispatch_generation: int | None = None) -> None:
     bind_context(task_id=task_id)
-    # 1) 置 running + 读取入参
+    # 1) Read immutable inputs and determine whether a prior run may resume.
     db = SessionLocal()
     try:
         task = db.get(GenerationTask, task_id)
@@ -97,36 +140,13 @@ def run_generation(task_id: str, expected_dispatch_generation: int | None = None
         if task.status in (TaskStatus.SUCCEEDED, TaskStatus.FAILED):
             clear_context()
             return
-        # 断点续跑：state_json 有合法快照（显式 retry 保留、或 worker 崩溃时留下）
-        # 就从快照节点继续；否则维持旧语义从头跑。
-        resume = _load_resume_snapshot(task.state_json)
-        if task.status == TaskStatus.RUNNING:
-            if resume is None:
-                # worker 崩溃后的重投递且无快照：上一轮的步骤流已经作废，清掉
-                # 再从头跑，避免同一任务出现两套同名步骤。
-                for step in list(task.steps):
-                    db.delete(step)
-            else:
-                # 有快照：保留已完成步骤（tokens/成本跨次累计），把崩溃时悬挂的
-                # running 步骤翻成 failed，续跑会为重跑节点新开一条 attempt+1 步骤。
-                for step in task.steps:
-                    if step.status == StepStatus.RUNNING:
-                        step.status = StepStatus.FAILED
-                        step.finished_at = now_utc()
-        task.status = TaskStatus.RUNNING
-        if resume is None:
-            task.started_at = now_utc()
-            task.current_step = 0
-            task.current_agent = None
-            task.tokens_used = 0
-            task.cost_usd = None
-            task.repair_attempts = 0
-            task.replan_attempts = 0
-        else:
-            task.started_at = task.started_at or now_utc()
-        task.error = None
-        task.error_code = None
-        task.failed_stage = None
+        was_running = task.status == TaskStatus.RUNNING
+        resume_requested = was_running or bool(task.steps)
+        last_failed_step = next(
+            (step for step in reversed(task.steps) if step.status == StepStatus.FAILED),
+            None,
+        )
+        failed_node = _node_for_step(last_failed_step)
         idea = task.idea
         task_kind = task.task_kind or "generation"
         feedback_text = task.feedback_text or ""
@@ -137,97 +157,162 @@ def run_generation(task_id: str, expected_dispatch_generation: int | None = None
         user_id = task.user_id
         dimension = task.dimension or "2d"
         asset_ids = [a.id for a in task.assets]
-        db.commit()
         bind_context(task_id=task_id, user_id=user_id)
     finally:
         db.close()
 
-    # 2) 跑图（节点内部实时落库）
+    # 2) Resolve and run the durable graph. The saver remains open for the run.
     final: dict | None = None
     err = ""
     error_code = TaskErrorCode.UNKNOWN.value
-    try:
-        from app.agents.graph import build_graph
-        from app.agents.tracing import TaskBudgetExceededError, TaskCancelledError
+    with open_checkpointer() as checkpointer:
+        try:
+            from app.agents.graph import build_graph
+            use_real = settings.USE_REAL_MODEL and bool(settings.OPENAI_API_KEY.strip())
+            graph = build_graph(checkpointer=checkpointer)
+            resume_config, completed_final = (
+                _checkpoint_plan(graph, task_id, failed_node)
+                if resume_requested
+                else (None, None)
+            )
+            is_resume = resume_config is not None or completed_final is not None
+            if resume_requested and not is_resume:
+                # No usable native checkpoint exists (for example, a task from
+                # before this migration). Fall back to the established restart.
+                checkpointer.delete_thread(task_id)
 
-        use_real = settings.USE_REAL_MODEL and bool(settings.OPENAI_API_KEY.strip())
-        graph = build_graph()
-        if resume is not None:
-            # 断点续跑：快照即失败节点的输入状态，入口路由据 _resume_node 直跳。
-            # 基础设施键（task_id/use_real 等）以当前部署为准覆盖快照。
-            resume_node, snap_state = resume
-            initial = {
-                **snap_state,
-                "task_id": task_id, "user_id": user_id, "use_real": use_real,
-                "status": "running",
-                "_resume_node": resume_node,
-            }
-        else:
-            initial = {
-                "task_id": task_id, "user_id": user_id, "use_real": use_real, "status": "running",
-                "task_kind": task_kind,
-                "prompt": feedback_text if _uses_existing_bundle(task_kind) else idea,
-                "asset_ids": asset_ids, "dimension": dimension,
-                "repair_attempts": 0, "replan_attempts": 0,
-                "gameplay_repair_attempts": 0,
-            }
-            if _uses_existing_bundle(task_kind):
-                if not base_game_id or not base_version or not feedback_text:
-                    raise RuntimeError(f"{task_kind} task is missing its base version or feedback")
-                initial.update({
-                    "source_feedback": feedback_text,
-                    "base_game_id": base_game_id,
-                    "base_version": base_version,
-                    "existing_files": _load_revision_files(base_game_id, base_version),
-                    "game_spec": spec,
-                    "game_design": design,
-                })
-        final = graph.invoke(initial)
-    except TaskCancelledError:
-        # 用户取消：begin_step 在节点边界抛出。不算失败，收尾只做孤儿清理。
-        final = None
-    except TaskBudgetExceededError as exc:
-        err = str(exc)[:500]
-        error_code = TaskErrorCode.BUDGET_EXCEEDED.value
-    except Exception as exc:  # noqa: BLE001
-        err = str(exc)[:500]
+            db = SessionLocal()
+            try:
+                task = db.get(GenerationTask, task_id)
+                if not task or task.status == TaskStatus.CANCELLED:
+                    _delete_checkpoint_best_effort(checkpointer, task_id)
+                    clear_context()
+                    return
+                if is_resume:
+                    for step in task.steps:
+                        if step.status == StepStatus.RUNNING:
+                            step.status = StepStatus.FAILED
+                            step.finished_at = now_utc()
+                    task.started_at = task.started_at or now_utc()
+                else:
+                    for step in list(task.steps):
+                        db.delete(step)
+                    task.started_at = now_utc()
+                    task.current_step = 0
+                    task.current_agent = None
+                    task.tokens_used = 0
+                    task.cost_usd = None
+                    task.repair_attempts = 0
+                    task.replan_attempts = 0
+                task.status = TaskStatus.RUNNING
+                task.error = None
+                task.error_code = None
+                task.failed_stage = None
+                db.commit()
+                publish_task_event(task_id, "running")
+            finally:
+                db.close()
 
-    # 3) 收尾
-    db = SessionLocal()
-    try:
-        task = db.get(GenerationTask, task_id)
-        if not task:
-            return
-        if task.status == TaskStatus.CANCELLED:
-            _cleanup_cancelled_artifacts(db, task, final)
-            task.error_code = TaskErrorCode.CANCELLED.value
-            task.state_json = None  # 取消不可重试，快照无用
-            db.commit()
-            return
-        if final is None:
-            task.status = TaskStatus.FAILED
-            task.error = err or "generation crashed"
-            task.error_code = error_code
-            task.failed_stage = task.failed_stage or task.current_agent
-        else:
-            if final.get("game_spec"):
-                task.spec_json = json.dumps(final["game_spec"], ensure_ascii=False)
-            if final.get("game_design"):
-                task.design_json = json.dumps(final["game_design"], ensure_ascii=False)
-            if final.get("feedback_brief"):
-                task.feedback_brief = str(final["feedback_brief"])
-            if final.get("status") == "succeeded" and final.get("game_id"):
-                task.result_game_id = final["game_id"]
-                task.version_id = final.get("version_id")
-                task.status = TaskStatus.SUCCEEDED
-                task.state_json = None  # 成功后快照即垃圾（可达 MB 级），立即释放
+            if completed_final is not None:
+                final = completed_final
+            elif resume_config is not None:
+                if not was_running:
+                    # Explicit Retry replenishes graph-level repair budgets. The
+                    # update creates a native fork while preserving the next node.
+                    resume_config = graph.update_state(
+                        resume_config,
+                        {
+                            "status": "running",
+                            "repair_attempts": 0,
+                            "replan_attempts": 0,
+                            "gameplay_repair_attempts": 0,
+                            "last_error": None,
+                            "error_code": None,
+                            "error_message": None,
+                        },
+                    )
+                final = graph.invoke(None, resume_config)
             else:
+                initial = {
+                    "task_id": task_id,
+                    "user_id": user_id,
+                    "use_real": use_real,
+                    "status": "running",
+                    "task_kind": task_kind,
+                    "prompt": feedback_text if _uses_existing_bundle(task_kind) else idea,
+                    "asset_ids": asset_ids,
+                    "dimension": dimension,
+                    "repair_attempts": 0,
+                    "replan_attempts": 0,
+                    "gameplay_repair_attempts": 0,
+                }
+                if _uses_existing_bundle(task_kind):
+                    if not base_game_id or not base_version or not feedback_text:
+                        raise RuntimeError(f"{task_kind} task is missing its base version or feedback")
+                    initial.update(
+                        {
+                            "source_feedback": feedback_text,
+                            "base_game_id": base_game_id,
+                            "base_version": base_version,
+                            "existing_files": _load_revision_files(base_game_id, base_version),
+                            "game_spec": spec,
+                            "game_design": design,
+                        }
+                    )
+                final = graph.invoke(initial, checkpoint_config(task_id))
+        except (PsycopgError, PoolTimeout) as exc:
+            # A durable saver outage is infrastructure failure, not a failed
+            # generation. Let the Celery delivery retry without changing task state.
+            raise CheckpointStorageError("LangGraph checkpoint storage is unavailable") from exc
+        except TaskCancelledError:
+            # User cancellation is observed at the next node boundary.
+            final = None
+        except TaskBudgetExceededError as exc:
+            err = str(exc)[:500]
+            error_code = TaskErrorCode.BUDGET_EXCEEDED.value
+        except Exception as exc:  # noqa: BLE001
+            err = str(exc)[:500]
+
+        # 3) Finalize application state; retain checkpoints only for failures.
+        db = SessionLocal()
+        try:
+            task = db.get(GenerationTask, task_id)
+            if not task:
+                clear_context()
+                return
+            if task.status == TaskStatus.CANCELLED:
+                _cleanup_cancelled_artifacts(db, task, final)
+                task.error_code = TaskErrorCode.CANCELLED.value
+                _delete_checkpoint_best_effort(checkpointer, task_id)
+                db.commit()
+                publish_task_event(task_id, "cancelled")
+                clear_context()
+                return
+            if final is None:
                 task.status = TaskStatus.FAILED
-                task.error = final.get("error_message") or final.get("last_error") or "generation failed"
-                task.error_code = final.get("error_code") or TaskErrorCode.UNKNOWN.value
+                task.error = err or "generation crashed"
+                task.error_code = error_code
                 task.failed_stage = task.failed_stage or task.current_agent
-        task.finished_at = now_utc()
-        db.commit()
-    finally:
-        db.close()
-        clear_context()
+            else:
+                if final.get("game_spec"):
+                    task.spec_json = json.dumps(final["game_spec"], ensure_ascii=False)
+                if final.get("game_design"):
+                    task.design_json = json.dumps(final["game_design"], ensure_ascii=False)
+                if final.get("feedback_brief"):
+                    task.feedback_brief = str(final["feedback_brief"])
+                if final.get("status") == "succeeded" and final.get("game_id"):
+                    task.result_game_id = final["game_id"]
+                    task.version_id = final.get("version_id")
+                    task.status = TaskStatus.SUCCEEDED
+                    _delete_checkpoint_best_effort(checkpointer, task_id)
+                else:
+                    task.status = TaskStatus.FAILED
+                    task.error = final.get("error_message") or final.get("last_error") or "generation failed"
+                    task.error_code = final.get("error_code") or TaskErrorCode.UNKNOWN.value
+                    task.failed_stage = task.failed_stage or task.current_agent
+            task.finished_at = now_utc()
+            db.commit()
+            publish_task_event(task_id, task.status)
+        finally:
+            db.close()
+    clear_context()

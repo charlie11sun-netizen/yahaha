@@ -290,6 +290,36 @@ def test_worker_retries_when_execution_lock_is_busy(monkeypatch):
         raise AssertionError("lock contention must request a Celery retry")
 
 
+def test_worker_retries_when_checkpoint_storage_is_unavailable(monkeypatch):
+    from app.core.checkpointing import CheckpointStorageError
+    from app.tasks import generate as generate_module
+
+    class RetryRequested(Exception):
+        pass
+
+    @contextmanager
+    def _acquired_lock(_task_id):
+        yield True
+
+    monkeypatch.setattr(generate_module, "_dispatch_is_current", lambda *_args: True)
+    monkeypatch.setattr(generate_module, "generation_execution_lock", _acquired_lock)
+    monkeypatch.setattr(
+        generate_module,
+        "run_generation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            CheckpointStorageError("checkpoint database unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        generate_module.generate_game,
+        "retry",
+        lambda **_kwargs: (_ for _ in ()).throw(RetryRequested()),
+    )
+
+    with pytest.raises(RetryRequested):
+        generate_module.generate_game.run("task-1", 1)
+
+
 def test_worker_reads_generation_header_and_defaults_legacy_messages_to_zero():
     from app.tasks.generate import _message_dispatch_generation
 

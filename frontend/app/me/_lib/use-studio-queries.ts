@@ -12,7 +12,7 @@ export function useStudioQueries(enabled: boolean) {
     queryFn: api.tasks,
     enabled,
     refetchInterval: (query) =>
-      query.state.data?.items?.some((task) => task.status === "pending" || task.status === "running") ? 3500 : false,
+      query.state.data?.items?.some((task) => task.status === "pending" || task.status === "running") ? 30000 : false,
   });
   const memoryQ = useQuery({ queryKey: ["memory"], queryFn: () => api.memories(), enabled });
   const memoryProfilesQ = useQuery({ queryKey: ["memory-profiles"], queryFn: () => api.memoryProfiles(), enabled });

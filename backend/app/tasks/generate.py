@@ -6,7 +6,9 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.agents.pipeline import run_generation
+from app.core.checkpointing import CheckpointStorageError
 from app.core.config import settings
+from app.core.telemetry import clear_context
 from app.db.session import SessionLocal, engine
 from app.models import GenerationTask
 from app.models.common import TaskStatus
@@ -118,14 +120,16 @@ def _execute_generation_delivery(
             if not _dispatch_is_current(task_id, expected_generation):
                 return
             run_generation(task_id, expected_dispatch_generation=expected_generation)
-    except SQLAlchemyError as exc:
+    except (SQLAlchemyError, CheckpointStorageError) as exc:
         # The outbox event is already marked published; retry transient DB failures
-        # here so a brief outage cannot strand a pending/running task permanently.
+        # (including checkpoint storage) so a brief outage cannot strand a task.
         raise task.retry(
             exc=exc,
             countdown=settings.GENERATION_LOCK_RETRY_SECONDS,
             max_retries=None,
         ) from exc
+    finally:
+        clear_context()
 
 
 # New dispatches use a versioned queue. Workers from the previous release only

@@ -15,12 +15,6 @@ export class ApiError extends Error {
   }
 }
 
-function authHeader(): Record<string, string> {
-  if (typeof window === "undefined") return {};
-  const token = localStorage.getItem("pf_token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 function gateHeader(): Record<string, string> {
   if (typeof document === "undefined") return {};
   const match = document.cookie.match(/(?:^|;\s*)pf_gate_token=([^;]+)/);
@@ -29,7 +23,7 @@ function gateHeader(): Record<string, string> {
 
 const sessionMiddleware: Middleware = {
   onRequest({ request }) {
-    for (const [name, value] of Object.entries({ ...authHeader(), ...gateHeader() })) {
+    for (const [name, value] of Object.entries(gateHeader())) {
       request.headers.set(name, value);
     }
     return request;
@@ -39,8 +33,35 @@ const sessionMiddleware: Middleware = {
   },
 };
 
-const client = createClient<paths>({ baseUrl: BASE });
+const client = createClient<paths>({ baseUrl: BASE, credentials: "include" });
 client.use(sessionMiddleware);
+
+let authenticatedSessionKnown = false;
+
+export function setAuthenticatedSessionKnown(value: boolean) {
+  authenticatedSessionKnown = value;
+}
+
+export async function openTaskEventStream(taskId: string, signal: AbortSignal): Promise<Response> {
+  const response = await fetch(`${BASE}/tasks/${encodeURIComponent(taskId)}/events`, {
+    credentials: "include",
+    headers: { Accept: "text/event-stream", ...gateHeader() },
+    method: "GET",
+    signal,
+  });
+  if (!response.ok) {
+    handleSessionExpiry(response.status, "/tasks/{task_id}/events");
+    let message = response.statusText || "Task event stream unavailable";
+    try {
+      message = errorMessage(await response.clone().json(), message);
+    } catch {
+      // Non-JSON proxy errors retain the HTTP status text.
+    }
+    throw new ApiError(response.status, message);
+  }
+  if (!response.body) throw new ApiError(503, "Task event stream has no response body");
+  return response;
+}
 
 type ApiResult<T> = {
   data?: T;
@@ -72,8 +93,8 @@ function errorMessage(error: unknown, fallback: string): string {
 function handleSessionExpiry(status: number, schemaPath: string) {
   if (status !== 401 || typeof window === "undefined") return;
   if (schemaPath.startsWith("/auth/")) return;
-  if (!localStorage.getItem("pf_token")) return;
-  localStorage.removeItem("pf_token");
+  if (!authenticatedSessionKnown) return;
+  authenticatedSessionKnown = false;
   if (!window.location.pathname.startsWith("/login")) {
     window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname)}`);
   }

@@ -236,8 +236,8 @@ def _design_preview(spec: dict, design: dict):
 
 def task_out(t, include_details: bool = True) -> dict:
     """完整任务 DTO。include_details=False 产出列表用的轻量 summary：
-    跳过 logs / steps / design / assets 与逐步日志行 —— 任务列表按 3.5s 轮询，
-    全量 payload 会随任务积累线性爆炸。"""
+    跳过 logs / steps / design / assets 与逐步日志行 —— 任务详情由 SSE 实时更新，
+    列表只做 30s 低频兜底刷新，避免全量 payload 随任务积累线性爆炸。"""
     spec, design = _parse(t.spec_json), _parse(t.design_json)
     steps_by_agent = {s.agent: s for s in t.steps}
     latest_event_at = _latest_task_event_at(t, scan_logs=include_details)

@@ -3,6 +3,7 @@ import os
 
 # 必须在导入 app 之前设置，避免 app.db.session 加载 psycopg 方言
 os.environ.setdefault("DATABASE_URL", "sqlite://")
+os.environ.setdefault("TASK_EVENTS_ENABLED", "false")
 
 import sys
 import types
@@ -22,6 +23,7 @@ sys.path.insert(0, str(_BACKEND_DIR))
 
 import app.models  # noqa: E402,F401
 from app.api import deps  # noqa: E402
+from app.core.config import settings  # noqa: E402
 from app.db.base import Base  # noqa: E402
 from app.db.session import get_db  # noqa: E402
 from app.main import app  # noqa: E402
@@ -39,11 +41,16 @@ def _register_user(
     return client.post(
         "/auth/register",
         json={"email": email, "password": password, "display_name": display_name},
-    ).json()
+    )
 
 
-def _token_headers(token: str):
-    return {"Authorization": f"Bearer {token}"}
+def _session_headers(response):
+    session = response.cookies.get(settings.AUTH_COOKIE_NAME)
+    assert session
+    return {
+        "Cookie": f"{settings.AUTH_COOKIE_NAME}={session}",
+        "Origin": "http://localhost:3000",
+    }
 
 
 def auth_headers(
@@ -53,7 +60,7 @@ def auth_headers(
     display_name: str = "Test",
 ):
     reg = _register_user(client, email=email, password=password, display_name=display_name)
-    return _token_headers(reg["token"])
+    return _session_headers(reg)
 
 
 def auth_user(
@@ -63,7 +70,7 @@ def auth_user(
     display_name: str = "Test",
 ):
     reg = _register_user(client, email=email, password=password, display_name=display_name)
-    return _token_headers(reg["token"]), reg["user"]["id"]
+    return _session_headers(reg), reg.json()["user"]["id"]
 
 
 def seed_game(
@@ -181,6 +188,6 @@ def client(db_session_factory, monkeypatch):
         "app.api.routers.tasks.generate_game",
         types.SimpleNamespace(delay=lambda *a, **k: None),
     )
-    test_client = TestClient(app)
+    test_client = TestClient(app, headers={"Origin": "http://localhost:3000"})
     yield test_client
     app.dependency_overrides.clear()

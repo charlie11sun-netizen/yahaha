@@ -73,9 +73,6 @@ class GenerationTask(PkMixin, TimestampMixin, Base):
     max_replan_attempts: Mapped[int] = mapped_column(Integer, default=1)
     spec_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     design_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # 断点续跑快照：当前正在执行节点的输入状态（JSON {"node": 节点名, "state": 图状态}）。
-    # 每个节点开始时覆盖写入；成功/取消后清空，失败保留供 retry 从失败节点续跑。
-    state_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

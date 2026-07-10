@@ -97,8 +97,8 @@ export default function Nav() {
                 </button>
                 <button
                   className="pf-login-btn"
-                  onClick={() => {
-                    logout();
+                  onClick={async () => {
+                    await logout();
                     router.push("/");
                   }}
                   type="button"

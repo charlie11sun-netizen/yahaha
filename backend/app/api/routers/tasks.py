@@ -1,15 +1,24 @@
-from fastapi import APIRouter, Depends, HTTPException
+import json
+import time
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import get_current_user, rate_limit
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
+from app.models import GenerationTask
+from app.models.common import TaskStatus
 from app.schemas import OkOut, TaskIdOut, TaskListOut, TaskOut, TaskRetryOut, TaskCreateIn, TaskRevisionIn
 from app.services import task_actions
 from app.services.errors import ServiceError
 from app.services.serialize import task_out
+from app.services.task_events import TaskEventsUnavailable, subscribe_task_events
 from app.tasks.generate import generate_game
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
+_TERMINAL_TASK_STATUSES = {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED}
 
 
 def _run(action):
@@ -49,6 +58,94 @@ def list_tasks(
 def get_task(task_id: str, user=Depends(get_current_user), db: Session = Depends(get_db)):
     task = _run(lambda: task_actions.get_task(db, task_id, user))
     return task_out(task)
+
+
+def _event_snapshot(task_id: str, user_id: str) -> tuple[str, dict | None]:
+    db = SessionLocal()
+    try:
+        task = db.get(GenerationTask, task_id)
+        if not task:
+            return "missing", None
+        if task.user_id != user_id:
+            return "forbidden", None
+        return "ok", task_out(task)
+    finally:
+        db.close()
+
+
+def _sse(event: str, data: dict, *, event_id: str | None = None) -> str:
+    lines = []
+    if event_id:
+        lines.append(f"id: {event_id}")
+    lines.append(f"event: {event}")
+    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    lines.extend(f"data: {line}" for line in payload.splitlines() or [""])
+    return "\n".join(lines) + "\n\n"
+
+
+@router.get(
+    "/{task_id}/events",
+    responses={200: {"content": {"text/event-stream": {}}}},
+)
+async def stream_task_events(
+    task_id: str,
+    request: Request,
+    user=Depends(get_current_user),
+):
+    state, initial = await run_in_threadpool(_event_snapshot, task_id, user.id)
+    if state == "missing":
+        raise HTTPException(status_code=404, detail="Task not found")
+    if state == "forbidden":
+        raise HTTPException(status_code=403, detail="Not your task")
+
+    async def event_stream():
+        snapshot = initial or {}
+        serialized = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str)
+        yield "retry: 3000\n\n"
+        yield _sse("task", snapshot, event_id=str(time.time_ns()))
+        if snapshot.get("status") in _TERMINAL_TASK_STATUSES:
+            return
+        try:
+            async for signal in subscribe_task_events(task_id):
+                if await request.is_disconnected():
+                    return
+                if signal is None:
+                    yield ": keep-alive\n\n"
+                    continue
+                current_state, current = await run_in_threadpool(
+                    _event_snapshot,
+                    task_id,
+                    user.id,
+                )
+                if current_state == "missing":
+                    yield _sse("deleted", {"task_id": task_id})
+                    return
+                if current_state != "ok" or current is None:
+                    return
+                current_serialized = json.dumps(
+                    current,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                )
+                if current_serialized == serialized:
+                    continue
+                serialized = current_serialized
+                yield _sse("task", current, event_id=str(time.time_ns()))
+                if current.get("status") in _TERMINAL_TASK_STATUSES:
+                    return
+        except TaskEventsUnavailable:
+            yield _sse("unavailable", {"retry_in_ms": 5000})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post(

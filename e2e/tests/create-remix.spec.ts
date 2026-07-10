@@ -3,7 +3,7 @@ import { firstPublishedGame, register, signInPage } from "./helpers";
 
 test("create mock pipeline to preview and publish", async ({ page, request }) => {
   const auth = await register(request, "E2E Creator");
-  await signInPage(page, auth.token);
+  await signInPage(page, auth.session);
 
   await page.goto("/create");
   await page.getByLabel("Game idea").fill("A neon lane runner with coins, drones, and a 45 second survival goal.");
@@ -25,7 +25,7 @@ test("create mock pipeline to preview and publish", async ({ page, request }) =>
 
 test("detail remix button opens a prefilled create flow", async ({ page, request }) => {
   const auth = await register(request, "E2E Remixer");
-  await signInPage(page, auth.token);
+  await signInPage(page, auth.session);
   const source = await firstPublishedGame(request);
 
   await page.goto(`/games/${source.id}`);

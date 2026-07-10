@@ -3,7 +3,7 @@ import { register, signInPage } from "./helpers";
 
 test("switch a game back to an earlier version from Studio", async ({ page, request }) => {
   const auth = await register(request, "E2E Versioner");
-  await signInPage(page, auth.token);
+  await signInPage(page, auth.session);
 
   await page.goto("/create");
   await page.getByLabel("Game idea").fill("A compact puzzle game with glowing tiles and a timer.");

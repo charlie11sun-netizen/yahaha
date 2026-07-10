@@ -40,7 +40,7 @@ cp .env.prod.example .env
 - `SITE_PASSWORD=<一段强口令>` —— **整站访问密码**。设了它，任何人打开网站都要先输密码，
   后端 API 也要求匹配令牌（直连后端被 401 挡掉）。留空 = 公开，prod compose 会直接报错拒启。
 - `PUBLIC_WEB_URL` / `PUBLIC_API_URL` / `PUBLIC_S3_URL` —— 访客实际访问的公网地址
-  （裸 VPS 填 `http://服务器IP:3000|8000|9000`；有域名+反代就填 https 域名）。
+  （生产必须是 HTTPS；可直接使用下文 Caddy edge profile 自动申请证书）。
 - `POSTGRES_PASSWORD` / `MINIO_ROOT_PASSWORD`（=`S3_SECRET_KEY`）/ `JWT_SECRET` —— 都换成强随机值。
 - 想线上真生成游戏：`USE_REAL_MODEL=true` + 填好 `OPENAI_API_KEY` 等。
 - 生产生成强制经过独立 sandbox：Compose 已固定 `SANDBOX_REQUIRED=true`；宿主机装了 gVisor 才设 `SANDBOX_RUNTIME=runsc`，否则用加固容器的 `runc`。

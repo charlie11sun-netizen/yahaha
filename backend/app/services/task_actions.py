@@ -6,6 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.checkpointing import checkpoint_exists, delete_checkpoint_thread
 from app.core.errors import TaskErrorCode
 from app.models import Asset, Game, GameVersion, GenerationTask
 from app.models.common import GameStatus, TaskStatus, now_utc
@@ -17,6 +18,7 @@ from app.services.task_dispatch import (
     dispatch_generation_event,
     stage_generation_dispatch,
 )
+from app.services.task_events import publish_task_event
 
 
 ACTIVE_TASK_STATUSES = (TaskStatus.PENDING, TaskStatus.RUNNING)
@@ -29,6 +31,7 @@ def _commit_and_dispatch(db: Session, task: GenerationTask, queue) -> Generation
     event = stage_generation_dispatch(db, task)
     db.commit()
     db.refresh(task)
+    publish_task_event(task.id, "dispatched")
     try:
         dispatch_generation_event(db, event.id, QueueTaskDispatcher(queue))
     except Exception:  # noqa: BLE001 - the durable row lets a later scanner recover
@@ -219,18 +222,6 @@ def revise_task(db: Session, task_id: str, body: TaskRevisionIn, user, *, queue)
     return _commit_and_dispatch(db, revision, queue)
 
 
-def _resume_payload(task: GenerationTask, *, from_scratch: bool) -> dict | None:
-    if from_scratch or not task.state_json:
-        return None
-    try:
-        payload = json.loads(task.state_json)
-    except Exception:  # noqa: BLE001
-        return None
-    if isinstance(payload, dict) and isinstance(payload.get("node"), str) and isinstance(payload.get("state"), dict):
-        return payload
-    return None
-
-
 def retry_task(db: Session, task_id: str, user, *, from_scratch: bool = False, queue) -> tuple[GenerationTask, str]:
     task = owned_task(db, task_id, user)
     if task.status != TaskStatus.FAILED:
@@ -254,23 +245,18 @@ def retry_task(db: Session, task_id: str, user, *, from_scratch: bool = False, q
     if task.status != TaskStatus.FAILED:
         raise ServiceError(400, "Only failed tasks can be retried")
 
-    resume_payload = _resume_payload(task, from_scratch=from_scratch)
-    if resume_payload is None:
+    can_resume = not from_scratch and checkpoint_exists(task.id)
+    if not can_resume:
+        # A restart must not accidentally append fresh input to an old native
+        # thread. This also cleans up incomplete pre-migration checkpoint rows.
+        delete_checkpoint_thread(task.id)
         for step in list(task.steps):
             db.delete(step)
         task.current_step = 0
         task.tokens_used = 0
         task.cost_usd = None
-        task.state_json = None
         mode = "restart"
     else:
-        state = resume_payload["state"]
-        for key in ("repair_attempts", "replan_attempts", "gameplay_repair_attempts"):
-            state[key] = 0
-        for key in ("last_error", "error_code", "error_message"):
-            state.pop(key, None)
-        state["status"] = "running"
-        task.state_json = json.dumps(resume_payload, ensure_ascii=False)
         mode = "resume"
 
     task.repair_attempts = 0
@@ -294,6 +280,12 @@ def cancel_task(db: Session, task_id: str, user) -> GenerationTask:
     task.finished_at = now_utc()
     db.commit()
     db.refresh(task)
+    publish_task_event(task.id, "cancelled")
+    try:
+        # A crashed worker may no longer be present to run pipeline finalization.
+        delete_checkpoint_thread(task.id)
+    except Exception:  # noqa: BLE001 - cancellation already committed
+        logger.exception("failed to delete cancelled task checkpoint", extra={"generation_task_id": task.id})
     return task
 
 
@@ -301,5 +293,8 @@ def delete_task(db: Session, task_id: str, user) -> None:
     task = owned_task(db, task_id, user)
     if task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
         raise ServiceError(400, "Cancel the task before deleting")
+    delete_checkpoint_thread(task.id)
+    deleted_task_id = task.id
     db.delete(task)
     db.commit()
+    publish_task_event(deleted_task_id, "deleted")

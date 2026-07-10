@@ -2,7 +2,7 @@
 
 配置了对应 CLIENT_ID/SECRET 即启用；否则前端回退到 /auth/oauth/{provider}/demo。
 流程：/start 跳转授权页 → /callback 用 code 换 token、取 profile、
-upsert User + OAuthAccount、签发本站 JWT，最后重定向回前端 /login?token=...
+upsert User + OAuthAccount、签发 HttpOnly Cookie 会话，最后重定向回前端。
 """
 import datetime as dt
 import hmac
@@ -15,8 +15,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
+from app.api.user_auth import create_user_token_sync, set_session_cookie
 from app.core.config import settings
-from app.core.security import create_access_token
 from app.db.session import get_db
 from app.models import OAuthAccount, User
 from app.schemas import OAuthProvidersOut
@@ -192,9 +192,8 @@ def oauth_callback(
         # 与密码登录同一条规则：禁用账号不得经 OAuth 换取新 token
         raise HTTPException(status_code=403, detail="Account is disabled")
 
-    token = create_access_token(user.id)
-    # Fragments are not sent in HTTP requests or Referer headers. The front-end
-    # consumes and removes this value immediately.
-    response = RedirectResponse(f"{settings.FRONTEND_BASE_URL}/login#{urlencode({'token': token})}")
+    token = create_user_token_sync(user)
+    response = RedirectResponse(f"{settings.FRONTEND_BASE_URL}/login?oauth=success")
+    set_session_cookie(response, token)
     response.delete_cookie(_STATE_COOKIE, path="/auth/oauth/")
     return response

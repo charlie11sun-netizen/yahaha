@@ -997,30 +997,26 @@ type GenerationTask = {
 
 ## 10. 实时更新策略
 
-推荐两种方式：
+当前实现：
 
 ```text
-MVP：轮询
-进阶：SSE
-```
-
-MVP 轮询：
-
-```text
-GET /api/generation-tasks/:task_id
-GET /api/generation-tasks/:task_id/logs
-```
-
-轮询间隔：
-
-```text
-1.5s - 2s
+主通道：SSE
+降级：30 秒低频查询
 ```
 
 SSE：
 
 ```text
-GET /api/generation-tasks/:task_id/events
+GET /tasks/:task_id/events
+```
+
+Worker/API 每次状态、步骤或日志事务提交后，通过 Redis Pub/Sub 发布轻量失效信号；SSE API 再从 PostgreSQL 读取完整任务快照。Redis 不保存业务状态。
+
+降级查询：
+
+```text
+GET /tasks/:task_id
+30s，仅用于 SSE 断线兜底
 ```
 
 事件示例：
@@ -1080,7 +1076,7 @@ ActionBar
 ```text
 拉取任务状态
 聚合步骤信息
-控制轮询或 SSE
+维护 SSE 连接、重连和 30 秒兜底查询
 根据任务状态渲染页面
 ```
 

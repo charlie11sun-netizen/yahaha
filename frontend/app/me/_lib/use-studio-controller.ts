@@ -126,8 +126,7 @@ export function useStudioController() {
       const patch: { display_name?: string; email?: string } = { display_name: name };
       if (email.trim() && email.trim() !== user?.email) patch.email = email.trim();
       const updated = await api.updateMe(patch);
-      const token = localStorage.getItem("pf_token");
-      if (token) setSession(token, updated);
+      setSession(updated);
       flash("Profile updated");
     } catch (err) {
       flash(err instanceof Error ? err.message : "Could not update profile");
@@ -139,8 +138,7 @@ export function useStudioController() {
   const setAvatar = async (avatar: string) => {
     try {
       const updated = await api.updateMe({ avatar });
-      const token = localStorage.getItem("pf_token");
-      if (token) setSession(token, updated);
+      setSession(updated);
       flash("Avatar updated");
     } catch {
       flash("Could not update avatar");
@@ -170,7 +168,7 @@ export function useStudioController() {
     try {
       setDeleting(true);
       await api.deleteAccount();
-      logout();
+      await logout();
       flash("Account deleted");
       router.push("/");
     } catch (err) {

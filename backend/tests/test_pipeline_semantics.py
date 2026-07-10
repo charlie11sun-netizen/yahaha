@@ -16,8 +16,14 @@ class _StubGraph:
     def __init__(self, fn):
         self._fn = fn
 
-    def invoke(self, initial):
+    def invoke(self, initial, _config=None):
         return self._fn(initial)
+
+    def get_state_history(self, _config):
+        return iter(())
+
+    def update_state(self, config, _values):
+        return config
 
 
 def test_begin_step_aborts_cancelled_task(client, db_session_factory, monkeypatch):
@@ -76,7 +82,7 @@ def test_run_generation_skips_terminal_task(client, db_session_factory, monkeypa
     db.commit()
     db.close()
 
-    def _explode():
+    def _explode(**_kwargs):
         raise AssertionError("graph must not run for a terminal task")
 
     monkeypatch.setattr("app.agents.pipeline.SessionLocal", db_session_factory)
@@ -102,7 +108,7 @@ def test_run_generation_skips_stale_dispatch_generation(client, db_session_facto
     monkeypatch.setattr("app.agents.pipeline.SessionLocal", db_session_factory)
     monkeypatch.setattr(
         "app.agents.graph.build_graph",
-        lambda: (_ for _ in ()).throw(AssertionError("stale delivery must not run")),
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("stale delivery must not run")),
     )
     run_generation(task_id, expected_dispatch_generation=current_generation - 1)
 
@@ -130,7 +136,7 @@ def test_run_generation_rerun_clears_stale_steps(client, db_session_factory, mon
     monkeypatch.setattr("app.agents.pipeline.SessionLocal", db_session_factory)
     monkeypatch.setattr(
         "app.agents.graph.build_graph",
-        lambda: _StubGraph(lambda initial: {"status": "failed", "error_message": "boom"}),
+        lambda **_kwargs: _StubGraph(lambda initial: {"status": "failed", "error_message": "boom"}),
     )
     run_generation(task_id)
 
@@ -168,7 +174,7 @@ def test_cancel_mid_publish_cleans_orphan_game(client, db_session_factory, monke
         return {"status": "succeeded", "game_id": created["game_id"], "version_id": "v-x"}
 
     monkeypatch.setattr("app.agents.pipeline.SessionLocal", db_session_factory)
-    monkeypatch.setattr("app.agents.graph.build_graph", lambda: _StubGraph(_publish_then_cancelled))
+    monkeypatch.setattr("app.agents.graph.build_graph", lambda **_kwargs: _StubGraph(_publish_then_cancelled))
     monkeypatch.setattr(s3, "delete_prefix", lambda prefix: None)
     run_generation(task_id)
 
@@ -210,239 +216,296 @@ def test_publish_generated_idempotent_by_source_task(client, db_session_factory,
     db.close()
 
 
-# ---- 断点续跑：节点快照 → 入口直跳失败节点，成本跨次累计 ----
+# ---- LangGraph 原生检查点：崩溃恢复、失败 replay、从头重跑 ----
 
-def _snapshot_json(node="gameplay_qa", **state_overrides):
-    import json
+def _native_retry_graph(checkpointer, calls):
+    """A tiny durable graph with the same failed-node name as production."""
+    from typing import TypedDict
 
-    state = {
-        "task_kind": "generation",
-        "prompt": "a neon breakout game",
-        "dimension": "2d",
-        "game_spec": {"title": "Snap"},
-        "generated_files": [{"path": "game.js", "content": "var x=1;"}],
-        "repair_attempts": 1,
-        "replan_attempts": 1,
-        "gameplay_repair_attempts": 2,
-        "last_error": "gameplay QA failed",
-    }
-    state.update(state_overrides)
-    return json.dumps({"node": node, "state": state}, ensure_ascii=False)
+    from langgraph.graph import END, START, StateGraph
 
+    class RetryState(TypedDict, total=False):
+        task_id: str
+        status: str
+        repair_attempts: int
+        replan_attempts: int
+        gameplay_repair_attempts: int
+        last_error: str | None
+        error_code: str | None
+        error_message: str | None
+        game_id: str
+        version_id: str
 
-def test_begin_step_persists_resume_snapshot(client, db_session_factory, monkeypatch):
-    import json
+    def gameplay_qa(state):
+        calls.append(dict(state))
+        if len(calls) == 1:
+            return {
+                "status": "failed",
+                "repair_attempts": 2,
+                "replan_attempts": 1,
+                "gameplay_repair_attempts": 2,
+                "last_error": "gameplay QA failed",
+                "error_message": "gameplay QA failed",
+            }
+        return {"status": "succeeded", "game_id": "g-native", "version_id": "v-native"}
 
-    from app.agents import tracing
-    from app.models import GenerationTask
-
-    headers = auth_headers(client, email="p0@t.com", display_name="P0")
-    task_id = _make_task(client, headers)
-    monkeypatch.setattr("app.agents.tracing.SessionLocal", db_session_factory)
-    state = {"task_id": task_id, "game_spec": {"title": "S"}, "_logs": ["private"], "_resume_node": "x"}
-    tracing.begin_step(task_id, "GameplayQAAgent", "Gameplay QA", node_name="gameplay_qa", state=state)
-
-    db = db_session_factory()
-    payload = json.loads(db.get(GenerationTask, task_id).state_json)
-    db.close()
-    assert payload["node"] == "gameplay_qa"
-    assert payload["state"]["game_spec"] == {"title": "S"}
-    # 下划线键不入快照，避免续跑套娃
-    assert "_logs" not in payload["state"] and "_resume_node" not in payload["state"]
-
-
-def test_entry_node_router_resume_and_default():
-    from app.agents import nodes
-
-    assert nodes.entry_node_router({}) == "safety_intake"
-    assert nodes.entry_node_router({"_resume_node": "gameplay_qa"}) == "gameplay_qa"
-    # 未知节点名回落全新跑
-    assert nodes.entry_node_router({"_resume_node": "nope"}) == "safety_intake"
+    builder = StateGraph(RetryState)
+    builder.add_node("gameplay_qa", gameplay_qa)
+    builder.add_node("failed", lambda _state: {})
+    builder.add_edge(START, "gameplay_qa")
+    builder.add_conditional_edges(
+        "gameplay_qa",
+        lambda state: "failed" if state.get("status") == "failed" else "done",
+        {"failed": "failed", "done": END},
+    )
+    builder.add_edge("failed", END)
+    return builder.compile(checkpointer=checkpointer)
 
 
-def test_run_generation_resumes_from_snapshot(client, db_session_factory, monkeypatch):
-    """RUNNING 重投递 + 有快照：保留步骤、悬挂步骤翻 failed、tokens 不清零、
-    initial 从快照重建并带 _resume_node。"""
+def _seed_native_failure(task_id, calls):
+    from app.core.checkpointing import checkpoint_config, open_checkpointer
+
+    with open_checkpointer() as saver:
+        graph = _native_retry_graph(saver, calls)
+        final = graph.invoke(
+            {
+                "task_id": task_id,
+                "status": "running",
+                "repair_attempts": 0,
+                "replan_attempts": 0,
+                "gameplay_repair_attempts": 0,
+            },
+            checkpoint_config(task_id),
+        )
+    assert final["status"] == "failed"
+
+
+def test_worker_redelivery_resumes_native_checkpoint(client, db_session_factory, monkeypatch):
+    """A worker crash replays the interrupted node and keeps prior cost/steps."""
     from app.agents.pipeline import run_generation
+    from app.core.checkpointing import checkpoint_config, checkpoint_exists, open_checkpointer
     from app.models import AgentStep, GenerationTask
     from app.models.common import StepStatus, TaskStatus
 
-    headers = auth_headers(client, email="p0@t.com", display_name="P0")
+    headers = auth_headers(client, email="checkpoint-crash@t.com", display_name="P0")
     task_id = _make_task(client, headers)
+    calls = []
+    should_crash = {"value": True}
+
+    def build_crashing_graph(checkpointer):
+        from typing import TypedDict
+
+        from langgraph.graph import END, START, StateGraph
+
+        class CrashState(TypedDict, total=False):
+            task_id: str
+            status: str
+            repair_attempts: int
+            replan_attempts: int
+            gameplay_repair_attempts: int
+            game_id: str
+            version_id: str
+
+        def gameplay_qa(state):
+            calls.append(dict(state))
+            if should_crash["value"]:
+                should_crash["value"] = False
+                raise RuntimeError("worker crashed")
+            return {"status": "succeeded", "game_id": "g-crash", "version_id": "v-crash"}
+
+        builder = StateGraph(CrashState)
+        builder.add_node("gameplay_qa", gameplay_qa)
+        builder.add_edge(START, "gameplay_qa")
+        builder.add_edge("gameplay_qa", END)
+        return builder.compile(checkpointer=checkpointer)
+
+    with open_checkpointer() as saver:
+        graph = build_crashing_graph(saver)
+        with pytest.raises(RuntimeError, match="worker crashed"):
+            graph.invoke(
+                {
+                    "task_id": task_id,
+                    "status": "running",
+                    "repair_attempts": 1,
+                    "replan_attempts": 1,
+                    "gameplay_repair_attempts": 1,
+                },
+                checkpoint_config(task_id),
+            )
+
     db = db_session_factory()
     task = db.get(GenerationTask, task_id)
     task.status = TaskStatus.RUNNING
     task.tokens_used = 4321
-    task.state_json = _snapshot_json()
-    db.add(AgentStep(task_id=task_id, seq=1, agent="A", name="done-1", status=StepStatus.DONE, tokens=0))
-    db.add(AgentStep(task_id=task_id, seq=2, agent="B", name="crashed-2", status=StepStatus.RUNNING, tokens=0))
-    db.commit()
-    db.close()
-
-    seen = {}
-
-    def _capture(initial):
-        seen.update(initial)
-        return {"status": "failed", "error_message": "still boom"}
-
-    monkeypatch.setattr("app.agents.pipeline.SessionLocal", db_session_factory)
-    monkeypatch.setattr("app.agents.graph.build_graph", lambda: _StubGraph(_capture))
-    run_generation(task_id)
-
-    assert seen["_resume_node"] == "gameplay_qa"
-    assert seen["generated_files"] == [{"path": "game.js", "content": "var x=1;"}]
-    assert seen["task_id"] == task_id and seen["status"] == "running"
-
-    db = db_session_factory()
-    task = db.get(GenerationTask, task_id)
-    steps = {s.name: s.status for s in db.query(AgentStep).filter_by(task_id=task_id)}
-    assert steps == {"done-1": StepStatus.DONE, "crashed-2": StepStatus.FAILED}
-    assert task.tokens_used == 4321  # 成本跨次累计，不清零
-    assert task.status == TaskStatus.FAILED
-    assert task.state_json is not None  # 失败保留快照，供下一次 retry 续跑
-    db.close()
-
-
-def test_run_generation_clears_snapshot_on_success(client, db_session_factory, monkeypatch):
-    from app.agents.pipeline import run_generation
-    from app.models import GenerationTask
-    from app.models.common import TaskStatus
-
-    headers = auth_headers(client, email="p0@t.com", display_name="P0")
-    task_id = _make_task(client, headers)
-    db = db_session_factory()
-    task = db.get(GenerationTask, task_id)
-    task.status = TaskStatus.RUNNING
-    task.state_json = _snapshot_json(node="publish_artifact")
+    db.add(
+        AgentStep(
+            task_id=task_id,
+            seq=1,
+            agent="GameplayQAAgent",
+            name="Gameplay QA",
+            status=StepStatus.RUNNING,
+            tokens=0,
+        )
+    )
     db.commit()
     db.close()
 
     monkeypatch.setattr("app.agents.pipeline.SessionLocal", db_session_factory)
     monkeypatch.setattr(
         "app.agents.graph.build_graph",
-        lambda: _StubGraph(lambda initial: {"status": "succeeded", "game_id": "g-1", "version_id": "v-1"}),
+        lambda *, checkpointer=None: build_crashing_graph(checkpointer),
+    )
+    run_generation(task_id)
+
+    db = db_session_factory()
+    task = db.get(GenerationTask, task_id)
+    steps = db.query(AgentStep).filter_by(task_id=task_id).all()
+    assert task.status == TaskStatus.SUCCEEDED
+    assert task.tokens_used == 4321
+    assert len(steps) == 1 and steps[0].status == StepStatus.FAILED
+    assert calls[-1]["gameplay_repair_attempts"] == 1
+    assert checkpoint_exists(task_id) is False
+    db.close()
+
+
+def test_worker_redelivery_finalizes_completed_checkpoint_without_rerun(
+    client, db_session_factory, monkeypatch
+):
+    from app.agents.pipeline import run_generation
+    from app.core.checkpointing import checkpoint_config, checkpoint_exists, open_checkpointer
+    from app.models import GenerationTask
+    from app.models.common import TaskStatus
+
+    headers = auth_headers(client, email="checkpoint-complete@t.com", display_name="P0")
+    task_id = _make_task(client, headers)
+    calls = [{"preseed": True}]
+    with open_checkpointer() as saver:
+        final = _native_retry_graph(saver, calls).invoke(
+            {
+                "task_id": task_id,
+                "status": "running",
+                "repair_attempts": 0,
+                "replan_attempts": 0,
+                "gameplay_repair_attempts": 0,
+            },
+            checkpoint_config(task_id),
+        )
+    assert final["status"] == "succeeded"
+    call_count = len(calls)
+
+    db = db_session_factory()
+    db.get(GenerationTask, task_id).status = TaskStatus.RUNNING
+    db.commit()
+    db.close()
+
+    monkeypatch.setattr("app.agents.pipeline.SessionLocal", db_session_factory)
+    monkeypatch.setattr(
+        "app.agents.graph.build_graph",
+        lambda *, checkpointer=None: _native_retry_graph(checkpointer, calls),
+    )
+    run_generation(task_id)
+
+    db = db_session_factory()
+    assert db.get(GenerationTask, task_id).status == TaskStatus.SUCCEEDED
+    assert len(calls) == call_count
+    assert checkpoint_exists(task_id) is False
+    db.close()
+
+
+def test_retry_endpoint_replays_failed_node_and_resets_budgets(
+    client, db_session_factory, monkeypatch
+):
+    from app.agents.pipeline import run_generation
+    from app.core.checkpointing import checkpoint_exists
+    from app.models import AgentStep, GenerationTask
+    from app.models.common import StepStatus, TaskStatus
+
+    headers = auth_headers(client, email="checkpoint-retry@t.com", display_name="P0")
+    task_id = _make_task(client, headers)
+    calls = []
+    _seed_native_failure(task_id, calls)
+
+    db = db_session_factory()
+    task = db.get(GenerationTask, task_id)
+    task.status = TaskStatus.FAILED
+    task.error = "gameplay QA failed"
+    task.tokens_used = 999
+    db.add(
+        AgentStep(
+            task_id=task_id,
+            seq=1,
+            agent="GameplayQAAgent",
+            name="Gameplay QA",
+            status=StepStatus.FAILED,
+            tokens=0,
+        )
+    )
+    db.commit()
+    db.close()
+
+    response = client.post(f"/tasks/{task_id}/retry", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["mode"] == "resume"
+
+    monkeypatch.setattr("app.agents.pipeline.SessionLocal", db_session_factory)
+    monkeypatch.setattr(
+        "app.agents.graph.build_graph",
+        lambda *, checkpointer=None: _native_retry_graph(checkpointer, calls),
     )
     run_generation(task_id)
 
     db = db_session_factory()
     task = db.get(GenerationTask, task_id)
     assert task.status == TaskStatus.SUCCEEDED
-    assert task.state_json is None  # 成功后快照立即释放
+    assert task.tokens_used == 999
+    assert db.query(AgentStep).filter_by(task_id=task_id).count() == 1
+    assert calls[-1]["repair_attempts"] == 0
+    assert calls[-1]["replan_attempts"] == 0
+    assert calls[-1]["gameplay_repair_attempts"] == 0
+    assert calls[-1]["last_error"] is None
+    assert checkpoint_exists(task_id) is False
     db.close()
 
 
-def test_retry_endpoint_resumes_and_resets_budgets(client, db_session_factory):
-    import json
-
+def test_retry_endpoint_from_scratch_deletes_native_thread(client, db_session_factory):
+    from app.core.checkpointing import checkpoint_exists
     from app.models import AgentStep, GenerationTask
     from app.models.common import StepStatus, TaskStatus
 
-    headers = auth_headers(client, email="p0@t.com", display_name="P0")
+    headers = auth_headers(client, email="checkpoint-restart@t.com", display_name="P0")
     task_id = _make_task(client, headers)
-    db = db_session_factory()
-    task = db.get(GenerationTask, task_id)
-    task.status = TaskStatus.FAILED
-    task.error = "gameplay QA failed"
-    task.tokens_used = 999
-    task.state_json = _snapshot_json()
-    db.add(AgentStep(task_id=task_id, seq=1, agent="A", name="kept", status=StepStatus.DONE, tokens=0))
-    db.commit()
-    db.close()
+    _seed_native_failure(task_id, [])
 
-    resp = client.post(f"/tasks/{task_id}/retry", headers=headers)
-    assert resp.status_code == 200
-    assert resp.json()["mode"] == "resume"
-
-    db = db_session_factory()
-    task = db.get(GenerationTask, task_id)
-    payload = json.loads(task.state_json)
-    assert task.status == TaskStatus.PENDING and task.error is None
-    assert task.tokens_used == 999  # 续跑不清 tokens
-    assert db.query(AgentStep).filter_by(task_id=task_id).count() == 1  # 步骤保留
-    # 修复预算重置，否则会在耗尽处立刻再失败；失败痕迹清除
-    assert payload["state"]["repair_attempts"] == 0
-    assert payload["state"]["gameplay_repair_attempts"] == 0
-    assert payload["state"]["replan_attempts"] == 0
-    assert "last_error" not in payload["state"]
-    db.close()
-
-
-def test_retry_endpoint_from_scratch_keeps_old_semantics(client, db_session_factory):
-    from app.models import AgentStep, GenerationTask
-    from app.models.common import StepStatus, TaskStatus
-
-    headers = auth_headers(client, email="p0@t.com", display_name="P0")
-    task_id = _make_task(client, headers)
     db = db_session_factory()
     task = db.get(GenerationTask, task_id)
     task.status = TaskStatus.FAILED
     task.tokens_used = 999
-    task.state_json = _snapshot_json()
     db.add(AgentStep(task_id=task_id, seq=1, agent="A", name="stale", status=StepStatus.DONE, tokens=0))
     db.commit()
     db.close()
 
-    resp = client.post(f"/tasks/{task_id}/retry?from_scratch=true", headers=headers)
-    assert resp.status_code == 200
-    assert resp.json()["mode"] == "restart"
+    response = client.post(f"/tasks/{task_id}/retry?from_scratch=true", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["mode"] == "restart"
 
     db = db_session_factory()
     task = db.get(GenerationTask, task_id)
     assert task.tokens_used == 0
-    assert task.state_json is None
     assert db.query(AgentStep).filter_by(task_id=task_id).count() == 0
+    assert checkpoint_exists(task_id) is False
     db.close()
 
 
-def test_graph_resume_entry_jumps_to_failed_node(client, db_session_factory, monkeypatch):
-    """真图冒烟：mock 流水线从 gameplay_qa 断点进入，不重跑前面的节点，
-    且能一路走到发布成功。"""
-    from app.agents.graph import build_graph
-    from app.models import AgentStep, User
+def test_cancel_deletes_native_checkpoint_thread(client):
+    from app.core.checkpointing import checkpoint_exists
 
-    headers = auth_headers(client, email="p0@t.com", display_name="P0")
+    headers = auth_headers(client, email="checkpoint-cancel@t.com", display_name="P0")
     task_id = _make_task(client, headers)
-    db = db_session_factory()
-    user_id = db.query(User).first().id
-    db.close()
-    monkeypatch.setattr("app.agents.tracing.SessionLocal", db_session_factory)
-    monkeypatch.setattr("app.db.session.SessionLocal", db_session_factory)
-    monkeypatch.setattr("app.agents.tracing.time.sleep", lambda s: None)
+    _seed_native_failure(task_id, [])
 
-    game_js = (
-        "var score=0;var onkeydown=function(){};function restart(){score=0;}\n"
-        "setInterval(function(){score+=1;},100);\n"
-        + "// gameplay filler so the bundle clears the minimum runnable-size heuristic\n" * 8
-    )
-    files = [
-        {"path": "index.html", "content": "<html><canvas></canvas><script src=\"game.js\"></script></html>"},
-        {"path": "style.css", "content": "canvas{display:block}"},
-        {"path": "game.js", "content": game_js},
-    ]
-    final = build_graph().invoke({
-        "task_id": task_id,
-        "user_id": user_id,
-        "use_real": False,
-        "status": "running",
-        "task_kind": "generation",
-        "dimension": "2d",
-        "_resume_node": "gameplay_qa",
-        "game_spec": {"title": "Resume Smoke", "genre": "arcade", "summary": "s", "tags": []},
-        "game_design": {"archetype": "topdown_collect"},
-        "generated_files": files,
-        "validation_result": {"valid": True, "errors": []},
-        "repair_attempts": 0,
-        "replan_attempts": 0,
-        "gameplay_repair_attempts": 0,
-    })
-
-    assert final.get("status") == "succeeded"
-    db = db_session_factory()
-    ran = [s.name for s in db.query(AgentStep).filter_by(task_id=task_id).order_by(AgentStep.seq)]
-    db.close()
-    # 断点之前的节点（Safety Intake / Code Generation 等）一个都不该重跑
-    assert "Safety Intake" not in ran and "Code Generation" not in ran
-    assert ran[0] == "Gameplay QA"
+    response = client.post(f"/tasks/{task_id}/cancel", headers=headers)
+    assert response.status_code == 200
+    assert checkpoint_exists(task_id) is False
 
 
 def test_capture_success_memories_idempotent(client, db_session_factory):

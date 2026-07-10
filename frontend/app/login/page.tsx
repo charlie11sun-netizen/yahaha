@@ -44,34 +44,22 @@ function LoginInner() {
     api.oauthProviders().then(setProviders).catch(() => setProviders({ _demo: false }));
   }, []);
 
-  const done = (token: string, user: User) => {
-    setSession(token, user);
+  const done = (user: User) => {
+    setSession(user);
     flash(`Signed in as ${user.name}`);
     router.push(postLoginTarget);
   };
 
   useEffect(() => {
-    const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-    const token = fragment.get("token") || params.get("token");
-    if (!token) return;
-    if (fragment.has("token")) {
-      window.history.replaceState(null, "", window.location.pathname + window.location.search);
-    } else {
-      const rest = new URLSearchParams(window.location.search);
-      rest.delete("token");
-      const qs = rest.toString();
-      window.history.replaceState(null, "", window.location.pathname + (qs ? `?${qs}` : ""));
-    }
-    localStorage.setItem("pf_token", token);
+    if (params.get("oauth") !== "success") return;
     api
       .me()
       .then((user) => {
-        setSession(token, user);
+        setSession(user);
         flash(`Signed in as ${user.name}`);
         router.replace(postLoginTarget);
       })
       .catch(() => {
-        localStorage.removeItem("pf_token");
         setErr("OAuth sign-in failed");
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -86,7 +74,7 @@ function LoginInner() {
     setSubmitting(true);
     try {
       const result = isSignup ? await api.register(email, pass, name.trim()) : await api.login(email, pass);
-      done(result.token, result.user);
+      done(result.user);
     } catch (error) {
       setErr(error instanceof ApiError ? error.message : "Something went wrong");
     } finally {
@@ -105,7 +93,7 @@ function LoginInner() {
     }
     try {
       const result = await api.oauthDemo(provider);
-      setSession(result.token, result.user);
+      setSession(result.user);
       flash(`Connected via ${provider} OAuth (demo)`);
       router.push(intent === "create" ? "/create" : "/");
     } catch {

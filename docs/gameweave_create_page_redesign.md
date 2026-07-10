@@ -225,7 +225,7 @@ You can leave this page
 | Step 6 of 8 | 根据 `current_step` 映射得到 |
 | Validating build | `current_step_label` |
 | Last update 4s ago | `last_event_at` |
-| Connected | SSE / Polling / WebSocket 状态 |
+| Connected | SSE 连接状态（断线时指数退避重连） |
 | Elapsed 38s | `now - task.created_at` |
 | You can leave this page | 任务已持久化并可从 My Tasks 恢复 |
 
@@ -694,7 +694,7 @@ Meta: 12–13px / 400
 - Full Activity Drawer
 - Technical Logs 折叠面板
 - Repair / Replan 子状态
-- SSE 或短轮询实时更新
+- SSE 实时更新 + 30 秒低频查询兜底
 - 任务离开页面后可恢复
 
 ### P2：加分项
@@ -705,4 +705,3 @@ Meta: 12–13px / 400
 - 生成质量评分
 - 版本对比 / Regenerate history
 - Play 页面加载埋点联动
-

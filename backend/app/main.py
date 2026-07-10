@@ -53,6 +53,36 @@ async def service_error_handler(_request: Request, exc: ServiceError):
 # CORS (added last, below) still wraps its 401 responses.
 _GATE_EXEMPT_EXACT = {"/health", "/health/ready"}
 _GATE_EXEMPT_PREFIXES = ("/auth/oauth",)
+_UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _trusted_browser_origins() -> set[str]:
+    return {
+        origin.rstrip("/")
+        for origin in [
+            *settings.cors_origins_list,
+            settings.FRONTEND_BASE_URL,
+            settings.OAUTH_REDIRECT_BASE,
+        ]
+        if origin
+    }
+
+
+@app.middleware("http")
+async def csrf_origin_guard(request: Request, call_next):
+    """Cookie-authenticated mutations must originate from a trusted browser origin."""
+
+    if (
+        request.method in _UNSAFE_METHODS
+        and request.cookies.get(settings.AUTH_COOKIE_NAME)
+    ):
+        origin = (request.headers.get("Origin") or "").rstrip("/")
+        if not origin or origin not in _trusted_browser_origins():
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF_ORIGIN_MISMATCH"},
+            )
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -110,7 +140,7 @@ app.add_middleware(
     allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Gate-Token", "X-Request-ID"],
+    allow_headers=["Content-Type", "X-Gate-Token", "X-Request-ID"],
 )
 
 app.include_router(auth.router)

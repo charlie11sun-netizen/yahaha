@@ -48,9 +48,9 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 ```
 SITE_PASSWORD=<访问密码>
-PUBLIC_WEB_URL=http://<本机IP>:3000
-PUBLIC_API_URL=http://<本机IP>:8000
-PUBLIC_S3_URL=http://<本机IP>:9000
+PUBLIC_WEB_URL=https://<your-domain>
+PUBLIC_API_URL=https://<your-domain>/api
+PUBLIC_S3_URL=https://<your-domain>/s3
 POSTGRES_PASSWORD=<强密码>
 MINIO_ROOT_PASSWORD=<强密码>
 S3_SECRET_KEY=<与 MINIO_ROOT_PASSWORD 相同>
@@ -73,7 +73,7 @@ TASK_TOKEN_BUDGET=300000
 USE_REAL_MODEL=false   # 只展示/试玩时最省预算；需要现场生成再改 true
 ```
 
-如使用单域名 TLS 反代，可启用可选 edge profile：
+生产会话 Cookie 强制 `Secure`，因此需要 TLS。使用单域名反代时，启用 edge profile：
 
 ```sh
 PUBLIC_HOST=<your-domain>

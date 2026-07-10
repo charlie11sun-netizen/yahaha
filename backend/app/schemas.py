@@ -508,7 +508,6 @@ class FastAPIUserUpdate(fastapi_users_schemas.BaseUserUpdate):
 
 
 class AuthOut(BaseModel):
-    token: str
     user: UserOut
 
 

@@ -88,6 +88,3 @@ class GenerationState(TypedDict, total=False):
     _agent: str
     _logs: list
     _tokens_delta: int
-    # 断点续跑：pipeline 从 state_json 快照恢复时注入，入口路由据此跳到失败节点。
-    # 下划线前缀键不写入快照，避免续跑套娃。
-    _resume_node: str

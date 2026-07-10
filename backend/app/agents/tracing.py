@@ -12,6 +12,7 @@ from app.core.telemetry import agent_span, bind_context, get_context
 from app.db.session import SessionLocal
 from app.models import AgentLog, AgentStep, GenerationTask
 from app.models.common import StepStatus, TaskStatus, now_utc
+from app.services.task_events import publish_task_event
 from sqlalchemy import func
 
 
@@ -40,18 +41,7 @@ _START_HINTS = {
 }
 
 
-def _state_snapshot(node_name: str, state: dict) -> str | None:
-    """断点续跑快照：{"node": 当前节点, "state": 公开状态键}。
-    下划线前缀键（_logs/_resume_node 等）不入快照；序列化失败不阻断生成。"""
-    try:
-        public = {k: v for k, v in state.items() if not str(k).startswith("_")}
-        return json.dumps({"node": node_name, "state": public}, ensure_ascii=False, default=str)
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def begin_step(task_id: str, agent: str, display: str,
-               node_name: str | None = None, state: dict | None = None) -> str | None:
+def begin_step(task_id: str, agent: str, display: str) -> str | None:
     db = SessionLocal()
     try:
         task = db.get(GenerationTask, task_id)
@@ -101,13 +91,8 @@ def begin_step(task_id: str, agent: str, display: str,
         db.add(AgentLog(step_id=step.id, seq=0, line=f"started {display}: {hint}"))
         task.current_step = seq
         task.current_agent = agent
-        # 节点开始 = 快照点：存"这个节点的输入"。节点失败/进程崩溃后，续跑即重跑
-        # 该节点。借用本函数固有的这次事务，不新增 DB 往返。
-        if node_name and state is not None:
-            snapshot = _state_snapshot(node_name, state)
-            if snapshot:
-                task.state_json = snapshot
         db.commit()
+        publish_task_event(task_id, "step_started")
         bind_context(task_id=task_id, step_id=step.id, agent=agent, node_name=display)
         return step.id
     finally:
@@ -139,6 +124,9 @@ def record_step_log(
         return False
     db = SessionLocal()
     try:
+        step = db.get(AgentStep, target_step_id)
+        if not step:
+            return False
         seq = (
             db.query(func.count(AgentLog.id))
             .filter(AgentLog.step_id == target_step_id)
@@ -155,6 +143,7 @@ def record_step_log(
             )
         )
         db.commit()
+        publish_task_event(step.task_id, "log_appended")
         return True
     except Exception:  # noqa: BLE001
         db.rollback()
@@ -196,6 +185,7 @@ def finish_step(task_id, step_id, logs, tokens=0, repair=None, replan=None, fail
             if design is not None:
                 task.design_json = json.dumps(design, ensure_ascii=False)
         db.commit()
+        publish_task_event(task_id, "step_finished")
     finally:
         db.close()
 
@@ -207,7 +197,7 @@ def logged(node_name: str):
     def deco(fn):
         def wrapper(state: dict):
             task_id = state.get("task_id")
-            sid = begin_step(task_id, agent, display, node_name=node_name, state=state)
+            sid = begin_step(task_id, agent, display)
             if not state.get("use_real"):
                 time.sleep(0.45)  # mock 节点太快，停顿让 running 态可见
             with agent_span(

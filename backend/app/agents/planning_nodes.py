@@ -6,7 +6,6 @@ from app.agents.nodes_common import (
     MAX_GAMEPLAY_REPAIR,
     MAX_REPAIR,
     MAX_REPLAN,
-    STEP_META,
     TaskErrorCode,
     _ARCHETYPES_3D,
     _clip,
@@ -303,15 +302,6 @@ def should_continue_after_safety(state: dict) -> str:
     return "memory_retrieval"
 
 
-def entry_node_router(state: dict) -> str:
-    # 断点续跑入口：pipeline 从 state_json 快照恢复时注入 _resume_node，直接跳到
-    # 失败节点重跑（同一任务行输入不可变，原次 safety_result 已在快照里，安检
-    # 结论仍然有效）；正常任务照旧从 safety_intake 全链路开始。未知节点名一律
-    # 回落全新跑，绝不比旧路径更差。
-    node = state.get("_resume_node")
-    return node if node in STEP_META else "safety_intake"
-
-
 __all__ = [
     "intent_spec_node",
     "brief_expansion_node",
@@ -325,5 +315,4 @@ __all__ = [
     "failed_node",
     "done_node",
     "should_continue_after_safety",
-    "entry_node_router",
 ]

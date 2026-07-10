@@ -201,23 +201,23 @@ Replan **不会**跳过任何安全 / 校验 / 发布步骤，也不会改变对
 
 ### 2.6 断点续跑（resume-from-failed-node）
 
-失败不再意味着全链路重跑。每个节点开始时，`tracing.begin_step` 把**该节点的输入状态**
-（剥掉 `_` 前缀的流式键）以 `{"node", "state"}` 快照写进 `generation_tasks.state_json`
-——借用它固有的那次 DB 事务，不新增往返。快照永远指向"正在跑的节点"，节点失败或
-进程崩溃后，续跑即重跑该节点。
+失败不再意味着全链路重跑。图以 `GenerationTask.id` 作为 LangGraph `thread_id`，
+生产环境由官方 `PostgresSaver` 在每个 super-step 后持久化状态、待执行节点与
+通道版本。SQLite 测试使用进程内 `InMemorySaver`，不作为生产降级。
 
-两条恢复路径共用同一机制（`pipeline._load_resume_snapshot` + 图入口
-`entry_node_router` 按 `_resume_node` 直跳）：
+两条恢复路径共用 LangGraph 原生 checkpoint history / replay 机制：
 
 * **显式重试**：`POST /tasks/{id}/retry` 默认续跑——保留已完成步骤与 `tokens_used`
-  （成本跨次累计），重置 repair / gameplay_repair / replan 预算（失败任务往往停在
-  预算耗尽处，不重置会立刻再失败）。`?from_scratch=true` 回到旧的清场全重跑。
-* **worker 崩溃重投递**：RUNNING 任务带着快照被重投递时，不再清空步骤从头跑，
-  而是把悬挂的 running 步骤翻成 failed 后从崩溃节点继续；无快照才回落旧语义。
+  （成本跨次累计）。逻辑失败已经走到 `END` 时，从 history 中取失败节点之前的
+  checkpoint，用 `graph.update_state` 重置 repair / gameplay_repair / replan 预算后 replay。
+  `?from_scratch=true` 删除整个 checkpoint thread 并清场全重跑。
+* **worker 崩溃重投递**：Celery `acks_late` 重投递 RUNNING 任务时，从最新成功
+  checkpoint 的 `next` 节点继续；悬挂的 running 步骤翻成 failed，token / 成本不清零。
+  如果图已成功而业务收尾前崩溃，直接用完成 checkpoint 收尾，不重跑发布。
 
-安全边界不变：同一任务行的输入不可变，原次 `safety_result` 就在快照里，跳过安检
-不构成绕过；未知节点名一律回落 `safety_intake` 全新跑。任务成功或取消后快照即清
-（可达 MB 级）。注意 `TASK_TOKEN_BUDGET` 按任务累计——预算耗尽的失败只能
+安全边界不变：恢复的是同一 thread 的图状态，不能由客户端指定跳转节点；
+缺失或不可用的 checkpoint 会回落 `safety_intake` 全新跑。任务成功、取消或删除后释放
+checkpoint thread，失败时保留以供 Retry。注意 `TASK_TOKEN_BUDGET` 按任务累计——预算耗尽的失败只能
 `from_scratch=true` 重置后重试，这是预算语义的一部分而非缺陷。
 
 ### 2.6 代码生成：模型优先（model-first）
