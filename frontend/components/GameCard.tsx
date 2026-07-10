@@ -1,7 +1,5 @@
-"use client";
-
 import { Play, Sparkles } from "lucide-react";
-import { useRouter } from "next/navigation";
+import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,18 +8,16 @@ import { coverBackgroundStyle } from "@/lib/cover";
 import type { Game } from "@/lib/types";
 
 export default function GameCard({ game }: { game: Game }) {
-  const router = useRouter();
   const isPublished = game.status === "published";
   const coverStyle = coverBackgroundStyle(game.cover);
   const tags = (game.tags.length ? game.tags : [game.genre]).slice(0, 4);
 
   return (
     <Card className="group gap-0 overflow-hidden rounded-lg border-slate-200/80 bg-white/90 p-0 pt-0 shadow-sm transition-all hover:-translate-y-1 hover:border-indigo-200 hover:shadow-xl hover:shadow-indigo-500/10">
-      <button
+      <Link
         className="relative aspect-[16/10] w-full overflow-hidden bg-slate-900 text-left"
-        onClick={() => router.push(`/games/${game.id}`)}
+        href={`/games/${game.id}`}
         style={coverStyle}
-        type="button"
       >
         <span className="absolute inset-0 bg-gradient-to-t from-slate-950/75 via-slate-950/10 to-transparent" />
         <Badge className="absolute left-3 top-3 border-white/20 bg-white/90 text-slate-900" variant="outline">
@@ -38,28 +34,23 @@ export default function GameCard({ game }: { game: Game }) {
             {game.status === "preview" ? "Preview" : "Draft"}
           </Badge>
         ) : null}
-      </button>
+      </Link>
 
       <CardContent className="flex flex-1 flex-col gap-4 p-5">
         <div className="flex items-start gap-3">
-          <button
+          <Link
             className="min-w-0 flex-1 text-left"
-            onClick={() => router.push(`/games/${game.id}`)}
-            type="button"
+            href={`/games/${game.id}`}
           >
             <h3 className="line-clamp-1 font-display text-lg font-semibold tracking-normal text-slate-950">{game.title}</h3>
-          </button>
+          </Link>
           <Button
+            asChild
             aria-label={`Play ${game.title}`}
             className="size-9 shrink-0 rounded-lg"
-            onClick={(event) => {
-              event.stopPropagation();
-              router.push(`/play/${game.id}`);
-            }}
             size="icon"
-            type="button"
           >
-            <Play size={15} fill="currentColor" />
+            <Link href={`/play/${game.id}`}><Play size={15} fill="currentColor" /></Link>
           </Button>
         </div>
 

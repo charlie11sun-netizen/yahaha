@@ -1,44 +1,52 @@
 "use client";
 
+import { useQuery } from "@tanstack/react-query";
 import { Search } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { api } from "@/lib/api";
+import type { GameListResponse } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { GameCard, GameCardSkeleton } from "./ExplorePanels";
-import { SHELL } from "../_lib/explore-data";
-import type { ExploreHomeState } from "../_lib/use-explore-home";
-
-type ExploreGamesSectionProps = Pick<
-  ExploreHomeState,
-  | "activeFilter"
-  | "filterTabs"
-  | "gamesQ"
-  | "goDetail"
-  | "goPlay"
-  | "query"
-  | "setActiveFilter"
-  | "setLimit"
-  | "setQuery"
-  | "setSort"
-  | "sort"
-  | "visibleGames"
->;
+import { SHELL, toHomeGame } from "../_lib/explore-data";
 
 export function ExploreGamesSection({
-  activeFilter,
-  filterTabs,
-  gamesQ,
-  goDetail,
-  goPlay,
-  query,
-  setActiveFilter,
-  setLimit,
-  setQuery,
-  setSort,
-  sort,
-  visibleGames,
-}: ExploreGamesSectionProps) {
+  initialError,
+  initialGames,
+  tags,
+}: {
+  initialError: boolean;
+  initialGames: GameListResponse;
+  tags: string[];
+}) {
+  const [query, setQuery] = useState("");
+  const [activeFilter, setActiveFilter] = useState("All");
+  const [limit, setLimit] = useState(12);
+  const [sort, setSort] = useState<"newest" | "popular">("newest");
+  const backendTag = activeFilter === "AI Generated" ? "All" : activeFilter;
+  const isInitialQuery = !query && backendTag === "All" && sort === "newest" && limit === 12;
+  const gamesQ = useQuery({
+    queryKey: ["games", query, backendTag, sort, limit],
+    queryFn: () => api.games(query, backendTag, { sort, limit }),
+    initialData: isInitialQuery && !initialError ? initialGames : undefined,
+    staleTime: isInitialQuery ? 30_000 : 0,
+  });
+
+  useEffect(() => {
+    setLimit(12);
+  }, [query, activeFilter, sort]);
+
+  const visibleGames = useMemo(() => {
+    const mapped = (gamesQ.data?.items ?? []).map(toHomeGame);
+    return activeFilter === "AI Generated" ? mapped.filter((game) => game.ai) : mapped;
+  }, [activeFilter, gamesQ.data?.items]);
+  const filterTabs = useMemo(() => {
+    const merged = ["All", "AI Generated", ...tags, "Arcade", "Puzzle", "RPG", "Adventure"];
+    return Array.from(new Set(merged)).slice(0, 6);
+  }, [tags]);
+
   return (
     <section id="explore" className={cn(SHELL, "scroll-mt-20 pt-12 pb-6")}>
       <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
@@ -116,7 +124,7 @@ export function ExploreGamesSection({
           </div>
         ) : (
           visibleGames.map((game) => (
-            <GameCard key={game.id ?? game.title} game={game} onOpen={() => goDetail(game.id)} onPlay={() => goPlay(game.id)} />
+            <GameCard key={game.id ?? game.title} game={game} />
           ))
         )}
       </div>

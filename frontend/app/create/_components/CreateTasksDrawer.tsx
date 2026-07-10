@@ -4,7 +4,8 @@ import { ArrowRight, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { formatRelative, getBrief } from "../_lib/create-state";
+import { getBrief } from "../_lib/create-progress";
+import { formatRelative } from "../_lib/create-time";
 import type { Task } from "@/lib/types";
 
 export function TasksDrawer({

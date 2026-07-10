@@ -13,34 +13,43 @@ import {
   Share2,
   Trophy,
 } from "lucide-react";
-import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
+import type { components } from "@/lib/api-types";
 import { coverBackgroundValue } from "@/lib/cover";
 import type { Game, GameManifest } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { ActivityFeed, RuntimeList } from "./_components/PlayPanels";
-import { INITIAL_RUNTIME, type Phase, type RuntimeKey, type RuntimeStatus } from "./_lib/play-runtime";
+import { ActivityFeed, RuntimeList } from "./PlayPanels";
+import { INITIAL_RUNTIME, type Phase, type RuntimeKey, type RuntimeStatus } from "../_lib/play-runtime";
 
-export default function PlayPage() {
-  const { id } = useParams() as { id: string };
-  const searchParams = useSearchParams();
-  const requestedVersion = searchParams.get("version");
+export function PlayExperience({
+  game,
+  initialLeaderboard,
+  related,
+  requestedVersion,
+}: {
+  game: Game;
+  initialLeaderboard: components["schemas"]["ScoreOut"][];
+  related: Game[];
+  requestedVersion: string | null;
+}) {
+  const id = game.id;
   const router = useRouter();
   const stageRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
   const played = useRef(false);
   const qc = useQueryClient();
-  const { data: game, error, isLoading, refetch } = useQuery({
-    queryKey: ["game", id],
-    queryFn: () => api.game(id),
+  const lbQ = useQuery({
+    queryKey: ["leaderboard", id],
+    queryFn: () => api.leaderboard(id),
+    initialData: { items: initialLeaderboard },
+    staleTime: 30_000,
   });
-  const lbQ = useQuery({ queryKey: ["leaderboard", id], queryFn: () => api.leaderboard(id) });
-  const relatedQ = useQuery({ queryKey: ["related", id], queryFn: () => api.relatedGames(id) });
 
   const [phase, setPhase] = useState<Phase>("loading");
   const [runtime, setRuntime] = useState<Record<RuntimeKey, RuntimeStatus>>(INITIAL_RUNTIME);
@@ -133,10 +142,6 @@ export default function PlayPage() {
   }, [isTheater]);
 
   useEffect(() => {
-    if (error) setPhase("error");
-  }, [error]);
-
-  useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
       const data = event.data;
@@ -190,10 +195,7 @@ export default function PlayPage() {
     }
   };
 
-  const retry = () => {
-    if (game) restart();
-    else refetch();
-  };
+  const retry = restart;
 
   return (
     <main className="min-h-screen bg-slate-100">
@@ -280,21 +282,21 @@ export default function PlayPage() {
             </Card>
           ) : null}
 
-          {(relatedQ.data?.items?.length ?? 0) > 0 ? (
+          {related.length > 0 ? (
             <Card className="rounded-lg border-slate-200 bg-white shadow-sm">
               <CardHeader>
                 <CardTitle className="font-display text-lg tracking-normal text-slate-950">More games</CardTitle>
               </CardHeader>
               <CardContent className="grid gap-3">
-                {relatedQ.data!.items.slice(0, 4).map((related) => (
+                {related.slice(0, 4).map((relatedGame) => (
                   <button
                     className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white p-3 text-left transition hover:border-indigo-200 hover:bg-indigo-50/40"
-                    key={related.id}
-                    onClick={() => router.push(`/play/${related.id}`)}
+                    key={relatedGame.id}
+                    onClick={() => router.push(`/play/${relatedGame.id}`)}
                     type="button"
                   >
-                    <span className="h-12 w-16 shrink-0 rounded-md bg-slate-900 bg-cover bg-center" style={{ background: coverBackgroundValue(related.cover) }} />
-                    <b className="line-clamp-2 text-sm font-semibold text-slate-950">{related.title}</b>
+                    <span className="h-12 w-16 shrink-0 rounded-md bg-slate-900 bg-cover bg-center" style={{ background: coverBackgroundValue(relatedGame.cover) }} />
+                    <b className="line-clamp-2 text-sm font-semibold text-slate-950">{relatedGame.title}</b>
                   </button>
                 ))}
               </CardContent>
@@ -314,7 +316,7 @@ export default function PlayPage() {
               <LoaderCircle className="size-12 animate-spin text-indigo-300" />
               <div className="space-y-2">
                 <h2 className="font-display text-2xl font-semibold tracking-normal">
-                  {isLoading ? "Finding game..." : "Preparing runtime..."}
+                  Preparing runtime...
                 </h2>
                 <p className="max-w-xl text-sm leading-6 text-slate-300">
                   Validating the manifest, opening a sandbox, and mounting the generated bundle.
@@ -358,7 +360,7 @@ export default function PlayPage() {
               <div className="space-y-2">
                 <h2 className="font-display text-2xl font-semibold tracking-normal">Could not load this game</h2>
                 <p className="max-w-xl text-sm leading-6 text-slate-300">
-                  {error instanceof Error ? error.message : "The generated bundle could not be mounted. Try again or return to your studio."}
+                  The generated bundle could not be mounted. Try again or return to your studio.
                 </p>
               </div>
               <div className="flex flex-wrap justify-center gap-3">

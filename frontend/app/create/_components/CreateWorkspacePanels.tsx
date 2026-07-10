@@ -4,7 +4,7 @@ import { ActionPanel } from "./CreateActionPanel";
 import { CreateBriefCard } from "./CreateBriefCard";
 import { CreateProgressCard } from "./CreateProgressCard";
 import { PreviewCard } from "./CreatePreviewCard";
-import { getBrief } from "../_lib/create-state";
+import { getBrief } from "../_lib/create-progress";
 import type { Task, UploadedAsset } from "@/lib/types";
 
 export function CreateWorkspace({

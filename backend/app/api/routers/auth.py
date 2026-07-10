@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, rate_limit
 from app.core.config import settings
-from app.core.users import UserManager, auth_backend, create_user_token, fastapi_users, get_user_manager
+from app.api.user_auth import UserManager, auth_backend, create_user_token, fastapi_users, get_user_manager
 from app.db.session import get_db
 from app.models import OAuthAccount, User
 from app.schemas import (

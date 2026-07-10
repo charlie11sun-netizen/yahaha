@@ -3,7 +3,7 @@
 import { Edit3 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
-import { fileChangeLabel, type FileChange } from "../_lib/create-state";
+import { fileChangeLabel, type FileChange } from "../_lib/file-changes";
 
 export function FileChangeRow({ change, showDiff = false }: { change: FileChange; showDiff?: boolean }) {
   const tone =

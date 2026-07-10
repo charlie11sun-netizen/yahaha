@@ -2,8 +2,23 @@
 
 from __future__ import annotations
 
-from app.services.memory_profile_common import *
+from typing import Iterable
+
+from sqlalchemy import and_, or_
+from sqlalchemy.orm import Session
+
+from app.models import MemoryProfile, MemoryProfileVersion, MemorySettings
+from app.models.memory import MemoryProfileStatus, MemoryScope
+from app.services.memory_profile_common import (
+    PROFILE_CONTEXT_CHARS,
+    PROFILE_CONTEXT_LIMIT,
+    clean_profile_text,
+    profile_out,
+    scope_priority_expr,
+)
 from app.services.memory_profile_lifecycle import backfill_missing_profiles, expire_stale_candidates
+from app.services.memory_retention import purge_expired_memories
+
 
 def list_profiles(
     db: Session,
@@ -14,8 +29,6 @@ def list_profiles(
     scope_id: str | None = None,
     limit: int = 100,
 ) -> list[MemoryProfile]:
-    from app.services.memory import purge_expired_memories
-
     purge_expired_memories(db, user_id)
     backfill_missing_profiles(db, user_id)
     expire_stale_candidates(db, user_id)
@@ -58,8 +71,6 @@ def retrieve_profiles(
     settings_row = db.get(MemorySettings, user_id)
     if settings_row and not settings_row.enabled:
         return []
-    from app.services.memory import purge_expired_memories
-
     purge_expired_memories(db, user_id, settings_row=settings_row)
     backfill_missing_profiles(db, user_id)
     expire_stale_candidates(db, user_id)
@@ -81,7 +92,7 @@ def retrieve_profiles(
     if cats:
         q = q.filter(MemoryProfile.category.in_(cats))
     profiles = q.order_by(
-        _scope_priority_expr(game_id=game_id, task_id=task_id),
+        scope_priority_expr(game_id=game_id, task_id=task_id),
         MemoryProfile.confidence.desc(),
         MemoryProfile.support_count.desc(),
         MemoryProfile.updated_at.desc(),
@@ -97,7 +108,7 @@ def render_profile_context(items: list[dict], *, max_chars: int = PROFILE_CONTEX
     for item in items:
         line = (
             f"- [{item['scope_type']}/{item['category']}/{item['profile_key']}] "
-            f"{_clean(item['summary_text'], 260)} "
+            f"{clean_profile_text(item['summary_text'], 260)} "
             f"(support={item.get('support_count', 1)}, utility={float(item.get('utility_score') or 0.5):.2f})"
         )
         if total + len(line) > max_chars:
@@ -108,4 +119,10 @@ def render_profile_context(items: list[dict], *, max_chars: int = PROFILE_CONTEX
     return "\n".join(lines)
 
 
-__all__ = [name for name in globals() if not name.startswith("__")]
+__all__ = [
+    "get_owned_profile",
+    "list_profiles",
+    "profile_history",
+    "render_profile_context",
+    "retrieve_profiles",
+]

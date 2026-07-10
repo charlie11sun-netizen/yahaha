@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     CELERY_VISIBILITY_TIMEOUT: int = 7200
     GENERATION_TASK_SOFT_TIME_LIMIT: int = 3600
     GENERATION_TASK_TIME_LIMIT: int = 3900
+    GENERATION_OUTBOX_SCAN_INTERVAL_SECONDS: float = 5.0
+    GENERATION_OUTBOX_BATCH_SIZE: int = 100
+    GENERATION_LOCK_RETRY_SECONDS: int = 3
 
     # Object storage (S3 compatible)
     S3_ENDPOINT: str = "http://localhost:9000"           # 服务端访问 OSS

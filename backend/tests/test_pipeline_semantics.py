@@ -88,6 +88,29 @@ def test_run_generation_skips_terminal_task(client, db_session_factory, monkeypa
     db.close()
 
 
+def test_run_generation_skips_stale_dispatch_generation(client, db_session_factory, monkeypatch):
+    from app.agents.pipeline import run_generation
+    from app.models import GenerationTask
+    from app.models.common import TaskStatus
+
+    headers = auth_headers(client, email="stale-generation@t.com", display_name="P0")
+    task_id = _make_task(client, headers)
+    db = db_session_factory()
+    current_generation = db.get(GenerationTask, task_id).dispatch_generation
+    db.close()
+
+    monkeypatch.setattr("app.agents.pipeline.SessionLocal", db_session_factory)
+    monkeypatch.setattr(
+        "app.agents.graph.build_graph",
+        lambda: (_ for _ in ()).throw(AssertionError("stale delivery must not run")),
+    )
+    run_generation(task_id, expected_dispatch_generation=current_generation - 1)
+
+    db = db_session_factory()
+    assert db.get(GenerationTask, task_id).status == TaskStatus.PENDING
+    db.close()
+
+
 def test_run_generation_rerun_clears_stale_steps(client, db_session_factory, monkeypatch):
     """worker 崩溃后的重投递：RUNNING 任务重跑前应清空上一轮的步骤流。"""
     from app.agents.pipeline import run_generation

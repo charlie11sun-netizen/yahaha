@@ -10,11 +10,13 @@ import os
 os.environ.setdefault("DATABASE_URL", "sqlite://")
 
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -25,10 +27,10 @@ from app.db.base import Base  # noqa: E402
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 
-def _run_upgrade_head(db_path: Path) -> None:
+def _run_upgrade_head(db_path: Path, revision: str = "head") -> None:
     cfg = Config(str(BACKEND_DIR / "alembic.ini"))
     cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, revision)
 
 
 def _schema_snapshot(engine) -> dict:
@@ -79,3 +81,114 @@ def test_upgrade_head_replays_on_fresh_db_and_matches_orm(tmp_path, monkeypatch)
             text("SELECT sql FROM sqlite_master WHERE type='index' AND name='uq_memory_profile_active_identity'")
         ).fetchone()
     assert row is not None and "UNIQUE" in row[0].upper() and "status = 'active'" in row[0]
+
+
+def test_outbox_migration_backfills_only_pending_tasks(tmp_path, monkeypatch):
+    db_path = tmp_path / "outbox-backfill.db"
+    url = f"sqlite:///{db_path.as_posix()}"
+    monkeypatch.setattr(settings, "DATABASE_URL", url)
+    _run_upgrade_head(db_path, "0007_fastapi_users")
+
+    user_id = str(uuid4())
+    task_ids = {status: str(uuid4()) for status in ("pending", "running", "failed")}
+    now = datetime.now(timezone.utc)
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO users (
+                    id, email, display_name, avatar_initial, is_active, created_at
+                ) VALUES (
+                    :id, :email, :display_name, :avatar_initial, :is_active, :created_at
+                )
+                """
+            ),
+            {
+                "id": user_id,
+                "email": "migration@example.com",
+                "display_name": "Migration",
+                "avatar_initial": "M",
+                "is_active": True,
+                "created_at": now,
+            },
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO generation_tasks (
+                    id, user_id, idea, status, current_step, tokens_used,
+                    repair_attempts, max_repair_attempts, replan_attempts,
+                    max_replan_attempts, created_at
+                ) VALUES (
+                    :id, :user_id, :idea, :status, 0, 0, 0, 2, 0, 1, :created_at
+                )
+                """
+            ),
+            [
+                {
+                    "id": task_id,
+                    "user_id": user_id,
+                    "idea": status,
+                    "status": status,
+                    "created_at": now,
+                }
+                for status, task_id in task_ids.items()
+            ],
+        )
+    engine.dispose()
+
+    _run_upgrade_head(db_path)
+
+    engine = create_engine(url)
+    with engine.connect() as conn:
+        generations = dict(
+            conn.execute(text("SELECT id, dispatch_generation FROM generation_tasks")).all()
+        )
+        outbox_rows = conn.execute(
+            text(
+                """
+                SELECT task_id, dispatch_generation, request_id, attempts,
+                       available_at, last_attempt_at, published_at, last_error, created_at
+                FROM generation_dispatch_outbox
+                """
+            )
+        ).mappings().all()
+    engine.dispose()
+
+    assert generations == {
+        task_ids["pending"]: 1,
+        task_ids["running"]: 0,
+        task_ids["failed"]: 0,
+    }
+    assert len(outbox_rows) == 1
+    event = outbox_rows[0]
+    assert event["task_id"] == task_ids["pending"]
+    assert event["dispatch_generation"] == 1
+    assert event["request_id"].startswith("migration:")
+    assert event["attempts"] == 0
+    assert event["available_at"] is not None and event["created_at"] is not None
+    assert event["last_attempt_at"] is None
+    assert event["published_at"] is None
+    assert event["last_error"] is None
+
+
+def test_outbox_migration_renders_postgresql_offline_sql(monkeypatch, capsys):
+    monkeypatch.setattr(
+        settings,
+        "DATABASE_URL",
+        "postgresql+psycopg://user:pass@localhost/gameweave",
+    )
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+
+    command.upgrade(
+        cfg,
+        "0007_fastapi_users:0008_generation_dispatch_outbox",
+        sql=True,
+    )
+
+    sql = capsys.readouterr().out
+    assert "CREATE TABLE generation_dispatch_outbox" in sql
+    assert "gen_random_uuid()" in sql
+    assert "SET dispatch_generation = 1" in sql

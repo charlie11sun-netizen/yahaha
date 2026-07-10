@@ -2,8 +2,8 @@
 
 import { Suspense } from "react";
 
-import { StudioDashboard } from "./_components/StudioDashboard";
-import { useStudioController } from "./_lib/use-studio-controller";
+import { StudioDashboard } from "@/app/me/_components/StudioDashboard";
+import { useStudioController } from "@/app/me/_lib/use-studio-controller";
 
 export default function ProfilePage() {
   return (

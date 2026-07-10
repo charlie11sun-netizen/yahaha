@@ -63,8 +63,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
       - run: npm ci
-      - run: npx tsc --noEmit
+      - name: Audit production dependencies
+        run: npm run audit
+      - name: Install backend schema dependencies
+        run: pip install -r ../backend/requirements.txt
+      - name: Verify generated OpenAPI types
+        run: npm run openapi:check
+      - name: Lint frontend
+        run: npm run lint
+      - name: Typecheck frontend
+        run: npm run typecheck
+      - name: Build production frontend
+        run: npm run build
 
   e2e:
     runs-on: ubuntu-latest
@@ -80,16 +98,20 @@ jobs:
       - name: Install Chromium
         working-directory: e2e
         run: npx playwright install --with-deps chromium
+      - name: Prepare Compose environment
+        run: |
+          touch .env
+          docker compose config --quiet
       - name: Start stack
         run: docker compose up -d --build
       - name: Wait for API readiness
         run: |
           for i in {1..60}; do
             if curl -fsS http://127.0.0.1:8000/health/ready; then exit 0; fi
-            docker compose logs --tail=80 api worker sandbox || true
+            docker compose logs --tail=80 api worker outbox-worker beat sandbox || true
             sleep 2
           done
-          docker compose logs api worker sandbox || true
+          docker compose logs api worker outbox-worker beat sandbox || true
           exit 1
       - name: Run Playwright E2E
         working-directory: e2e

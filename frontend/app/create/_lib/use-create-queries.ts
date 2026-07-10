@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import { isActiveTask } from "./create-state";
+import { isActiveTask } from "./create-progress";
 import { api, ApiError } from "@/lib/api";
 
 export function useCreateTaskQuery(taskId: string | null) {

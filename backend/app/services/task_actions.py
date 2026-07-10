@@ -1,4 +1,5 @@
 import json
+import logging
 from hashlib import blake2b
 
 from sqlalchemy import text
@@ -6,23 +7,37 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.errors import TaskErrorCode
-from app.core.telemetry import current_request_id
 from app.models import Asset, Game, GameVersion, GenerationTask
 from app.models.common import GameStatus, TaskStatus, now_utc
 from app.schemas import TaskCreateIn, TaskRevisionIn
 from app.services.errors import ServiceError
 from app.services.pagination import normalize_pagination
+from app.services.task_dispatch import (
+    QueueTaskDispatcher,
+    dispatch_generation_event,
+    stage_generation_dispatch,
+)
 
 
 ACTIVE_TASK_STATUSES = (TaskStatus.PENDING, TaskStatus.RUNNING)
+logger = logging.getLogger(__name__)
 
 
-def enqueue_generation(task_id: str, queue) -> None:
-    headers = {"request_id": current_request_id() or ""}
-    if hasattr(queue, "apply_async"):
-        queue.apply_async(args=[task_id], headers=headers)
-    else:
-        queue.delay(task_id)
+def _commit_and_dispatch(db: Session, task: GenerationTask, queue) -> GenerationTask:
+    """Atomically commit task state and its dispatch intent, then publish best-effort."""
+
+    event = stage_generation_dispatch(db, task)
+    db.commit()
+    db.refresh(task)
+    try:
+        dispatch_generation_event(db, event.id, QueueTaskDispatcher(queue))
+    except Exception:  # noqa: BLE001 - the durable row lets a later scanner recover
+        db.rollback()
+        logger.exception(
+            "immediate generation dispatch failed unexpectedly; outbox scanner will retry",
+            extra={"event_id": event.id, "generation_task_id": task.id},
+        )
+    return task
 
 
 def owned_task(db: Session, task_id: str, user) -> GenerationTask:
@@ -145,8 +160,6 @@ def _create_remix_task(db: Session, body: TaskCreateIn, user) -> GenerationTask:
     _copy_source_task_context(task, source_version, source, db)
     _attach_owned_assets(db, task, user.id, body.asset_ids)
     db.add(task)
-    db.commit()
-    db.refresh(task)
     return task
 
 
@@ -158,10 +171,7 @@ def create_task(db: Session, body: TaskCreateIn, user, *, queue) -> GenerationTa
         task = GenerationTask(user_id=user.id, idea=body.idea, status=TaskStatus.PENDING, dimension=body.dimension)
         _attach_owned_assets(db, task, user.id, body.asset_ids)
         db.add(task)
-        db.commit()
-        db.refresh(task)
-    enqueue_generation(task.id, queue)
-    return task
+    return _commit_and_dispatch(db, task, queue)
 
 
 def list_tasks(db: Session, user, *, limit: int = 24, offset: int = 0) -> tuple[list[GenerationTask], int, int, int]:
@@ -206,10 +216,7 @@ def revise_task(db: Session, task_id: str, body: TaskRevisionIn, user, *, queue)
     )
     revision.assets = list(source.assets)
     db.add(revision)
-    db.commit()
-    db.refresh(revision)
-    enqueue_generation(revision.id, queue)
-    return revision
+    return _commit_and_dispatch(db, revision, queue)
 
 
 def _resume_payload(task: GenerationTask, *, from_scratch: bool) -> dict | None:
@@ -229,6 +236,23 @@ def retry_task(db: Session, task_id: str, user, *, from_scratch: bool = False, q
     if task.status != TaskStatus.FAILED:
         raise ServiceError(400, "Only failed tasks can be retried")
     ensure_active_task_slot(db, user.id)
+
+    # Another retry request may have loaded the same FAILED row before waiting
+    # on the per-user quota lock. Re-read it under a row lock so stale identity-map
+    # state cannot stage the same dispatch_generation twice.
+    task = (
+        db.query(GenerationTask)
+        .filter(GenerationTask.id == task_id)
+        .populate_existing()
+        .with_for_update(of=GenerationTask)
+        .one_or_none()
+    )
+    if not task:
+        raise ServiceError(404, "Task not found")
+    if task.user_id != user.id:
+        raise ServiceError(403, "Not your task")
+    if task.status != TaskStatus.FAILED:
+        raise ServiceError(400, "Only failed tasks can be retried")
 
     resume_payload = _resume_payload(task, from_scratch=from_scratch)
     if resume_payload is None:
@@ -256,9 +280,7 @@ def retry_task(db: Session, task_id: str, user, *, from_scratch: bool = False, q
     task.error_code = None
     task.failed_stage = None
     task.finished_at = None
-    db.commit()
-    enqueue_generation(task.id, queue)
-    return task, mode
+    return _commit_and_dispatch(db, task, queue), mode
 
 
 def cancel_task(db: Session, task_id: str, user) -> GenerationTask:

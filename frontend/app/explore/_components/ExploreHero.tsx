@@ -1,24 +1,17 @@
-"use client";
-
 import { ArrowRight, Gamepad2, Sparkles } from "lucide-react";
+import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ShowcaseCard } from "./ExplorePanels";
-import { SHELL, flowSteps, scrollToId, type HomeGame } from "../_lib/explore-data";
+import { SHELL, flowSteps, type HomeGame } from "../_lib/explore-data";
 
 export function ExploreHero({
   featured,
-  onCreate,
-  onOpen,
-  onPlay,
   trending,
 }: {
   featured?: HomeGame;
-  onCreate: () => void;
-  onOpen: (id?: string) => void;
-  onPlay: (id?: string) => void;
   trending: HomeGame[];
 }) {
   return (
@@ -41,21 +34,19 @@ export function ExploreHero({
 
         <div className="mt-7 flex flex-wrap gap-3">
           <Button
+            asChild
             size="lg"
-            onClick={onCreate}
             className="bg-gradient-to-r from-violet-600 to-blue-500 text-white shadow-lg shadow-violet-500/30 transition-all hover:-translate-y-0.5 hover:shadow-xl hover:shadow-violet-500/40"
           >
-            <Sparkles className="size-4" />
-            Create with AI
+            <Link href="/create"><Sparkles className="size-4" />Create with AI</Link>
           </Button>
           <Button
+            asChild
             size="lg"
             variant="outline"
-            onClick={() => scrollToId("explore")}
             className="border-slate-200 bg-white/70 backdrop-blur transition-all hover:-translate-y-0.5"
           >
-            <Gamepad2 className="size-4.5" />
-            Explore Games
+            <a href="#explore"><Gamepad2 className="size-4.5" />Explore Games</a>
           </Button>
         </div>
 
@@ -77,7 +68,7 @@ export function ExploreHero({
       </div>
 
       {featured ? (
-        <ShowcaseCard featured={featured} trending={trending} onOpen={onOpen} onPlay={onPlay} />
+        <ShowcaseCard featured={featured} trending={trending} />
       ) : (
         <div aria-hidden className="h-[420px] animate-pulse rounded-3xl border border-slate-200 bg-white/60" />
       )}

@@ -5,6 +5,7 @@ type GameCard = Schemas["GameCardOut"];
 type GameDetail = Schemas["GameDetailOut"];
 
 export type User = Schemas["UserOut"];
+export type OAuthProviders = Schemas["OAuthProvidersOut"];
 
 // Frontend views intentionally accept both list cards and detail payloads.
 // Endpoint-specific response types remain available below for tighter callers.
@@ -37,6 +38,8 @@ export type UploadedAsset = Schemas["UploadedAssetOut"];
 export type UploadResponse = Schemas["UploadOut"];
 export type Comment = Schemas["CommentOut"];
 export type CommentListResponse = Schemas["CommentListOut"];
+export type PublicUserProfile = Schemas["PublicUserProfileOut"];
+export type TagsResponse = Schemas["TagsOut"];
 export type MemoryItem = Schemas["MemoryItemOut"];
 export type MemoryListResponse = Schemas["MemoryListOut"];
 export type MemorySettings = Schemas["MemorySettingsOut"];

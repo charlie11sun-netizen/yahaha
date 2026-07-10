@@ -2,34 +2,23 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from datetime import timedelta
 from decimal import Decimal
-from typing import Iterable
 
-from sqlalchemy import and_, case, or_, text
+from sqlalchemy import and_, case
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.models import (
-    GenerationTask,
     MemoryItem,
     MemoryProfile,
     MemoryProfileEvidence,
     MemoryProfileVersion,
-    MemorySettings,
-    User,
 )
-from app.models.common import TaskStatus, now_utc
+from app.models.common import now_utc
 from app.models.memory import (
     MemoryCategory,
-    MemoryExplicitness,
-    MemoryProfileOperation,
-    MemoryProfileStatus,
     MemoryScope,
-    MemorySource,
     MemoryStatus,
 )
 from app.services import memory_embeddings
@@ -294,4 +283,99 @@ def _link_profile_evidence(
     return link
 
 
-__all__ = [name for name in globals() if not name.startswith("__")]
+def refresh_profile_embedding(profile: MemoryProfile, previous_summary: str | None) -> None:
+    """Refresh the profile vector whenever its summary changes."""
+    if _clean(previous_summary or "") == _clean(profile.summary_text or ""):
+        return
+    refreshed = memory_embeddings.embed_texts([_clean(profile.summary_text, 500)])
+    profile.embedding = refreshed[0] if refreshed else None
+    profile.embedding_model = memory_embeddings.embedding_model() if refreshed else None
+    profile.embedding_updated_at = now_utc() if refreshed else None
+
+
+def count_distinct_supporting_games(db: Session, profile: MemoryProfile) -> int:
+    """Count distinct games represented by active evidence for a profile."""
+    db.flush()
+    rows = (
+        db.query(MemoryItem.source_game_id, MemoryItem.scope_type, MemoryItem.scope_id)
+        .join(MemoryProfileEvidence, MemoryProfileEvidence.memory_id == MemoryItem.id)
+        .filter(
+            MemoryProfileEvidence.profile_id == profile.id,
+            MemoryProfileEvidence.is_active.is_(True),
+            MemoryItem.status != MemoryStatus.DELETED,
+        )
+        .distinct()
+        .all()
+    )
+    games = {
+        source_game_id or (scope_id if scope_type == MemoryScope.GAME else None)
+        for source_game_id, scope_type, scope_id in rows
+    }
+    games.discard(None)
+    return len(games)
+
+
+# Public vocabulary shared by the profile domain services.  The private names
+# above remain implementation details of this module; consumers import only
+# these aliases so dependencies stay explicit and one-way.
+GLOBAL_SCOPE_PATTERN = _GLOBAL_SCOPE_RE
+GAME_SCOPE_PATTERN = _GAME_SCOPE_RE
+TASK_SCOPE_PATTERN = _TASK_SCOPE_RE
+HEDGE_PATTERN = _HEDGE_RE
+CLAIM_SPLIT_PATTERN = _CLAIM_SPLIT_RE
+NORMALIZE_PATTERN = _NORMALIZE_RE
+NEGATED_VALUE_PATTERN = _NEGATED_VALUE_RE
+TASTE_PATTERN = _TASTE_RE
+HASH_KEY_PATTERN = _HASH_KEY_RE
+NEGATION_TOKEN_PATTERN = _NEGATION_TOKEN_RE
+GENERALIZABLE_CATEGORIES = _GENERALIZABLE_CATEGORIES
+VALID_CATEGORIES = _VALID_CATEGORIES
+ATTRIBUTE_RULES = _ATTRIBUTE_RULES
+CANONICAL_VALUES = _CANONICAL_VALUES
+profile_number = _float
+clamp_score = _clamp
+clean_profile_text = _clean
+normalize_profile_text = _normalized
+candidate_expires_at = _candidate_expires_at
+scope_priority_expr = _scope_priority_expr
+record_profile_version = _record_version
+link_profile_evidence = _link_profile_evidence
+
+
+__all__ = [
+    "ATTRIBUTE_RULES",
+    "CANDIDATE_CONFIDENCE_THRESHOLD",
+    "CANDIDATE_SUPPORT_THRESHOLD",
+    "CANONICAL_VALUES",
+    "CLAIM_SPLIT_PATTERN",
+    "GAME_SCOPE_PATTERN",
+    "GENERALIZABLE_CATEGORIES",
+    "GLOBAL_SCOPE_PATTERN",
+    "HASH_KEY_PATTERN",
+    "HEDGE_PATTERN",
+    "KEY_ADOPTION_PEER_LIMIT",
+    "NEGATED_VALUE_PATTERN",
+    "NEGATION_TOKEN_PATTERN",
+    "NORMALIZE_PATTERN",
+    "PROFILE_CONTEXT_CHARS",
+    "PROFILE_CONTEXT_LIMIT",
+    "PROFILE_KEY_SIMILARITY_THRESHOLD",
+    "PROFILE_VALUE_SIMILARITY_THRESHOLD",
+    "TASK_SCOPE_PATTERN",
+    "TASTE_PATTERN",
+    "USER_PROMOTION_DISTINCT_GAMES",
+    "UTILITY_ALPHA",
+    "VALID_CATEGORIES",
+    "candidate_expires_at",
+    "clamp_score",
+    "clean_profile_text",
+    "count_distinct_supporting_games",
+    "link_profile_evidence",
+    "normalize_profile_text",
+    "profile_number",
+    "profile_out",
+    "record_profile_version",
+    "refresh_profile_embedding",
+    "scope_priority_expr",
+    "version_out",
+]

@@ -17,7 +17,9 @@ test("like and comment on a published game", async ({ page, request }) => {
   const game = await firstPublishedGame(request);
 
   await page.goto(`/games/${game.id}`);
-  await page.locator(".pf-detail-actions button").first().click();
+  const likeButton = page.getByRole("button", { name: `Like ${game.title}`, exact: true });
+  await likeButton.click();
+  await expect(likeButton).toHaveAttribute("aria-pressed", "true");
   await page.getByPlaceholder("Add a comment...").fill("Great arcade loop from E2E.");
   await page.getByRole("button", { name: "Post" }).click();
 

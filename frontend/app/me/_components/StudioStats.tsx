@@ -3,7 +3,7 @@
 import { Gamepad2, Pencil, Play, Sparkles } from "lucide-react";
 
 import { fmt } from "@/lib/format";
-import { StatCard } from "./StudioPanels";
+import { StatCard } from "./StudioPrimitives";
 
 export function StudioStats({
   draftCount,

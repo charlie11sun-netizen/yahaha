@@ -5,11 +5,11 @@ import { Check, Gamepad2, MoreHorizontal } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import {
-  formatRelative,
   getGameplayQaStatus,
   gameplayRuntimeLabel,
   isActiveTask,
-} from "../_lib/create-state";
+} from "../_lib/create-progress";
+import { formatRelative } from "../_lib/create-time";
 import type { Task } from "@/lib/types";
 
 export function PreviewCard({ now, task }: { now: number; task?: Task }) {

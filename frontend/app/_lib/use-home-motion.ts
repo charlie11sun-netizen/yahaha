@@ -90,7 +90,7 @@ export function useHomeMotion(videoUrl: string) {
       if (shouldReduceMotion() || shouldConserveResources() || extractingFrames || !("createImageBitmap" in window)) return;
 
       let objectUrl: string | undefined;
-      let capturedFrames: ImageBitmap[] = [];
+      const capturedFrames: ImageBitmap[] = [];
       extractingFrames = true;
 
       try {

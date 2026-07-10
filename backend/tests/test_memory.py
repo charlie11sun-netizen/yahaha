@@ -1071,7 +1071,7 @@ def test_extraction_context_includes_candidate_profiles(db_session_factory, monk
     from app.models.memory import MemoryCategory, MemoryScope, MemorySource
     from app.services import memory_embeddings
     from app.services.memory import create_memory
-    from app.services.memory_profiles import _profiles_for_extraction_context, reconcile_memory_item
+    from app.services.memory_profiles import profiles_for_extraction_context, reconcile_memory_item
 
     monkeypatch.setattr(memory_embeddings, "embed_texts", lambda texts: None)
     db = db_session_factory()
@@ -1099,7 +1099,7 @@ def test_extraction_context_includes_candidate_profiles(db_session_factory, monk
     )
     reconcile_memory_item(db, hedged_item, game_id=game.id)
 
-    rows = _profiles_for_extraction_context(db, user_id=user.id, game_id=game.id, task_id=None)
+    rows = profiles_for_extraction_context(db, user_id=user.id, game_id=game.id, task_id=None)
     statuses = {(row["value_text"], row["status"]) for row in rows}
     assert ("pixel", "active") in statuses
     assert ("realistic", "candidate") in statuses
@@ -1112,7 +1112,7 @@ def test_cross_game_opt_out_blocks_all_three_user_scope_fallbacks(db_session_fac
     from app.services import memory_embeddings
     from app.services.memory import create_memory, retrieve_memories
     from app.services.memory_profiles import (
-        _profiles_for_extraction_context,
+        profiles_for_extraction_context,
         reconcile_memory_item,
         retrieve_profiles,
     )
@@ -1134,7 +1134,7 @@ def test_cross_game_opt_out_blocks_all_three_user_scope_fallbacks(db_session_fac
 
     assert retrieve_memories(db, user_id=user.id, query="pixel art") == []
     assert retrieve_profiles(db, user_id=user.id) == []
-    assert _profiles_for_extraction_context(
+    assert profiles_for_extraction_context(
         db, user_id=user.id, game_id=None, task_id=None
     ) == []
     db.close()

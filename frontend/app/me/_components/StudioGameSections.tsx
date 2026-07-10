@@ -1,6 +1,8 @@
 "use client";
 
-import { GameGrid, Panel, TaskTable } from "./StudioPanels";
+import { GameGrid } from "./StudioGameGrid";
+import { Panel } from "./StudioPrimitives";
+import { TaskTable } from "./StudioTaskTable";
 import type { StudioController } from "../_lib/use-studio-controller";
 
 export function StudioOverviewSection({ studio }: { studio: StudioController }) {

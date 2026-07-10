@@ -53,7 +53,7 @@ export function useStudioController() {
 
   const { gamesQ, favQ, tasksQ, memoryQ, memoryProfilesQ, memorySettingsQ } = useStudioQueries(!!user);
 
-  const games = gamesQ.data?.items ?? [];
+  const games = useMemo(() => gamesQ.data?.items ?? [], [gamesQ.data?.items]);
   const favorites = favQ.data?.items ?? [];
   const tasks = tasksQ.data?.items ?? [];
   const memories = memoryQ.data?.items ?? [];

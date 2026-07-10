@@ -1,6 +1,6 @@
 # 部署 GameWeave（带访问密码，不公开）
 
-整套是 **前端(Next) + 后端(FastAPI) + Celery worker + Postgres + Redis + MinIO**。
+整套是 **前端(Next) + 后端(FastAPI) + 3 个 Celery 后台进程(worker / outbox-worker / beat) + sandbox + Postgres + Redis + MinIO**。
 游戏分两类：
 
 | 类型 | 存哪 | 迁移时 |
@@ -43,15 +43,16 @@ cp .env.prod.example .env
   （裸 VPS 填 `http://服务器IP:3000|8000|9000`；有域名+反代就填 https 域名）。
 - `POSTGRES_PASSWORD` / `MINIO_ROOT_PASSWORD`（=`S3_SECRET_KEY`）/ `JWT_SECRET` —— 都换成强随机值。
 - 想线上真生成游戏：`USE_REAL_MODEL=true` + 填好 `OPENAI_API_KEY` 等。
+- 生产生成强制经过独立 sandbox：Compose 已固定 `SANDBOX_REQUIRED=true`；宿主机装了 gVisor 才设 `SANDBOX_RUNTIME=runsc`，否则用加固容器的 `runc`。
 
 **2. 起服务：**
 ```sh
 docker compose -f docker-compose.prod.yml up -d --build
 ```
-首次会构建镜像、起库、`createbuckets` 建桶并放开 games 前缀只读、`api` 跑 `seed`。
+首次会构建镜像、起库、`createbuckets` 建立**全私有桶**、`migrate` 执行迁移、`api` 跑 `seed`，并等待 sandbox 健康后再启动生成 worker。
 打开 `PUBLIC_WEB_URL` → 会被弹到 `/gate` 输密码 → 进站。
 
-只对外暴露 **web(3000) / api(8000) / minio S3(9000)**；Postgres、Redis、MinIO 控制台不对外。
+只对外暴露 **web(3000) / api(8000) / minio S3(9000)**；MinIO 只接受短期签名 URL，Postgres、Redis、sandbox、MinIO 控制台不对外。
 
 ---
 
@@ -61,8 +62,6 @@ docker compose -f docker-compose.prod.yml up -d --build
   `docker compose -f docker-compose.prod.yml up -d --build web`。
 - **TLS / 域名**：生产建议在前面加个反代（Caddy/Nginx）做 HTTPS，把 web/api/s3 收到一个域名下，
   再把三个 `PUBLIC_*` 改成对应 https 地址。
-- **密码门的边界（诚实说明）**：`SITE_PASSWORD` 保护的是**网站 + API**。游戏 bundle 是从对象存储
-  (MinIO 9000) 以匿名只读供 `<iframe>` 加载的，**不在密码门后**——也就是说，知道某个游戏
-  bundle 的确切 UUID 地址的人，能直接抓到那一个静态文件（但列表/站点/接口都进不去）。
-  对私有 demo 通常够用。要彻底锁死，需要把 bundle 也走鉴权（签名 URL 或经网关代理），那是另一档工作量——需要的话告诉我。
+- **密码门与对象存储边界**：`SITE_PASSWORD` 保护网站和 API；MinIO 桶及 `games/`、`uploads/` 前缀全部私有。
+  Play 先通过 API 校验游戏可见性，再取得带短期 token 的 `/games/{id}/files/...` 文件地址；MinIO 公网端点仅用于短期签名对象 URL，未签名访问应返回 AccessDenied。
 - **改密码**：`SITE_PASSWORD` 是运行时变量，改完 `up -d` 重启 `api` + `web` 即可，无需重建前端。

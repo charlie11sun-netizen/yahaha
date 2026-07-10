@@ -6,7 +6,7 @@
 #   - the whole site sits behind a password: SITE_PASSWORD is REQUIRED (compose errors if unset)
 #   - only web (3000), api (8000) and the MinIO S3 port (9000) are published; Postgres/Redis/console stay internal
 #
-# Same `name:` as the dev stack => it reuses the SAME named volumes (pgdata/miniodata).
+# Same `name:` as the dev stack => it reuses the SAME named volumes (pgdata/redisdata/miniodata).
 # On the SAME machine your existing games are already in those volumes (no migration needed).
 # To move to a NEW host, run deploy/migrate-export.sh here and deploy/migrate-import.sh there first.
 #
@@ -36,6 +36,9 @@ services:
     restart: unless-stopped
     mem_limit: 256m
     cpus: "0.5"
+    command: redis-server --appendonly yes --appendfsync always
+    volumes:
+      - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -130,7 +133,7 @@ services:
       S3_PUBLIC_ENDPOINT: ${PUBLIC_S3_URL}
       SANDBOX_URL: http://sandbox:8001
       SANDBOX_REQUIRED: "true"
-    command: celery -A app.tasks.celery_app.celery worker --loglevel=info --concurrency=2 --max-tasks-per-child=20
+    command: celery -A app.tasks.celery_app.celery worker --loglevel=info --queues=celery,generation-v2 --concurrency=2 --max-tasks-per-child=20
     networks:
       - default
       - sandbox_net
@@ -145,6 +148,25 @@ services:
         condition: service_completed_successfully
       sandbox:
         condition: service_healthy
+
+  outbox-worker:
+    build: ./backend
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: "0.25"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-gameweave}
+      AUTO_CREATE_ALL: "false"
+      REDIS_URL: redis://redis:6379/0
+    command: celery -A app.tasks.celery_app.celery worker --loglevel=info --queues=generation-outbox --concurrency=1 --max-tasks-per-child=100
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   beat:
     build: ./backend
@@ -217,6 +239,7 @@ services:
     restart: unless-stopped
     environment:
       NODE_ENV: production
+      API_INTERNAL_BASE_URL: http://api:8000
       # The front-door password. Read at runtime by middleware.ts; never exposed
       # to the client. Empty => site is OPEN, so it is required here.
       SITE_PASSWORD: ${SITE_PASSWORD:?set SITE_PASSWORD in .env — site must not be public}
@@ -246,6 +269,7 @@ services:
 
 volumes:
   pgdata:
+  redisdata:
   miniodata:
   caddydata:
   caddyconfig:

@@ -1,6 +1,6 @@
 "use client";
 
-import { MemorySection } from "./StudioPanels";
+import { MemorySection } from "./StudioMemorySection";
 import {
   StudioDraftsSection,
   StudioFavoritesSection,

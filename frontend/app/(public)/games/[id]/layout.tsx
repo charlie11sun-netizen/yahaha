@@ -1,9 +1,7 @@
 import type { Metadata } from "next";
 
-import { BASE } from "@/lib/api";
+import { getPublicGame } from "@/lib/server-api";
 
-// 单游戏 SEO/OG：服务端按 id 取 meta 生成动态标题/描述/OG 图。
-// 注：docker 下 web 容器服务端访问 BASE(localhost) 可能不通，已 try/catch 优雅降级。
 export async function generateMetadata({
   params,
 }: {
@@ -11,9 +9,7 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { id } = await params;
   try {
-    const res = await fetch(`${BASE}/games/${id}`, { cache: "no-store" });
-    if (!res.ok) return { title: "Game · GameWeave AI" };
-    const g = await res.json();
+    const g = await getPublicGame(id);
     const images = typeof g.cover === "string" && (g.cover.startsWith("http") || g.cover.startsWith("/")) ? [g.cover] : [];
     return {
       title: `${g.title} · GameWeave AI`,

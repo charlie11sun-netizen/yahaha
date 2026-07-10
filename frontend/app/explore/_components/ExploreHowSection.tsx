@@ -1,5 +1,3 @@
-"use client";
-
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { SHELL, flowSteps } from "../_lib/explore-data";

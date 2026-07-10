@@ -23,8 +23,11 @@ services:
     image: redis:7-alpine
     mem_limit: 256m
     cpus: "0.5"
+    command: redis-server --appendonly yes --appendfsync always
     ports:
       - "6379:6379"
+    volumes:
+      - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -95,7 +98,7 @@ services:
       S3_PUBLIC_ENDPOINT: http://localhost:9000
       SANDBOX_URL: http://sandbox:8001
       SANDBOX_REQUIRED: "true"
-    command: celery -A app.tasks.celery_app.celery worker --loglevel=info --concurrency=2 --max-tasks-per-child=20
+    command: celery -A app.tasks.celery_app.celery worker --loglevel=info --queues=celery,generation-v2 --concurrency=2 --max-tasks-per-child=20
     volumes:
       - ./backend:/app
     networks:
@@ -109,6 +112,23 @@ services:
       createbuckets:
         condition: service_completed_successfully
       sandbox:
+        condition: service_healthy
+
+  outbox-worker:
+    build: ./backend
+    mem_limit: 256m
+    cpus: "0.25"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD:-gameweave}@postgres:5432/${POSTGRES_DB:-gameweave}
+      REDIS_URL: redis://redis:6379/0
+    command: celery -A app.tasks.celery_app.celery worker --loglevel=info --queues=generation-outbox --concurrency=1 --max-tasks-per-child=100
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   beat:
@@ -179,6 +199,7 @@ services:
     build: ./frontend
     environment:
       NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+      API_INTERNAL_BASE_URL: http://api:8000
       # 整站访问密码门禁。留空 = 不启用（本地开发默认开放）；
       # 部署时在 .env 里设好 SITE_PASSWORD，打开网站即需先输入此密码。
       SITE_PASSWORD: ${SITE_PASSWORD:-}
@@ -217,6 +238,7 @@ services:
 
 volumes:
   pgdata:
+  redisdata:
   miniodata:
   caddydata:
   caddyconfig:

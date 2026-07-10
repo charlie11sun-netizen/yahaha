@@ -3,7 +3,7 @@ from fastapi import Depends, HTTPException, Request, status
 
 from app.core.config import settings
 from app.core.telemetry import bind_context
-from app.core.users import current_user_dependency, optional_user_dependency
+from app.api.user_auth import current_user_dependency, optional_user_dependency
 from app.models import User
 
 _rl_redis: "redis_lib.Redis | None" = None

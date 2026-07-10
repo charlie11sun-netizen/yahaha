@@ -151,11 +151,14 @@ def test_non_owner_cannot_manage_versions(client, db_session_factory):
 
 
 def test_public_browse_gate_allows_read_and_play_only(client, db_session_factory, monkeypatch):
-    gid = seed_game(db_session_factory, title="PublicBrowse")
+    _, uid = auth_user(client, email="public-browse@x.com", display_name="Public Browser")
+    gid = seed_game(db_session_factory, title="PublicBrowse", author_id=uid)
     monkeypatch.setattr(settings, "SITE_PASSWORD", "secret")
     monkeypatch.setattr(settings, "GATE_PUBLIC_BROWSE", True)
 
     assert client.get("/games").status_code == 200
     assert client.get(f"/games/{gid}").status_code == 200
+    assert client.get(f"/users/{uid}").status_code == 200
+    assert client.get(f"/users/{uid}/games").status_code == 200
     assert client.post(f"/games/{gid}/play").status_code == 200
     assert client.get("/tasks").status_code == 401

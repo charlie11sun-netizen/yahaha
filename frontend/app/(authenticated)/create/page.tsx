@@ -10,9 +10,9 @@ import {
   CreateWorkspace,
   TaskMissingCard,
   TasksDrawer,
-} from "./_components/CreatePanels";
-import { useNow } from "./_lib/create-state";
-import { useCreateTaskQuery, useCreateTasksQuery } from "./_lib/use-create-queries";
+} from "@/app/create/_components/CreatePanels";
+import { useNow } from "@/app/create/_lib/use-now";
+import { useCreateTaskQuery, useCreateTasksQuery } from "@/app/create/_lib/use-create-queries";
 import { api, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/lib/toast";

@@ -74,13 +74,19 @@ def _cleanup_cancelled_artifacts(db, task, final: dict | None) -> None:
             pass
 
 
-def run_generation(task_id: str) -> None:
+def run_generation(task_id: str, expected_dispatch_generation: int | None = None) -> None:
     bind_context(task_id=task_id)
     # 1) 置 running + 读取入参
     db = SessionLocal()
     try:
         task = db.get(GenerationTask, task_id)
         if not task:
+            clear_context()
+            return
+        if (
+            expected_dispatch_generation is not None
+            and task.dispatch_generation != expected_dispatch_generation
+        ):
             clear_context()
             return
         if task.status == TaskStatus.CANCELLED:

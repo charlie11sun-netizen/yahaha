@@ -18,20 +18,18 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { getLiveAgentActivity, getLiveStreamTokens } from "../_lib/agent-activity";
 import {
   buildStepRows,
-  formatElapsed,
-  formatRelative,
   getActiveStepIndex,
   getCurrentIssue,
-  getLiveAgentActivity,
-  getLiveFileChanges,
-  getLiveStreamTokens,
   getProgressTitle,
   getRecentUpdates,
   isActiveTask,
   type StepState,
-} from "../_lib/create-state";
+} from "../_lib/create-progress";
+import { formatElapsed, formatRelative } from "../_lib/create-time";
+import { getLiveFileChanges } from "../_lib/file-changes";
 import type { Task } from "@/lib/types";
 
 export function CreateProgressCard({

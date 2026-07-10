@@ -8,13 +8,15 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
   contextSourceLabel,
-  getGameplayQaStatus,
-  getLogFileChanges,
-  gameplayTechLabel,
   latestAgentContext,
-  visibleAgentLogs,
   type AgentContextSummary,
-} from "../_lib/create-state";
+} from "../_lib/agent-events";
+import { visibleAgentLogs } from "../_lib/agent-activity";
+import {
+  getGameplayQaStatus,
+  gameplayTechLabel,
+} from "../_lib/create-progress";
+import { getLogFileChanges } from "../_lib/file-changes";
 import type { Task } from "@/lib/types";
 
 export function ActivityDrawer({ onClose, task }: { onClose: () => void; task?: Task }) {

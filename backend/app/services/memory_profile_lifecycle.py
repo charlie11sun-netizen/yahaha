@@ -2,15 +2,45 @@
 
 from __future__ import annotations
 
-from app.services.memory_profile_common import *
+from typing import Iterable
+
+from sqlalchemy.orm import Session
+
+from app.models import MemoryItem, MemoryProfile, MemoryProfileEvidence, User
+from app.models.common import now_utc
+from app.models.memory import (
+    MemoryExplicitness,
+    MemoryProfileOperation,
+    MemoryProfileStatus,
+    MemoryScope,
+    MemorySource,
+    MemoryStatus,
+)
+from app.services import memory_embeddings
+from app.services.memory_profile_common import (
+    CANDIDATE_CONFIDENCE_THRESHOLD,
+    CANDIDATE_SUPPORT_THRESHOLD,
+    USER_PROMOTION_DISTINCT_GAMES,
+    UTILITY_ALPHA,
+    candidate_expires_at,
+    clamp_score,
+    clean_profile_text,
+    count_distinct_supporting_games,
+    link_profile_evidence,
+    normalize_profile_text,
+    profile_number,
+    record_profile_version,
+    refresh_profile_embedding,
+)
 from app.services.memory_profile_extraction import (
-    _refresh_embedding_for_summary,
-    _value_for,
+    canonical_profile_value,
     extract_profile_claims,
 )
+from app.services.memory_repository import create_memory
+
 
 def _same_value(left: str, right: str) -> bool:
-    a, b = _normalized(left), _normalized(right)
+    a, b = normalize_profile_text(left), normalize_profile_text(right)
     return bool(a and b and (a == b or (len(a) >= 8 and a in b) or (len(b) >= 8 and b in a)))
 
 
@@ -73,7 +103,7 @@ def _retire_source_if_unused(db: Session, profile: MemoryProfile, replacement: M
 
 def _support_adjusted_confidence(profile: MemoryProfile, claim_confidence: float) -> float:
     support_count = max(1, int(profile.support_count or 1))
-    base = max(_float(profile.confidence), claim_confidence)
+    base = max(profile_number(profile.confidence), claim_confidence)
     return round(min(0.98, base + 0.07 * max(0, support_count - 1)), 3)
 
 
@@ -89,18 +119,18 @@ def _reinforce_profile(
         profile.support_count = max(1, int(profile.support_count or 1)) + 1
     previous_summary = profile.summary_text
     profile.confidence = _support_adjusted_confidence(profile, claim["confidence"])
-    profile.scope_confidence = max(_float(profile.scope_confidence), claim["scope_confidence"])
+    profile.scope_confidence = max(profile_number(profile.scope_confidence), claim["scope_confidence"])
     profile.summary_text = claim["summary_text"]
     profile.evidence_span = claim["evidence_span"]
     profile.source_memory_id = item.id
     profile.last_supported_at = now_utc()
-    _refresh_embedding_for_summary(profile, previous_summary)
+    refresh_profile_embedding(profile, previous_summary)
     if profile.status == MemoryProfileStatus.CANDIDATE:
-        profile.expires_at = _candidate_expires_at()
+        profile.expires_at = candidate_expires_at()
     profile.version += 1
     profile.updated_at = now_utc()
-    _link_profile_evidence(db, profile, item, claim)
-    _record_version(
+    link_profile_evidence(db, profile, item, claim)
+    record_profile_version(
         db,
         profile,
         MemoryProfileOperation.REINFORCED,
@@ -120,34 +150,13 @@ def _supersede_profile(
     profile.status = MemoryProfileStatus.SUPERSEDED
     profile.version += 1
     profile.updated_at = now_utc()
-    _record_version(
+    record_profile_version(
         db,
         profile,
         MemoryProfileOperation.SUPERSEDED,
         source_memory_id=source_memory_id,
         reason=reason,
     )
-
-
-def _distinct_supporting_games(db: Session, profile: MemoryProfile) -> int:
-    db.flush()
-    rows = (
-        db.query(MemoryItem.source_game_id, MemoryItem.scope_type, MemoryItem.scope_id)
-        .join(MemoryProfileEvidence, MemoryProfileEvidence.memory_id == MemoryItem.id)
-        .filter(
-            MemoryProfileEvidence.profile_id == profile.id,
-            MemoryProfileEvidence.is_active.is_(True),
-            MemoryItem.status != MemoryStatus.DELETED,
-        )
-        .distinct()
-        .all()
-    )
-    games = {
-        source_game_id or (scope_id if scope_type == MemoryScope.GAME else None)
-        for source_game_id, scope_type, scope_id in rows
-    }
-    games.discard(None)
-    return len(games)
 
 
 def _promote_candidate_if_ready(
@@ -164,17 +173,17 @@ def _promote_candidate_if_ready(
         # A global preference is promoted by breadth, not by repetition:
         # the same value must have been expressed in distinct games.
         ready = (
-            _float(profile.confidence) >= CANDIDATE_CONFIDENCE_THRESHOLD
-            and _float(profile.scope_confidence) >= 0.80
-            and _distinct_supporting_games(db, profile) >= USER_PROMOTION_DISTINCT_GAMES
+            profile_number(profile.confidence) >= CANDIDATE_CONFIDENCE_THRESHOLD
+            and profile_number(profile.scope_confidence) >= 0.80
+            and count_distinct_supporting_games(db, profile) >= USER_PROMOTION_DISTINCT_GAMES
         )
         if ready and not reason:
             reason = "Candidate preference was independently supported in multiple games."
     else:
         ready = (
             int(profile.support_count or 1) >= CANDIDATE_SUPPORT_THRESHOLD
-            and _float(profile.confidence) >= CANDIDATE_CONFIDENCE_THRESHOLD
-            and _float(profile.scope_confidence) >= 0.80
+            and profile_number(profile.confidence) >= CANDIDATE_CONFIDENCE_THRESHOLD
+            and profile_number(profile.scope_confidence) >= 0.80
         )
     if not (ready or force):
         return False
@@ -191,7 +200,7 @@ def _promote_candidate_if_ready(
             profile.status = MemoryProfileStatus.DELETED
             profile.version += 1
             profile.updated_at = now_utc()
-            _record_version(
+            record_profile_version(
                 db,
                 profile,
                 MemoryProfileOperation.DELETED,
@@ -211,7 +220,7 @@ def _promote_candidate_if_ready(
     profile.expires_at = None
     profile.version += 1
     profile.updated_at = now_utc()
-    _record_version(
+    record_profile_version(
         db,
         profile,
         MemoryProfileOperation.AUTO_PROMOTED,
@@ -232,7 +241,7 @@ def _create_profile(
     now = now_utc()
     vector = claim.get("embedding")
     if not vector:
-        embedded = memory_embeddings.embed_texts([_clean(claim["summary_text"], 500)])
+        embedded = memory_embeddings.embed_texts([clean_profile_text(claim["summary_text"], 500)])
         vector = embedded[0] if embedded else None
     profile = MemoryProfile(
         user_id=item.user_id,
@@ -253,7 +262,7 @@ def _create_profile(
         utility_score=0.5,
         utility_observation_count=0,
         last_supported_at=now,
-        expires_at=_candidate_expires_at() if status == MemoryProfileStatus.CANDIDATE else None,
+        expires_at=candidate_expires_at() if status == MemoryProfileStatus.CANDIDATE else None,
         embedding=vector,
         embedding_model=memory_embeddings.embedding_model() if vector else None,
         embedding_updated_at=now if vector else None,
@@ -261,7 +270,7 @@ def _create_profile(
     )
     db.add(profile)
     db.flush()
-    _link_profile_evidence(db, profile, item, claim)
+    link_profile_evidence(db, profile, item, claim)
     return profile
 
 
@@ -278,7 +287,7 @@ def expire_stale_candidates(db: Session, user_id: str | None = None) -> int:
         profile.status = MemoryProfileStatus.DELETED
         profile.version += 1
         profile.updated_at = now_utc()
-        _record_version(
+        record_profile_version(
             db,
             profile,
             MemoryProfileOperation.EXPIRED,
@@ -349,7 +358,7 @@ def _reconcile_claims_for_item(
                 status=MemoryProfileStatus.CANDIDATE,
                 conflicts_with_id=existing.id if existing else None,
             )
-            _record_version(
+            record_profile_version(
                 db,
                 profile,
                 MemoryProfileOperation.CANDIDATE,
@@ -372,7 +381,7 @@ def _reconcile_claims_for_item(
             status=MemoryProfileStatus.ACTIVE,
             conflicts_with_id=existing.id if existing else None,
         )
-        _record_version(
+        record_profile_version(
             db,
             profile,
             MemoryProfileOperation.CREATED,
@@ -452,16 +461,14 @@ def backfill_missing_profiles(db: Session, user_id: str, *, limit: int = 200) ->
     return len(items)
 
 
-def correct_profile(
+def apply_profile_correction(
     db: Session,
     profile: MemoryProfile,
     *,
     value_text: str | None = None,
     summary_text: str | None = None,
 ) -> MemoryProfile:
-    from app.services.memory import create_memory
-
-    correction_text = _clean(summary_text or value_text or profile.summary_text, 1000)
+    correction_text = clean_profile_text(summary_text or value_text or profile.summary_text, 1000)
     old_source_id = profile.source_memory_id
     source = create_memory(
         db,
@@ -493,12 +500,12 @@ def correct_profile(
             reason="A manual correction replaced the active value in the same scope.",
         )
     if value_text is not None:
-        profile.value_text = _clean(value_text, 500)
+        profile.value_text = clean_profile_text(value_text, 500)
     if summary_text is not None:
-        profile.summary_text = _clean(summary_text, 1000)
+        profile.summary_text = clean_profile_text(summary_text, 1000)
         profile.evidence_span = profile.summary_text
         if value_text is None:
-            profile.value_text = _value_for(profile.profile_key, profile.summary_text)
+            profile.value_text = canonical_profile_value(profile.profile_key, profile.summary_text)
     profile.source_memory_id = source.id
     profile.confidence = 1.0
     profile.scope_confidence = 1.0
@@ -508,7 +515,7 @@ def correct_profile(
     profile.last_supported_at = now_utc()
     profile.expires_at = None
     # Never retain a vector for text that no longer matches it.
-    refreshed = memory_embeddings.embed_texts([_clean(profile.summary_text, 500)])
+    refreshed = memory_embeddings.embed_texts([clean_profile_text(profile.summary_text, 500)])
     profile.embedding = refreshed[0] if refreshed else None
     profile.embedding_model = memory_embeddings.embedding_model() if refreshed else None
     profile.embedding_updated_at = now_utc() if refreshed else None
@@ -517,7 +524,7 @@ def correct_profile(
     db.query(MemoryProfileEvidence).filter(
         MemoryProfileEvidence.profile_id == profile.id
     ).update({MemoryProfileEvidence.is_active: False}, synchronize_session=False)
-    _link_profile_evidence(
+    link_profile_evidence(
         db,
         profile,
         source,
@@ -530,7 +537,7 @@ def correct_profile(
             "explicitness": MemoryExplicitness.MANUAL,
         },
     )
-    _record_version(
+    record_profile_version(
         db,
         profile,
         MemoryProfileOperation.CORRECTED,
@@ -539,22 +546,6 @@ def correct_profile(
     _retire_memory_source_if_unused(db, old_source_id, source)
     if active_conflict and active_conflict.id != profile.id:
         _retire_source_if_unused(db, active_conflict, source)
-    from app.services import memory_entities
-
-    memory_entities.upsert_claim_entities(
-        db,
-        user_id=profile.user_id,
-        items=[source],
-        claims_by_memory_id={
-            source.id: [
-                {
-                    "profile_key": profile.profile_key,
-                    "category": profile.category,
-                    "entities": [],
-                }
-            ]
-        },
-    )
     return profile
 
 
@@ -571,7 +562,7 @@ def record_profile_utility(
     ids = list(dict.fromkeys(profile_id for profile_id in profile_ids if profile_id))
     if not ids:
         return []
-    score = _clamp(outcome_score)
+    score = clamp_score(outcome_score)
     profiles = (
         db.query(MemoryProfile)
         .filter(
@@ -583,12 +574,12 @@ def record_profile_utility(
     )
     for profile in profiles:
         count = int(profile.utility_observation_count or 0)
-        old_score = _float(profile.utility_score) if profile.utility_score is not None else 0.5
+        old_score = profile_number(profile.utility_score) if profile.utility_score is not None else 0.5
         profile.utility_score = round(old_score * (1 - UTILITY_ALPHA) + score * UTILITY_ALPHA, 3)
         profile.utility_observation_count = count + 1
         profile.version += 1
         profile.updated_at = now_utc()
-        _record_version(
+        record_profile_version(
             db,
             profile,
             MemoryProfileOperation.UTILITY_UPDATED,
@@ -633,7 +624,7 @@ def record_generation_profile_utility(
         + 0.10 * int(state.get("gameplay_repair_attempts") or 0)
         + 0.15 * int(state.get("replan_attempts") or 0)
     )
-    score = _clamp(base_score - penalty)
+    score = clamp_score(base_score - penalty)
     reason = (
         f"Generation outcome utility: validation={valid}, gameplay={gameplay_passed}, "
         f"repair_attempts={state.get('repair_attempts') or 0}, "
@@ -649,4 +640,12 @@ def record_generation_profile_utility(
     )
 
 
-__all__ = [name for name in globals() if not name.startswith("__")]
+__all__ = [
+    "apply_profile_correction",
+    "backfill_missing_profiles",
+    "expire_stale_candidates",
+    "reconcile_memory_item",
+    "reconcile_memory_items",
+    "record_generation_profile_utility",
+    "record_profile_utility",
+]

@@ -8,7 +8,7 @@ Create Date: 2026-07-02
 - 本文件不 import app.models —— 基线必须是历史快照，随模型演进会导致旧迁移不可重放
   （旧 0001 用 Base.metadata.create_all，全新库跑到 0002 即撞列）。
 - embedding 维度固化为 1536（与旧 0011 的 DIMENSIONS 一致）；SQLite（开发/测试）落 JSON。
-- 在本次 squash 之前建的库：执行 `alembic stamp head --purge` 对齐版本号，数据不动。
+- 在本次 squash 之前建的库：执行 `alembic stamp 0001_baseline --purge`，再 `alembic upgrade head`。
 后续 schema 变更请用 `alembic revision --autogenerate -m "..."` 生成增量迁移。
 """
 from alembic import op

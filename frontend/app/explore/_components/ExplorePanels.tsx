@@ -1,11 +1,11 @@
 import { ArrowRight, BadgeCheck, Calendar, CirclePlay, Play, Sparkles } from "lucide-react";
+import Link from "next/link";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { cn } from "@/lib/utils";
 import { heroImageForGame, type HomeGame } from "../_lib/explore-data";
 
 export function Aurora() {
@@ -21,13 +21,9 @@ export function Aurora() {
 export function ShowcaseCard({
   featured,
   trending,
-  onOpen,
-  onPlay,
 }: {
   featured: HomeGame;
   trending: HomeGame[];
-  onOpen: (id?: string) => void;
-  onPlay: (id?: string) => void;
 }) {
   return (
     <Card className="gap-0 overflow-hidden rounded-3xl border-white/60 bg-white/60 p-2 shadow-2xl shadow-slate-900/10 backdrop-blur-xl [animation:pf-rise-in_0.6s_var(--pf-ease)_0.1s_both]">
@@ -38,9 +34,8 @@ export function ShowcaseCard({
           className="size-full object-cover transition-transform duration-700 group-hover:scale-105"
         />
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-slate-950/75 via-slate-950/10 to-transparent" />
-        <button
-          type="button"
-          onClick={() => onOpen(featured.id)}
+        <Link
+          href={`/games/${featured.id}`}
           className="absolute inset-0 z-10 cursor-pointer rounded-[1.25rem]"
           aria-label={`Open ${featured.title}`}
         />
@@ -55,30 +50,28 @@ export function ShowcaseCard({
             <h3 className="font-display text-xl font-bold text-white drop-shadow-sm">{featured.title}</h3>
             <p className="mt-0.5 text-xs font-medium text-white/80">{featured.playsLabel}</p>
           </div>
-          <button
-            type="button"
-            onClick={() => onPlay(featured.id)}
+          <Link
+            href={`/play/${featured.id}`}
             className="flex shrink-0 items-center gap-1.5 rounded-full bg-white px-4 py-2 text-xs font-bold text-slate-900 shadow-lg transition-transform hover:scale-105"
           >
             <Play className="size-3.5 fill-current" />
             Play
-          </button>
+          </Link>
         </div>
       </div>
 
       <div className="px-2.5 pt-3 pb-1.5">
         <div className="flex items-center justify-between px-1">
           <span className="text-xs font-bold tracking-wide text-slate-500 uppercase">Trending now</span>
-          <button type="button" onClick={() => onOpen(undefined)} className="flex items-center gap-1 text-xs font-semibold text-violet-600 hover:text-violet-700">
+          <a href="#explore" className="flex items-center gap-1 text-xs font-semibold text-violet-600 hover:text-violet-700">
             View all <ArrowRight className="size-3" />
-          </button>
+          </a>
         </div>
         <div className="mt-2 grid gap-1">
           {trending.map((game) => (
-            <button
+            <Link
               key={game.id ?? game.title}
-              type="button"
-              onClick={() => onOpen(game.id)}
+              href={`/games/${game.id}`}
               className="group flex items-center gap-3 rounded-xl p-1.5 text-left transition-colors hover:bg-violet-50/70"
             >
               <img src={game.thumb} alt="" className="size-11 shrink-0 rounded-lg object-cover" />
@@ -87,7 +80,7 @@ export function ShowcaseCard({
                 <span className="text-[11px] text-slate-400">{game.playsLabel}</span>
               </div>
               <ArrowRight className="size-4 shrink-0 text-slate-300 transition-all group-hover:translate-x-0.5 group-hover:text-violet-500" />
-            </button>
+            </Link>
           ))}
         </div>
       </div>
@@ -95,7 +88,7 @@ export function ShowcaseCard({
   );
 }
 
-export function FeaturedSpotlight({ game, onPlay }: { game: HomeGame; onPlay: (id?: string) => void }) {
+export function FeaturedSpotlight({ game }: { game: HomeGame }) {
   return (
     <Card className="grid grid-cols-1 items-center gap-6 overflow-hidden rounded-3xl border-slate-200/80 bg-white/80 p-5 backdrop-blur lg:grid-cols-[0.85fr_1.15fr] lg:p-6">
       <div className="group relative aspect-[16/10] overflow-hidden rounded-2xl">
@@ -124,11 +117,10 @@ export function FeaturedSpotlight({ game, onPlay }: { game: HomeGame; onPlay: (i
           <span className="flex items-center gap-1.5 text-xs text-slate-500"><CirclePlay className="size-4" />{game.playsLabel}</span>
           <span className="flex items-center gap-1.5 text-xs text-slate-500"><Calendar className="size-4" />{game.date}</span>
           <Button
-            onClick={() => onPlay(game.id)}
+            asChild
             className="ml-auto bg-gradient-to-r from-violet-600 to-blue-500 text-white shadow-lg shadow-violet-500/30 transition-all hover:-translate-y-0.5 hover:shadow-xl hover:shadow-violet-500/40"
           >
-            <Play className="size-4 fill-current" />
-            Play Now
+            <Link href={`/play/${game.id}`}><Play className="size-4 fill-current" />Play Now</Link>
           </Button>
         </div>
       </div>
@@ -136,13 +128,12 @@ export function FeaturedSpotlight({ game, onPlay }: { game: HomeGame; onPlay: (i
   );
 }
 
-export function GameCard({ game, onOpen, onPlay }: { game: HomeGame; onOpen: () => void; onPlay: () => void }) {
+export function GameCard({ game }: { game: HomeGame }) {
   return (
     <Card
-      onClick={onOpen}
-      className="group cursor-pointer gap-0 overflow-hidden rounded-2xl border-slate-200/80 bg-white/90 p-0 pt-0 transition-all duration-300 hover:-translate-y-1.5 hover:border-violet-300 hover:shadow-xl hover:shadow-violet-500/10"
+      className="group gap-0 overflow-hidden rounded-2xl border-slate-200/80 bg-white/90 p-0 pt-0 transition-all duration-300 hover:-translate-y-1.5 hover:border-violet-300 hover:shadow-xl hover:shadow-violet-500/10"
     >
-      <div className="relative aspect-[16/9] overflow-hidden">
+      <Link href={`/games/${game.id}`} className="relative block aspect-[16/9] overflow-hidden">
         <img src={game.image} alt={`${game.title} preview`} className="size-full object-cover transition-transform duration-500 group-hover:scale-105" />
         {game.ai ? (
           <Badge className="absolute top-2.5 right-2.5 gap-1 border-0 bg-white/90 text-[10px] text-violet-700 shadow-sm backdrop-blur">
@@ -150,9 +141,9 @@ export function GameCard({ game, onOpen, onPlay }: { game: HomeGame; onOpen: () 
             AI
           </Badge>
         ) : null}
-      </div>
+      </Link>
       <div className="flex flex-1 flex-col p-4">
-        <h3 className="font-display text-lg leading-tight font-bold text-slate-900">{game.title}</h3>
+        <Link href={`/games/${game.id}`} className="font-display text-lg leading-tight font-bold text-slate-900 hover:text-violet-700">{game.title}</Link>
         <div className="mt-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-500">
           <Avatar className="size-4.5">
             <AvatarFallback className="bg-gradient-to-br from-violet-600 to-blue-500 text-[9px] font-bold text-white">{game.authorInit}</AvatarFallback>
@@ -169,12 +160,11 @@ export function GameCard({ game, onOpen, onPlay }: { game: HomeGame; onOpen: () 
           <span className="flex items-center gap-1"><Calendar className="size-3.5" />{game.date}</span>
           <span className="flex items-center gap-1"><CirclePlay className="size-3.5" />{game.plays}</span>
           <Button
+            asChild
             size="sm"
-            onClick={(event) => { event.stopPropagation(); onPlay(); }}
             className="ml-auto h-8 gap-1.5 bg-gradient-to-r from-violet-600 to-blue-500 text-white shadow-sm transition-transform hover:scale-105"
           >
-            <Play className="size-3.5 fill-current" />
-            Play
+            <Link href={`/play/${game.id}`}><Play className="size-3.5 fill-current" />Play</Link>
           </Button>
         </div>
       </div>

@@ -17,12 +17,13 @@ test("switch a game back to an earlier version from Studio", async ({ page, requ
   await expect(page.getByRole("button", { name: "Play Preview" })).toBeVisible({ timeout: 90_000 });
 
   await page.goto("/me?section=games");
-  const firstCard = page.locator(".pf-studio-game-card").first();
-  await firstCard.getByRole("button", { name: /Versions/ }).click();
-  await expect(firstCard.getByText("v2")).toBeVisible();
-  await expect(firstCard.getByText("v1")).toBeVisible();
+  const versionsButton = page.getByRole("button", { name: "Versions", exact: true });
+  await expect(versionsButton).toHaveCount(1);
+  await versionsButton.click();
+  await expect(page.getByRole("group", { name: "Version v2", exact: true })).toBeVisible();
 
-  const v1Row = firstCard.locator(".pf-version-row").filter({ hasText: "v1" });
+  const v1Row = page.getByRole("group", { name: "Version v1", exact: true });
+  await expect(v1Row).toBeVisible();
   await v1Row.getByRole("button", { name: "Activate" }).click();
   await expect(v1Row.getByRole("button", { name: "Current" })).toBeVisible();
 });

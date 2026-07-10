@@ -2,51 +2,99 @@
 
 from __future__ import annotations
 
-from app.services.memory_profile_common import *
+import hashlib
+import json
+import re
 
-def _split_claims(text: str) -> list[str]:
-    parts = [_clean(part, 500).strip("；;，, ") for part in _CLAIM_SPLIT_RE.split(text)]
-    return [part for part in parts if len(part) >= 4] or [_clean(text, 500)]
+from sqlalchemy import and_, or_, text
+from sqlalchemy.orm import Session
+
+from app.core.config import settings
+from app.models import GenerationTask, MemoryItem, MemoryProfile, MemorySettings
+from app.models.common import TaskStatus, now_utc
+from app.models.memory import (
+    MemoryCategory,
+    MemoryExplicitness,
+    MemoryProfileStatus,
+    MemoryScope,
+    MemorySource,
+)
+from app.services import memory_embeddings
+from app.services.memory_profile_common import (
+    ATTRIBUTE_RULES,
+    CANONICAL_VALUES,
+    CLAIM_SPLIT_PATTERN,
+    GAME_SCOPE_PATTERN,
+    GENERALIZABLE_CATEGORIES,
+    GLOBAL_SCOPE_PATTERN,
+    HASH_KEY_PATTERN,
+    HEDGE_PATTERN,
+    KEY_ADOPTION_PEER_LIMIT,
+    NEGATED_VALUE_PATTERN,
+    NEGATION_TOKEN_PATTERN,
+    PROFILE_CONTEXT_LIMIT,
+    PROFILE_KEY_SIMILARITY_THRESHOLD,
+    PROFILE_VALUE_SIMILARITY_THRESHOLD,
+    TASK_SCOPE_PATTERN,
+    TASTE_PATTERN,
+    VALID_CATEGORIES,
+    clamp_score,
+    clean_profile_text,
+    normalize_profile_text,
+    profile_number,
+    scope_priority_expr,
+)
+from app.services.memory_rules import category_for_text
+
+
+def split_profile_claims(text: str) -> list[str]:
+    parts = [clean_profile_text(part, 500).strip("；;，, ") for part in CLAIM_SPLIT_PATTERN.split(text)]
+    return [part for part in parts if len(part) >= 4] or [clean_profile_text(text, 500)]
+
+
+def has_persistent_profile_claim(raw: str) -> bool:
+    """Return whether at least one claim is not explicitly task-scoped."""
+    return any(not TASK_SCOPE_PATTERN.search(claim) for claim in split_profile_claims(raw))
 
 
 def _attribute_for(claim: str, category: str) -> str:
     low = claim.lower()
-    for key, _, terms in _ATTRIBUTE_RULES:
+    for key, _, terms in ATTRIBUTE_RULES:
         if any(term in low for term in terms):
             return key
-    digest = hashlib.sha256(_normalized(claim).encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256(normalize_profile_text(claim).encode("utf-8")).hexdigest()[:16]
     return f"{category}:{digest}"
 
 
 def _category_for_attribute(attribute: str, fallback: str) -> str:
-    for key, category, _ in _ATTRIBUTE_RULES:
+    for key, category, _ in ATTRIBUTE_RULES:
         if key == attribute:
             return category
-    return fallback if fallback in _VALID_CATEGORIES else MemoryCategory.FEEDBACK
+    return fallback if fallback in VALID_CATEGORIES else MemoryCategory.FEEDBACK
 
 
-def _value_for(attribute: str, claim: str) -> str:
+def canonical_profile_value(attribute: str, claim: str) -> str:
     low = claim.lower()
     matches: list[tuple[int, str]] = []
-    for value, terms in _CANONICAL_VALUES.get(attribute, []):
+    for value, terms in CANONICAL_VALUES.get(attribute, []):
         for term in terms:
             start = low.find(term)
             while start >= 0:
                 prefix = low[max(0, start - 20) : start]
-                if not _NEGATED_VALUE_RE.search(prefix):
+                if not NEGATED_VALUE_PATTERN.search(prefix):
                     matches.append((start, value))
                 start = low.find(term, start + len(term))
     if matches:
         return max(matches, key=lambda match: match[0])[1]
-    return _normalized(claim)[:500] or claim[:500]
+    return normalize_profile_text(claim)[:500] or claim[:500]
 
 
 def _is_hash_key(profile_key: str) -> bool:
-    return bool(_HASH_KEY_RE.match(profile_key or ""))
+    return bool(HASH_KEY_PATTERN.match(profile_key or ""))
 
 
 def _negation_parity(text: str) -> bool:
-    return bool(_NEGATION_TOKEN_RE.search(text or ""))
+    return bool(NEGATION_TOKEN_PATTERN.search(text or ""))
 
 
 # 反义方向词对：一字之差的反向偏好（"不要太高" vs "不要太低"）embedding 相似度
@@ -71,18 +119,6 @@ def _direction_conflict(a: str, b: str) -> bool:
     return False
 
 
-def _refresh_embedding_for_summary(profile: MemoryProfile, previous_summary: str | None) -> None:
-    """summary 变更后向量必须跟随（correct_profile 的既有原则：Never retain a
-    vector for text that no longer matches it）。embedding 服务不可用时置空 ——
-    陈旧向量会让 _adopt_similar_key 的同义认领随强化次数漂移。"""
-    if _clean(previous_summary or "") == _clean(profile.summary_text or ""):
-        return
-    refreshed = memory_embeddings.embed_texts([_clean(profile.summary_text, 500)])
-    profile.embedding = refreshed[0] if refreshed else None
-    profile.embedding_model = memory_embeddings.embedding_model() if refreshed else None
-    profile.embedding_updated_at = now_utc() if refreshed else None
-
-
 def _backfill_profile_embeddings(peers: list[MemoryProfile]) -> None:
     model = memory_embeddings.embedding_model()
     stale = [
@@ -92,7 +128,7 @@ def _backfill_profile_embeddings(peers: list[MemoryProfile]) -> None:
     ]
     if not stale:
         return
-    refreshed = memory_embeddings.embed_texts([_clean(peer.summary_text, 500) for peer in stale])
+    refreshed = memory_embeddings.embed_texts([clean_profile_text(peer.summary_text, 500) for peer in stale])
     if not refreshed or len(refreshed) != len(stale):
         return
     now = now_utc()
@@ -154,7 +190,7 @@ def _adopt_similar_key(
     )
     if not policy_peers:
         return None, None, None
-    vectors = memory_embeddings.embed_texts([_clean(claim_text, 500)])
+    vectors = memory_embeddings.embed_texts([clean_profile_text(claim_text, 500)])
     if not vectors:
         return None, None, None
     claim_vector = vectors[0]
@@ -195,11 +231,11 @@ def _scope_for(
 ) -> tuple[str, str | None, float, str]:
     if item.source_type == MemorySource.MANUAL:
         return item.scope_type, item.scope_id, 1.0, MemoryExplicitness.MANUAL
-    if _GLOBAL_SCOPE_RE.search(claim):
+    if GLOBAL_SCOPE_PATTERN.search(claim):
         return MemoryScope.USER, None, 0.97, MemoryExplicitness.EXPLICIT
-    if _TASK_SCOPE_RE.search(claim):
+    if TASK_SCOPE_PATTERN.search(claim):
         return MemoryScope.TASK, task_id or item.source_task_id, 0.95, MemoryExplicitness.EXPLICIT
-    if _GAME_SCOPE_RE.search(claim):
+    if GAME_SCOPE_PATTERN.search(claim):
         return MemoryScope.GAME, game_id or item.source_game_id or item.scope_id, 0.96, MemoryExplicitness.EXPLICIT
     if item.source_type == MemorySource.IDEA:
         return MemoryScope.GAME, game_id or item.source_game_id or item.scope_id, 0.90, MemoryExplicitness.EXPLICIT
@@ -207,7 +243,7 @@ def _scope_for(
 
 
 def _base_confidence(item: MemoryItem, evidence: str) -> tuple[float, str]:
-    hedged = bool(_HEDGE_RE.search(evidence))
+    hedged = bool(HEDGE_PATTERN.search(evidence))
     if item.source_type == MemorySource.MANUAL:
         return 1.0, MemoryExplicitness.MANUAL
     if hedged:
@@ -224,16 +260,14 @@ def _deterministic_claims(
     game_id: str | None,
     task_id: str | None,
 ) -> list[dict]:
-    from app.services.memory import _category_for
-
     claims = []
-    for evidence in _split_claims(item.raw_text):
+    for evidence in split_profile_claims(item.raw_text):
         scope_type, scope_id, scope_confidence, scope_explicitness = _scope_for(
             evidence, item, game_id=game_id, task_id=task_id
         )
         if scope_type != MemoryScope.USER and not scope_id:
             continue
-        fallback_category = item.category or _category_for(evidence)
+        fallback_category = item.category or category_for_text(evidence)
         attribute = _attribute_for(evidence, fallback_category)
         value_text = None
         claim_vector = None
@@ -251,7 +285,7 @@ def _deterministic_claims(
             "scope_id": scope_id,
             "profile_key": attribute,
             "category": category,
-            "value_text": value_text or _value_for(attribute, evidence),
+            "value_text": value_text or canonical_profile_value(attribute, evidence),
             "summary_text": evidence,
             "evidence_span": evidence,
             "confidence": confidence,
@@ -279,12 +313,12 @@ def _with_user_shadow_claims(claims: list[dict], item: MemoryItem) -> list[dict]
         if claim["scope_type"] != MemoryScope.GAME:
             continue
         evidence = claim["evidence_span"]
-        if _GAME_SCOPE_RE.search(evidence) or _TASK_SCOPE_RE.search(evidence):
+        if GAME_SCOPE_PATTERN.search(evidence) or TASK_SCOPE_PATTERN.search(evidence):
             continue
         generalizable = (
-            claim["category"] in _GENERALIZABLE_CATEGORIES
+            claim["category"] in GENERALIZABLE_CATEGORIES
             or suggested_user
-            or bool(_TASTE_RE.search(evidence))
+            or bool(TASTE_PATTERN.search(evidence))
         )
         if not generalizable:
             continue
@@ -309,7 +343,7 @@ def _parse_json_object(raw: str) -> dict:
         return {}
 
 
-def _profiles_for_extraction_context(
+def profiles_for_extraction_context(
     db: Session,
     *,
     user_id: str,
@@ -340,7 +374,7 @@ def _profiles_for_extraction_context(
             or_(*clauses),
         )
         .order_by(
-            _scope_priority_expr(game_id=game_id, task_id=task_id),
+            scope_priority_expr(game_id=game_id, task_id=task_id),
             MemoryProfile.confidence.desc(),
             MemoryProfile.support_count.desc(),
             MemoryProfile.updated_at.desc(),
@@ -352,7 +386,7 @@ def _profiles_for_extraction_context(
     profiles.sort(
         key=lambda profile: (
             scope_order.get(profile.scope_type, 9),
-            -_float(profile.confidence),
+            -profile_number(profile.confidence),
             -int(profile.support_count or 1),
         )
     )
@@ -399,7 +433,7 @@ def _recent_game_user_messages(
     messages = []
     for task in reversed(tasks):
         content = task.feedback_text if task.task_kind == "revision" else task.idea
-        content = _clean(content, 4000)
+        content = clean_profile_text(content, 4000)
         if not content:
             continue
         messages.append(
@@ -429,7 +463,6 @@ def _llm_claims_batch(
         return None
 
     from app.agents import llm
-    from app.services.memory import _category_for
 
     system = (
         "You are a memory extractor for a game-generation agent. Return one strict JSON object. "
@@ -459,7 +492,7 @@ def _llm_claims_batch(
                 }
                 for item in eligible
             ],
-            "available_categories": sorted(_VALID_CATEGORIES),
+            "available_categories": sorted(VALID_CATEGORIES),
             "allowed_scope_types": [MemoryScope.USER, MemoryScope.GAME, MemoryScope.TASK],
             "allowed_decisions": ["active", "candidate", "evidence_only", "skip"],
             "output_schema": {
@@ -502,13 +535,13 @@ def _llm_claims_batch(
     for row in payload.get("claims") or []:
         if not isinstance(row, dict):
             continue
-        item = by_id.get(_clean(row.get("source_memory_id"), 36))
-        decision = _clean(row.get("decision"), 30)
+        item = by_id.get(clean_profile_text(row.get("source_memory_id"), 36))
+        decision = clean_profile_text(row.get("decision"), 30)
         if not item or decision not in {"active", "candidate", "evidence_only", "skip"}:
             continue
         if decision in {"evidence_only", "skip"}:
             continue
-        evidence = _clean(row.get("evidence_span"), 500)
+        evidence = clean_profile_text(row.get("evidence_span"), 500)
         if not evidence or evidence not in item.raw_text:
             continue
         scope_type, scope_id, scope_confidence, scope_explicitness = _scope_for(
@@ -516,20 +549,20 @@ def _llm_claims_batch(
         )
         if scope_type != MemoryScope.USER and not scope_id:
             continue
-        fallback_category = item.category or _category_for(evidence)
-        profile_key = _clean(row.get("profile_key"), 160) or _attribute_for(evidence, fallback_category)
-        category = _clean(row.get("category"), 40)
-        if category not in _VALID_CATEGORIES:
+        fallback_category = item.category or category_for_text(evidence)
+        profile_key = clean_profile_text(row.get("profile_key"), 160) or _attribute_for(evidence, fallback_category)
+        category = clean_profile_text(row.get("category"), 40)
+        if category not in VALID_CATEGORIES:
             category = _category_for_attribute(profile_key, fallback_category)
         base_confidence, rule_explicitness = _base_confidence(item, evidence)
         try:
-            llm_confidence = _clamp(float(row.get("confidence", base_confidence) or base_confidence))
+            llm_confidence = clamp_score(float(row.get("confidence", base_confidence) or base_confidence))
         except (TypeError, ValueError):
             llm_confidence = base_confidence
         # Asymmetric clamp: the model may lower its confidence freely (routes the
         # claim into the candidate track) but can only raise it marginally.
         confidence = min(0.94, min(max(llm_confidence, 0.30), base_confidence + 0.04))
-        llm_explicitness = _clean(row.get("explicitness"), 20)
+        llm_explicitness = clean_profile_text(row.get("explicitness"), 20)
         explicitness = (
             MemoryExplicitness.INFERRED
             if decision == "candidate"
@@ -544,14 +577,14 @@ def _llm_claims_batch(
                 "scope_id": scope_id,
                 "profile_key": profile_key,
                 "category": category,
-                "value_text": _clean(row.get("value_text"), 500) or _value_for(profile_key, evidence),
-                "summary_text": _clean(row.get("summary_text"), 1000) or evidence,
+                "value_text": clean_profile_text(row.get("value_text"), 500) or canonical_profile_value(profile_key, evidence),
+                "summary_text": clean_profile_text(row.get("summary_text"), 1000) or evidence,
                 "evidence_span": evidence,
                 "confidence": confidence,
                 "scope_confidence": scope_confidence,
                 "explicitness": explicitness,
                 "scope_explicitness": scope_explicitness,
-                "suggested_user_scope": _clean(row.get("suggested_scope"), 20) == MemoryScope.USER,
+                "suggested_user_scope": clean_profile_text(row.get("suggested_scope"), 20) == MemoryScope.USER,
                 "entities": row.get("entities") if isinstance(row.get("entities"), list) else [],
             }
         )
@@ -581,7 +614,7 @@ def extract_profile_claims_batch(
     if not items:
         return {}
     user_id = items[0].user_id
-    known_profiles = _profiles_for_extraction_context(
+    known_profiles = profiles_for_extraction_context(
         db, user_id=user_id, game_id=game_id, task_id=task_id
     )
     recent_messages = _recent_game_user_messages(
@@ -611,4 +644,11 @@ def extract_profile_claims_batch(
     return result
 
 
-__all__ = [name for name in globals() if not name.startswith("__")]
+__all__ = [
+    "canonical_profile_value",
+    "extract_profile_claims",
+    "extract_profile_claims_batch",
+    "has_persistent_profile_claim",
+    "profiles_for_extraction_context",
+    "split_profile_claims",
+]

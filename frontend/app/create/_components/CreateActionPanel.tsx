@@ -12,7 +12,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { isActiveTask } from "../_lib/create-state";
+import { isActiveTask } from "../_lib/create-progress";
 import type { Task } from "@/lib/types";
 
 export function ActionPanel({

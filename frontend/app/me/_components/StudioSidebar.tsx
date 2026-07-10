@@ -2,7 +2,7 @@
 
 import { Upload, User as UserIcon } from "lucide-react";
 
-import { Avatar } from "./StudioPanels";
+import { Avatar } from "./StudioPrimitives";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";

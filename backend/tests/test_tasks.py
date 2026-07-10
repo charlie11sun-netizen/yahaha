@@ -71,7 +71,7 @@ def test_create_task_rejects_oversized_prompt_before_persisting(client, db_sessi
 
 
 def test_create_remix_task_from_published_source(client, db_session_factory):
-    from app.models import Game, GameVersion, GenerationTask, User
+    from app.models import Game, GameVersion, GenerationDispatchOutbox, GenerationTask, User
     from app.models.common import GameSource, GameStatus
 
     headers = auth_headers(client, email="t@t.com", display_name="T")
@@ -121,6 +121,8 @@ def test_create_remix_task_from_published_source(client, db_session_factory):
     assert task.base_version == "v1"
     assert task.feedback_text == "make it faster and neon"
     assert "Source Game Remix" in task.spec_json
+    event = db.query(GenerationDispatchOutbox).filter_by(task_id=task.id).one()
+    assert task.dispatch_generation == event.dispatch_generation == 1
     db.close()
 
 
@@ -316,7 +318,7 @@ def _completed_preview(client, db_session_factory, headers):
 
 
 def test_create_revision_task_preserves_raw_feedback(client, db_session_factory):
-    from app.models import GenerationTask
+    from app.models import GenerationDispatchOutbox, GenerationTask
 
     headers = auth_headers(client, email="t@t.com", display_name="T")
     source_task_id, game_id, _ = _completed_preview(client, db_session_factory, headers)
@@ -335,6 +337,8 @@ def test_create_revision_task_preserves_raw_feedback(client, db_session_factory)
     assert revision.base_version == "v1"
     assert revision.result_game_id == game_id
     assert revision.spec_json == '{"title":"Revision Test","genre":"arcade"}'
+    event = db.query(GenerationDispatchOutbox).filter_by(task_id=revision.id).one()
+    assert revision.dispatch_generation == event.dispatch_generation == 1
     db.close()
 
 

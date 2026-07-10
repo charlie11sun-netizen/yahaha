@@ -2,9 +2,28 @@
 
 from __future__ import annotations
 
-from app.services.memory_profile_common import *
-from app.services.memory_profile_extraction import _refresh_embedding_for_summary
-from app.services.memory_profile_lifecycle import _distinct_supporting_games
+from typing import Iterable
+
+from sqlalchemy.orm import Session
+
+from app.models import MemoryItem, MemoryProfile, MemoryProfileEvidence, MemoryProfileVersion
+from app.models.common import now_utc
+from app.models.memory import (
+    MemoryExplicitness,
+    MemoryProfileOperation,
+    MemoryProfileStatus,
+    MemoryScope,
+    MemoryStatus,
+)
+from app.services.memory_profile_common import (
+    USER_PROMOTION_DISTINCT_GAMES,
+    candidate_expires_at,
+    count_distinct_supporting_games,
+    profile_number,
+    record_profile_version,
+    refresh_profile_embedding,
+)
+
 
 def _evidence_rows(db: Session, profile_id: str, *, active: bool):
     return (
@@ -31,16 +50,16 @@ def _apply_evidence_state(profile: MemoryProfile, rows) -> None:
     profile.value_text = latest.value_text
     profile.summary_text = latest.summary_text
     profile.evidence_span = latest.evidence_span
-    profile.scope_confidence = max(_float(link.scope_confidence) for link, _ in rows)
+    profile.scope_confidence = max(profile_number(link.scope_confidence) for link, _ in rows)
     profile.explicitness = latest.explicitness
     profile.support_count = len({link.memory_id for link, _ in rows})
-    base_confidence = max(_float(link.confidence) for link, _ in rows)
+    base_confidence = max(profile_number(link.confidence) for link, _ in rows)
     profile.confidence = round(
         min(0.98, base_confidence + 0.07 * max(0, profile.support_count - 1)), 3
     )
     profile.last_supported_at = latest_item.created_at
     profile.updated_at = now_utc()
-    _refresh_embedding_for_summary(profile, previous_summary)
+    refresh_profile_embedding(profile, previous_summary)
 
 
 def _restore_previous_profile(db: Session, removed_profile: MemoryProfile, *, reason: str) -> None:
@@ -70,7 +89,7 @@ def _restore_previous_profile(db: Session, removed_profile: MemoryProfile, *, re
             source.status = MemoryStatus.ACTIVE
             source.supersedes_id = None
             source.updated_at = now_utc()
-        _record_version(
+        record_profile_version(
             db,
             profile,
             MemoryProfileOperation.RESTORED,
@@ -121,12 +140,12 @@ def remove_evidence_from_profiles(
                 profile.status == MemoryProfileStatus.ACTIVE
                 and profile.scope_type == MemoryScope.USER
                 and profile.explicitness == MemoryExplicitness.INFERRED
-                and _distinct_supporting_games(db, profile) < USER_PROMOTION_DISTINCT_GAMES
+                and count_distinct_supporting_games(db, profile) < USER_PROMOTION_DISTINCT_GAMES
             ):
                 profile.status = MemoryProfileStatus.CANDIDATE
-                profile.expires_at = _candidate_expires_at()
+                profile.expires_at = candidate_expires_at()
             profile.version += 1
-            _record_version(
+            record_profile_version(
                 db,
                 profile,
                 MemoryProfileOperation.EVIDENCE_REMOVED,
@@ -148,7 +167,7 @@ def remove_evidence_from_profiles(
             profile.expires_at = None
             profile.version += 1
             profile.updated_at = now_utc()
-            _record_version(
+            record_profile_version(
                 db,
                 profile,
                 MemoryProfileOperation.DELETED,
@@ -162,4 +181,4 @@ def retire_profiles_for_memory(db: Session, memory_id: str, *, reason: str) -> N
     remove_evidence_from_profiles(db, [memory_id], reason=reason)
 
 
-__all__ = [name for name in globals() if not name.startswith("__")]
+__all__ = ["remove_evidence_from_profiles", "retire_profiles_for_memory"]

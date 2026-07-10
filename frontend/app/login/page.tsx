@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { ApiError, api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/lib/toast";
+import type { OAuthProviders, User } from "@/lib/types";
 
 function Field({ children, label }: { children: ReactNode; label: string }) {
   return (
@@ -36,15 +37,15 @@ function LoginInner() {
   const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState("");
-  const [providers, setProviders] = useState<Record<string, boolean>>({});
+  const [providers, setProviders] = useState<OAuthProviders>({ _demo: false });
   const isSignup = mode === "signup";
 
   useEffect(() => {
-    api.oauthProviders().then(setProviders).catch(() => setProviders({}));
+    api.oauthProviders().then(setProviders).catch(() => setProviders({ _demo: false }));
   }, []);
 
-  const done = (token: string, user: { name: string }) => {
-    setSession(token, user as never);
+  const done = (token: string, user: User) => {
+    setSession(token, user);
     flash(`Signed in as ${user.name}`);
     router.push(postLoginTarget);
   };

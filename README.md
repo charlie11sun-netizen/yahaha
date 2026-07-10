@@ -89,7 +89,7 @@ GameWeave 已接入面向生成与修改流程的长期记忆系统：
 ├── frontend/                # Next.js（Home / Detail / Auth / Create / Play）
 │   └── app · components/ui（shadcn） · lib
 ├── deploy/                  # 部署指南 + 跨机数据迁移脚本
-├── docker-compose.yml       # 本地：web / api / worker / postgres / redis / minio
+├── docker-compose.yml       # 本地：web / api / worker / outbox-worker / beat / postgres / redis / minio
 ├── docker-compose.prod.yml  # 生产：站点密码门禁 + 公网地址
 └── .env.example · .env.prod.example
 ```
@@ -97,8 +97,8 @@ GameWeave 已接入面向生成与修改流程的长期记忆系统：
 ## 与设计文档的已知差异（MVP 取舍）
 
 - **鉴权**：邮箱 JWT（注册/登录/me/改密码/改资料/删号，登录校验 `is_active`）+ **真实 Google/GitHub OAuth 授权码流程**（`/auth/oauth/{provider}/start`+`/callback`，填好 client id/secret 即启用）。固定共享身份的 demo 登录仅在本地显式设置 `ENABLE_OAUTH_DEMO=true` 时开放，生产强制关闭。
-- **迁移**：已接入 **Alembic**（`backend/migrations`，单一固化基线 `0001_baseline`，空库可直接 `alembic upgrade head`，测试守护迁移 schema ≡ ORM schema）；开发以 `create_all` 兜底（`AUTO_CREATE_ALL`），生产 compose 关闭兜底、只走迁移。squash 之前建的库执行一次 `alembic stamp head --purge` 对齐。
-- **测试 / CI**：`backend/tests` pytest 套件（SQLite 内存库，覆盖 auth / games / tasks / uploads / 限流）+ GitHub Actions（`.github/workflows/ci.yml`：后端 pytest + 前端 tsc）。
+- **迁移**：已接入 **Alembic**（`backend/migrations`，单一固化基线 `0001_baseline`，空库可直接 `alembic upgrade head`，测试守护迁移 schema ≡ ORM schema）；开发以 `create_all` 兜底（`AUTO_CREATE_ALL`），生产 compose 关闭兜底、只走迁移。squash 之前建的库先执行 `alembic stamp 0001_baseline --purge`，再执行 `alembic upgrade head`。
+- **测试 / CI**：`backend/tests` pytest 套件（SQLite 内存库，覆盖 auth / games / tasks / uploads / 限流）+ GitHub Actions（`.github/workflows/ci.yml`：后端 pytest；前端依赖审计、OpenAPI 生成物漂移检查、ESLint、TypeScript 和 `next build`）。前端请求通过 `openapi-fetch` 消费生成的 `paths`，后端契约变化需执行 `cd frontend && npm run openapi:generate` 并提交 `lib/api-types.ts`。
 - **加固**：Redis IP 限流、安全响应头、上传大小/类型校验、播放计数防刷（预览不计数、原子自增）、发布时向 bundle 注入 CSP（`connect-src 'none'`，浏览器层强制 manifest 的 `network:false`）、未发布游戏的评论/排行/manifest 与详情页同一可见性规则、`/health/ready` 就绪检查（DB/Redis/S3）。
 - **生成**：默认 `USE_REAL_MODEL=false` 走 mock 流水线（保留 5-Agent 步骤与日志，从模板产出真实可玩 bundle 并上传 OSS）；置 `true` 走 **LangGraph 真实链路**（planner→designer→coder→sandbox QA，QA 不过自动回 coder 重试），调用 GPT-5.5 生成全新游戏代码、校验后上传 OSS。两条路径共用同一套步骤/日志流式展示。
 - **记忆**：已实现原始证据、Profile 汇总、版本历史、混合检索和自动冲突处理；candidate 记忆后台积累并自动晋升（game 级按重复证据、user 级按跨游戏证据），不要求用户确认；自然表达的全局偏好通过「影子 candidate + 跨游戏晋升」通道自动形成，无需特定措辞。

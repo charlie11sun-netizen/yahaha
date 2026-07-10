@@ -33,6 +33,8 @@ def public_browse_request(method: str, path: str) -> bool:
         return True
     if path.startswith("/games/") and method == "GET":
         return True
+    if path.startswith("/users/") and method == "GET":
+        return True
     if path.endswith("/play") and path.startswith("/games/") and method == "POST":
         return True
     if path.endswith("/score") and path.startswith("/games/") and method == "POST":

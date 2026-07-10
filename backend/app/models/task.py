@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -54,6 +55,7 @@ class GenerationTask(PkMixin, TimestampMixin, Base):
     feedback_brief: Mapped[str | None] = mapped_column(Text, nullable=True)
     dimension: Mapped[str] = mapped_column(String(8), default="2d", server_default="2d")  # 2d | 3d
     status: Mapped[str] = mapped_column(String(20), default=TaskStatus.PENDING, index=True)
+    dispatch_generation: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     current_step: Mapped[int] = mapped_column(Integer, default=0)
     current_agent: Mapped[str | None] = mapped_column(String(40), nullable=True)
     result_game_id: Mapped[str | None] = mapped_column(
@@ -82,6 +84,32 @@ class GenerationTask(PkMixin, TimestampMixin, Base):
     )
     assets: Mapped[list["Asset"]] = relationship("Asset", secondary=task_assets, lazy="selectin")
     result_game = relationship("Game", lazy="joined", foreign_keys=[result_game_id])
+
+
+class GenerationDispatchOutbox(PkMixin, TimestampMixin, Base):
+    __tablename__ = "generation_dispatch_outbox"
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id",
+            "dispatch_generation",
+            name="uq_generation_dispatch_task_generation",
+        ),
+        Index(
+            "ix_generation_dispatch_outbox_ready",
+            "published_at",
+            "available_at",
+            "created_at",
+        ),
+    )
+
+    task_id: Mapped[str] = mapped_column(ForeignKey("generation_tasks.id", ondelete="CASCADE"))
+    dispatch_generation: Mapped[int] = mapped_column(Integer)
+    request_id: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class AgentStep(PkMixin, TimestampMixin, Base):

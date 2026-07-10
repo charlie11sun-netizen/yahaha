@@ -52,6 +52,7 @@ function isPublicBrowsePath(pathname: string): boolean {
     pathname === "/explore" ||
     pathname === "/gate" ||
     pathname.startsWith("/games/") ||
+    pathname.startsWith("/users/") ||
     pathname.startsWith("/play/")
   );
 }
