@@ -8,7 +8,7 @@ Create Date: 2026-07-09
 from datetime import datetime, timezone
 import uuid
 
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 
@@ -19,52 +19,74 @@ depends_on = None
 
 
 def upgrade() -> None:
-    with op.batch_alter_table("generation_tasks") as batch_op:
-        batch_op.add_column(
-            sa.Column(
-                "dispatch_generation",
-                sa.Integer(),
-                nullable=False,
-                server_default=sa.text("0"),
+    bind = op.get_bind()
+    offline = context.is_offline_mode()
+    inspector = None if offline else sa.inspect(bind)
+
+    task_columns = (
+        set()
+        if inspector is None
+        else {column["name"] for column in inspector.get_columns("generation_tasks")}
+    )
+    if offline or "dispatch_generation" not in task_columns:
+        with op.batch_alter_table("generation_tasks") as batch_op:
+            batch_op.add_column(
+                sa.Column(
+                    "dispatch_generation",
+                    sa.Integer(),
+                    nullable=False,
+                    server_default=sa.text("0"),
+                )
             )
+
+    table_names = set() if inspector is None else set(inspector.get_table_names())
+    outbox_exists = "generation_dispatch_outbox" in table_names
+    if offline or not outbox_exists:
+        op.create_table(
+            "generation_dispatch_outbox",
+            sa.Column("task_id", sa.String(length=36), nullable=False),
+            sa.Column("dispatch_generation", sa.Integer(), nullable=False),
+            sa.Column(
+                "request_id", sa.String(length=128), nullable=False, server_default=""
+            ),
+            sa.Column(
+                "attempts", sa.Integer(), nullable=False, server_default=sa.text("0")
+            ),
+            sa.Column("available_at", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("last_attempt_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("last_error", sa.Text(), nullable=True),
+            sa.Column("id", sa.String(length=36), nullable=False),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+            sa.ForeignKeyConstraint(
+                ["task_id"], ["generation_tasks.id"], ondelete="CASCADE"
+            ),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint(
+                "task_id",
+                "dispatch_generation",
+                name="uq_generation_dispatch_task_generation",
+            ),
         )
 
-    op.create_table(
-        "generation_dispatch_outbox",
-        sa.Column("task_id", sa.String(length=36), nullable=False),
-        sa.Column("dispatch_generation", sa.Integer(), nullable=False),
-        sa.Column(
-            "request_id", sa.String(length=128), nullable=False, server_default=""
-        ),
-        sa.Column(
-            "attempts", sa.Integer(), nullable=False, server_default=sa.text("0")
-        ),
-        sa.Column("available_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("last_attempt_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("last_error", sa.Text(), nullable=True),
-        sa.Column("id", sa.String(length=36), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["task_id"], ["generation_tasks.id"], ondelete="CASCADE"
-        ),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "task_id",
-            "dispatch_generation",
-            name="uq_generation_dispatch_task_generation",
-        ),
+    index_names = (
+        set()
+        if inspector is None or not outbox_exists
+        else {
+            index["name"]
+            for index in inspector.get_indexes("generation_dispatch_outbox")
+        }
     )
-    op.create_index(
-        "ix_generation_dispatch_outbox_ready",
-        "generation_dispatch_outbox",
-        ["published_at", "available_at", "created_at"],
-        unique=False,
-    )
+    if offline or "ix_generation_dispatch_outbox_ready" not in index_names:
+        op.create_index(
+            "ix_generation_dispatch_outbox_ready",
+            "generation_dispatch_outbox",
+            ["published_at", "available_at", "created_at"],
+            unique=False,
+        )
 
     # Pending tasks may have been committed while their broker publish failed.
     # Move them to a fresh generation and create a durable unpublished event.
-    bind = op.get_bind()
     if bind.dialect.name == "postgresql":
         # Set-based SQL also keeps `alembic upgrade --sql` usable for production
         # change review; PostgreSQL 16 provides gen_random_uuid() natively.
@@ -82,6 +104,12 @@ def upgrade() -> None:
                     CAST(gen_random_uuid() AS VARCHAR(36)), CURRENT_TIMESTAMP
                 FROM generation_tasks
                 WHERE status = 'pending'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM generation_dispatch_outbox existing
+                      WHERE existing.task_id = generation_tasks.id
+                        AND existing.dispatch_generation = 1
+                  )
                 """
             )
         )

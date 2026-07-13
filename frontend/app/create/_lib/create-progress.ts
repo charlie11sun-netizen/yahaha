@@ -121,12 +121,13 @@ function normalizeStatus(status?: string): StepState {
   return "pending";
 }
 
-export function getBrief(task: Task | undefined, uploadedFiles: UploadedAsset[]) {
+export function getBrief(task: Task | undefined, uploadedFiles: UploadedAsset[], generatedAssetCount = 0) {
   const title = task?.game_title || task?.game?.title || summarizeIdea(task?.idea) || summarizeIdea(uploadedFiles[0]?.name) || "Untitled game";
   const source = `${title} ${task?.idea || ""}`.toLowerCase();
   const genre = inferGenre(source);
   const style = inferStyle(source);
-  const assetCount = task?.assets?.filter((asset) => asset.type === "uploaded").length ?? uploadedFiles.length;
+  const uploadedAssetCount = task?.assets?.filter((asset) => asset.type === "uploaded").length ?? uploadedFiles.length;
+  const assetCount = uploadedAssetCount + generatedAssetCount;
   const runtime = task?.dimension === "3d" ? "3D · WebGL" : task ? "2D · Canvas" : "Browser runtime";
   return { title, assetCount, genre, style, runtime };
 }
@@ -156,6 +157,7 @@ function inferStyle(source: string) {
 
 export function getProgressTitle(task?: Task) {
   if (task?.status === "succeeded") return "Game ready";
+  if (task?.status === "failed" && task.error_code === "ASSET_GENERATION_FAILED") return "Waiting for image retry";
   if (task?.status === "failed") return "Generation stopped";
   if (task?.status === "cancelled") return "Task cancelled";
   return "Creating your game";
@@ -164,9 +166,10 @@ export function getProgressTitle(task?: Task) {
 export function getCurrentIssue(task: Task | undefined, activeStep?: StepRow) {
   if (!task) return null;
   if (task.status === "failed") {
+    const imageRetryRequired = task.error_code === "ASSET_GENERATION_FAILED";
     return {
       level: "error" as const,
-      title: "Issue found",
+      title: imageRetryRequired ? "Image generation needs retry" : "Issue found",
       message: task.error || "Build validation could not pass after repair attempts.",
     };
   }
@@ -250,6 +253,11 @@ export function friendlyMessage(message: string) {
   const compact = message.replace(/\s+/g, " ").trim();
   if (isStreamTokenLine(compact)) return "";
   const lower = compact.toLowerCase();
+  if (lower.includes("brief expansion") || lower.includes("intent spec")) return "Turning your idea into a playable game brief";
+  if (lower.startsWith("tags:")) return "Core gameplay and themes identified";
+  if (lower.startsWith("runtime:")) return "Browser runtime selected";
+  if (lower.includes("retrieval strategy: none")) return "Using your brief without external references";
+  if (lower.includes("normalized prompt")) return "Game brief normalized for generation";
   if (lower.includes("repair")) return "Repair attempt started";
   if (lower.includes("playtest") || lower.includes("gameplay") || lower.includes("qa")) return "Gameplay playtest updated";
   if (lower.includes("difficulty") || lower.includes("balance")) return "Difficulty balance adjusted";

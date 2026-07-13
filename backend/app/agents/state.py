@@ -14,10 +14,12 @@ STEP_META: dict[str, tuple[str, str]] = {
     "mechanic_planner": ("MechanicPlannerAgent", "Mechanic Planner"),
     "archetype_router": ("ArchetypeRouterAgent", "Archetype Router"),
     "asset_processing": ("AssetAgent", "Asset Processing"),
+    "asset_generation": ("GameAssetGenerationAgent", "Generate Game Assets"),
     "game_design": ("GameDesignAgent", "Game Design"),
     "content_plan": ("ContentPlanAgent", "Content Plan"),
     "balance_plan": ("BalanceAgent", "Balance Plan"),
     "code_generation": ("GameCodeAgent", "Code Generation"),
+    "project_build": ("ProjectBuildAgent", "Project Build"),
     "build_validation": ("BuildValidateAgent", "Build Validation"),
     "repair_code": ("GameCodeAgentRepair", "Repair Code"),
     "replan_game_design": ("GameDesignAgentReplan", "Replan Game Design"),
@@ -55,6 +57,7 @@ class GenerationState(TypedDict, total=False):
 
     asset_ids: list
     uploaded_assets: list
+    generated_assets: list
 
     safety_result: dict
     game_spec: dict
@@ -67,6 +70,10 @@ class GenerationState(TypedDict, total=False):
     balance_config: dict
 
     generated_files: list  # [{"path": str, "content": str}]
+    project_files: list
+    artifact_format: str
+    code_source: str  # "author" | "template" | "model" | "revision" —— gameplay QA 用它区分占位是否必须被替换
+    build_result: dict
     validation_result: dict
     gameplay_qa_result: dict
     use_template_code: bool  # replan 兜底：回退到模板 game.js，保证产物可校验
@@ -74,6 +81,9 @@ class GenerationState(TypedDict, total=False):
     repair_attempts: int
     replan_attempts: int
     gameplay_repair_attempts: int
+    # gameplay QA 失败走整包重生成时的失因清单：作者提示词逐条要求解决，
+    # code_generation 消费后清空；replan 换设计时也清空
+    gameplay_qa_feedback: Optional[list]
 
     last_error: Optional[str]
     error_code: Optional[str]

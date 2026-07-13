@@ -154,6 +154,7 @@ def _prune_retired(db) -> int:
     for title in RETIRED_TITLES:
         for game in db.query(Game).filter(Game.title == title).all():
             s3.delete_prefix(f"games/{game.id}/")  # bundle + manifest + any assets
+            s3.delete_prefix(f"game-sources/{game.id}/")
             db.delete(game)                          # cascades versions / likes / scores / ...
             removed += 1
     if removed:

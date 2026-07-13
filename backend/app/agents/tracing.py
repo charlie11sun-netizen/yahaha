@@ -30,10 +30,12 @@ _START_HINTS = {
     "Mechanic Planner": "selecting concrete mechanics, rewards, enemies, and feedback loops",
     "Archetype Router": "selecting a proven playable template family for the prompt",
     "Asset Processing": "loading uploaded references and preparing the asset manifest",
+    "Generate Game Assets": "routing generated images, audio, video, and tilemaps through configured providers",
     "Game Design": "planning screen layout, entities, rules, and HUD behavior",
     "Content Plan": "building waves, pickups, hazards, tutorial beats, and puzzle content",
     "Balance Plan": "setting round length, score target, lives, spawn rate, and difficulty thresholds",
     "Code Generation": "rendering HTML, CSS, and game.js for the browser runtime",
+    "Project Build": "building a generated Phaser/Vite source project into static dist artifacts",
     "Build Validation": "checking required files, forbidden APIs, references, and bundle size",
     "Gameplay QA": "checking restart, scoring, timer, input response, and difficulty readability",
     "Gameplay Repair": "retuning balance and regenerating when playtest thresholds fail",
@@ -217,9 +219,19 @@ def logged(node_name: str):
                 span.set_attribute("failed", failed)
                 span.set_attribute("repair_attempts", result.get("repair_attempts", state.get("repair_attempts", 0)))
                 span.set_attribute("replan_attempts", result.get("replan_attempts", state.get("replan_attempts", 0)))
+                # 面板上的修复次数 = 构建修复 + 玩法修复两条回环之和；玩法修复节点
+                # 只返回 gameplay_repair_attempts，不合并的话 task.repair_attempts
+                # 永远停在 0（2026-07-13 实测），用户看不到回环在推进。
+                rep = result.get("repair_attempts")
+                gp = result.get("gameplay_repair_attempts")
+                repair_total = None
+                if rep is not None or gp is not None:
+                    repair_total = int(rep if rep is not None else state.get("repair_attempts") or 0) + int(
+                        gp if gp is not None else state.get("gameplay_repair_attempts") or 0
+                    )
                 finish_step(
                     task_id, sid, result.get("_logs"), tokens,
-                    repair=result.get("repair_attempts"), replan=result.get("replan_attempts"),
+                    repair=repair_total, replan=result.get("replan_attempts"),
                     failed=failed,
                     spec=result.get("game_spec"), design=result.get("game_design"),
                 )

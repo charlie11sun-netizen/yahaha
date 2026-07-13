@@ -1,12 +1,13 @@
 "use client";
 
-import { useMemo, type ReactNode } from "react";
+import { useMemo } from "react";
 import {
   AlertCircle,
   ArrowRight,
   Check,
   Circle,
   Clock3,
+  Database,
   Loader2,
   Sparkles,
   Timer,
@@ -21,6 +22,7 @@ import { cn } from "@/lib/utils";
 import { getLiveAgentActivity, getLiveStreamTokens } from "../_lib/agent-activity";
 import {
   buildStepRows,
+  friendlyMessage,
   getActiveStepIndex,
   getCurrentIssue,
   getProgressTitle,
@@ -53,162 +55,194 @@ export function CreateProgressCard({
   const elapsed = formatElapsed(task?.created_at, now);
   const taskActive = isActiveTask(task?.status);
   const liveTokens = getLiveStreamTokens(task);
-  const liveActivity = liveTokens === null && taskActive ? getLiveAgentActivity(task) : "";
-  const liveFileChanges = getLiveFileChanges(task).slice(-4);
+  const liveActivity = taskActive ? getLiveAgentActivity(task) : "";
+  const liveFileChanges = getLiveFileChanges(task).slice(-2);
+  const tokenTotal = liveTokens ?? task?.tokens ?? 0;
+  const currentDetail = issue?.message || friendlyMessage(
+    activeStep?.summary ||
+      liveActivity ||
+      (taskActive ? "Preparing the next playable part of your game." : "This generation step is complete."),
+  );
 
   return (
-    <Card className="rounded-lg border-slate-200/80 bg-white/90 shadow-sm">
-      <CardContent className="space-y-6 p-5 sm:p-6">
-        <div className="grid gap-4 md:grid-cols-[auto_1fr_auto] md:items-center">
-          <span className="flex size-12 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600">
-            <Sparkles size={28} />
+    <Card className="gap-0 overflow-hidden rounded-xl border-slate-200/90 bg-white py-0 shadow-sm">
+      <CardContent className="space-y-5 p-5 sm:p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600">
+              <Sparkles size={23} />
+            </span>
+            <div className="min-w-0">
+              <h2 className="font-display text-2xl font-semibold text-slate-950">{statusTitle}</h2>
+              <p className="mt-1 text-sm text-slate-600">
+                Step {Math.min(activeIndex + 1, rows.length)} of {rows.length}
+                <span className="mx-1.5 text-slate-300">·</span>
+                {activeStep?.label || "Preparing task"}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-col items-start gap-2 sm:items-end">
+            <Badge
+              className={cn(
+                "gap-2 px-3 py-2",
+                connectionStatus === "Connected"
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                  : "border-amber-200 bg-amber-50 text-amber-700",
+              )}
+              variant="outline"
+            >
+              <Circle size={9} fill="currentColor" />
+              {connectionStatus}
+            </Badge>
+            <span className="inline-flex items-center gap-1.5 text-xs text-slate-400">
+              <Clock3 size={13} />
+              Last update {lastUpdated}
+            </span>
+          </div>
+        </div>
+
+        <div className="-mx-2 overflow-x-auto px-2 pb-1">
+          <ol
+            aria-label="Generation progress"
+            className="grid min-w-[700px]"
+            style={{ gridTemplateColumns: `repeat(${rows.length}, minmax(72px, 1fr))` }}
+          >
+            {rows.map((step, index) => {
+              const isActive = index === activeIndex && step.status !== "completed";
+              return (
+                <li className="relative min-w-0 text-center" key={step.key}>
+                  {index < rows.length - 1 ? (
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        "absolute left-[calc(50%+18px)] right-[calc(-50%+18px)] top-4 h-px",
+                        step.status === "completed" ? "bg-emerald-300" : "bg-slate-200",
+                      )}
+                    />
+                  ) : null}
+                  <StepMarker active={isActive} status={step.status} />
+                  <span
+                    className={cn(
+                      "mx-auto mt-2 block max-w-[72px] px-1 text-[11px] font-medium leading-4",
+                      isActive ? "text-indigo-700" : step.status === "completed" ? "text-slate-700" : "text-slate-400",
+                    )}
+                  >
+                    {step.label}
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+
+        <section
+          className={cn(
+            "flex gap-3 rounded-xl border p-4",
+            issue?.level === "error"
+              ? "border-rose-200 bg-rose-50"
+              : issue
+                ? "border-amber-200 bg-amber-50"
+                : "border-indigo-100 bg-indigo-50/70",
+          )}
+          aria-label="Current generation action"
+        >
+          <span
+            className={cn(
+              "mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-full bg-white",
+              issue?.level === "error" ? "text-rose-600" : issue ? "text-amber-600" : "text-indigo-600",
+            )}
+          >
+            {issue?.level === "error" ? (
+              <AlertCircle size={18} />
+            ) : issue ? (
+              <WandSparkles size={18} />
+            ) : taskActive ? (
+              <Loader2 className="size-5 animate-spin" />
+            ) : (
+              <Check size={18} />
+            )}
           </span>
           <div className="min-w-0">
-            <h2 className="font-display text-2xl font-semibold tracking-normal text-slate-950">{statusTitle}</h2>
-            <p className="mt-1 text-sm text-slate-600">
-              Step {Math.min(activeIndex + 1, rows.length)} of {rows.length}
-              <span> - </span>
-              {activeStep?.label || "Preparing task"}
-            </p>
+            <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-500">Current action</p>
+            <h3 className="mt-1 text-sm font-semibold text-slate-950">{issue?.title || activeStep?.label || "Preparing task"}</h3>
+            <p className="mt-1 text-sm leading-5 text-slate-600">{currentDetail}</p>
           </div>
-          <Badge className="gap-1 border-indigo-200 bg-indigo-50 text-indigo-700" variant="outline">
-            <ArrowRight size={14} />
-            You can leave this page
-          </Badge>
+        </section>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Metric icon={<Database size={16} />} label="Tokens" value={tokenTotal.toLocaleString()} />
+          <Metric icon={<Timer size={16} />} label="Elapsed" value={elapsed} />
         </div>
 
-        <div className="grid gap-3 md:grid-cols-3">
-          <StatusPill icon={<Clock3 size={15} />} label={`Last update ${lastUpdated}`} />
-          <StatusPill
-            icon={<Circle size={10} fill="currentColor" />}
-            label={connectionStatus}
-            tone={connectionStatus === "Connected" ? "success" : "warning"}
-          />
-          <StatusPill icon={<Timer size={15} />} label={`Elapsed ${elapsed}`} />
-        </div>
-
-        {liveTokens !== null && taskActive ? (
-          <div className="flex items-center justify-between rounded-lg border border-indigo-100 bg-indigo-50 px-4 py-3">
-            <span className="text-xs font-bold uppercase tracking-[0.16em] text-indigo-600">tokens</span>
-            <strong className="font-display text-2xl font-semibold tracking-normal text-indigo-950" key={liveTokens}>
-              {liveTokens.toLocaleString()}
-            </strong>
-          </div>
-        ) : null}
-
-        {liveActivity ? (
-          <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
-            <span className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">activity</span>
-            <strong className="mt-1 block text-sm font-semibold text-slate-800">{liveActivity}</strong>
-          </div>
-        ) : null}
-
-        {liveFileChanges.length > 0 ? (
-          <div className="grid gap-2" aria-label="Live file changes">
-            {liveFileChanges.map((change) => (
-              <FileChangeRow change={change} key={`${change.action}-${change.path}-${change.line}`} />
-            ))}
-          </div>
-        ) : null}
-
-        <div className="grid gap-3">
-          {rows.map((step, index) => {
-            const isActive = index === activeIndex && step.status !== "completed";
-            return (
-              <div className="grid grid-cols-[auto_1fr] gap-3" key={step.key}>
-                <StepMarker active={isActive} status={step.status} />
-                <div className="min-w-0 rounded-lg border border-slate-200 bg-slate-50 p-4">
-                  <strong className="text-sm font-semibold text-slate-900">{step.label}</strong>
-                  {isActive && issue ? (
-                    <div
-                      className={cn(
-                        "mt-3 flex gap-3 rounded-lg border p-3",
-                        issue.level === "error"
-                          ? "border-rose-200 bg-rose-50 text-rose-800"
-                          : "border-indigo-200 bg-indigo-50 text-indigo-800",
-                      )}
-                    >
-                      <span className="mt-0.5 shrink-0">
-                        {issue.level === "error" ? <AlertCircle size={17} /> : <WandSparkles size={17} />}
-                      </span>
-                      <div>
-                        <b className="text-sm font-semibold">{issue.title}</b>
-                        <p className="mt-1 text-sm leading-6">{issue.message}</p>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="rounded-lg border border-slate-200 bg-white p-4">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <h3 className="font-display text-lg font-semibold tracking-normal text-slate-950">Recent updates</h3>
-            <Button className="rounded-lg" onClick={onOpenActivity} type="button" variant="outline">
+        <section className="border-t border-slate-200 pt-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h3 className="font-display text-lg font-semibold text-slate-950">Recent activity</h3>
+            <Button className="h-auto rounded-lg px-2 py-1 text-indigo-700" onClick={onOpenActivity} type="button" variant="ghost">
               View full activity
-              <ArrowRight size={16} />
+              <ArrowRight size={15} />
             </Button>
           </div>
-          <div className="space-y-3">
+
+          <div className="mt-2 divide-y divide-slate-100">
             {recentUpdates.map((update, index) => (
-              <div className="grid grid-cols-[auto_auto_1fr] items-start gap-3 text-sm" key={`${update.message}-${index}`}>
+              <div className="grid grid-cols-[auto_1fr_auto] items-start gap-3 py-3 text-sm" key={`${update.message}-${index}`}>
                 <span
                   className={cn(
-                    "mt-1 size-2 rounded-full",
-                    update.level === "error" ? "bg-rose-500" : update.level === "success" ? "bg-emerald-500" : "bg-indigo-500",
+                    "mt-1 flex size-5 items-center justify-center rounded-full border",
+                    update.level === "error"
+                      ? "border-rose-200 bg-rose-50 text-rose-600"
+                      : update.level === "success"
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-600"
+                        : "border-indigo-200 bg-indigo-50 text-indigo-600",
                   )}
-                />
-                <time className="font-mono text-xs text-slate-400">{update.time}</time>
-                <p className="leading-6 text-slate-600">{update.message}</p>
+                >
+                  {update.level === "success" ? <Check size={12} /> : <Circle size={7} fill="currentColor" />}
+                </span>
+                <p className="min-w-0 leading-5 text-slate-700">{update.message}</p>
+                <time className="whitespace-nowrap font-mono text-xs text-slate-400">{update.time}</time>
               </div>
             ))}
           </div>
-        </div>
+
+          {liveFileChanges.length > 0 ? (
+            <div className="grid gap-2 border-t border-slate-100 pt-3" aria-label="Live file changes">
+              {liveFileChanges.map((change, index) => (
+                <FileChangeRow change={change} key={`${change.action}-${change.path}-${index}`} />
+              ))}
+            </div>
+          ) : null}
+        </section>
       </CardContent>
     </Card>
   );
 }
 
-function StatusPill({
-  icon,
-  label,
-  tone = "neutral",
-}: {
-  icon: ReactNode;
-  label: string;
-  tone?: "neutral" | "success" | "warning";
-}) {
+function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
   return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold",
-        tone === "success"
-          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-          : tone === "warning"
-            ? "border-amber-200 bg-amber-50 text-amber-700"
-            : "border-slate-200 bg-slate-50 text-slate-600",
-      )}
-    >
-      {icon}
-      {label}
-    </span>
+    <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3">
+      <span className="flex size-8 items-center justify-center rounded-lg bg-slate-50 text-slate-500">{icon}</span>
+      <div>
+        <span className="text-xs font-medium text-slate-400">{label}</span>
+        <strong className="block font-display text-lg font-semibold leading-5 text-slate-900">{value}</strong>
+      </div>
+    </div>
   );
 }
 
 function StepMarker({ active, status }: { active: boolean; status: StepState }) {
   return (
     <span
+      aria-hidden="true"
       className={cn(
-        "flex size-8 items-center justify-center rounded-full border",
+        "relative z-10 mx-auto flex size-8 items-center justify-center rounded-full border-2 bg-white",
         status === "completed"
-          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+          ? "border-emerald-300 bg-emerald-500 text-white"
           : status === "failed"
-            ? "border-rose-200 bg-rose-50 text-rose-700"
+            ? "border-rose-300 bg-rose-50 text-rose-700"
             : active
-              ? "border-indigo-200 bg-indigo-50 text-indigo-700"
-              : "border-slate-200 bg-white text-slate-400",
+              ? "border-indigo-500 text-indigo-700"
+              : "border-slate-200 text-slate-400",
       )}
     >
       {status === "completed" ? (

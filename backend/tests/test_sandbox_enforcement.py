@@ -8,7 +8,10 @@ def test_inject_csp_placed_in_head_and_idempotent():
     once = inject_csp(html)
     assert once.count("Content-Security-Policy") == 1
     assert once.index("Content-Security-Policy") < once.index("<title>")
-    assert "connect-src 'none'" in once
+    # connect-src 必须是 'self':Phaser Loader 全走 XHR,'none' 会拦掉所有生成
+    # 素材(2026-07-12 实测:玩家渲染成 missing-texture 绿框)。仍禁跨源外呼。
+    assert "connect-src 'self'" in once
+    assert "connect-src 'none'" not in once
     assert "script-src 'self' 'unsafe-inline'" in once
     assert inject_csp(once) == once  # 幂等：revision 复用旧 index.html 不会重复注入
 
@@ -51,7 +54,7 @@ def test_publish_generated_uploads_csp_hardened_index(client, db_session_factory
 
     index_key = next(k for k in captured if k.endswith("/index.html"))
     assert "Content-Security-Policy" in captured[index_key]
-    assert "connect-src 'none'" in captured[index_key]
+    assert "connect-src 'self'" in captured[index_key]
     # manifest 的 sha256 必须与实际上传（注入后）的内容一致
     import hashlib
     import json

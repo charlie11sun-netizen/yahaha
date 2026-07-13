@@ -19,6 +19,7 @@ from app.core.telemetry import bind_context, clear_context
 from app.db.session import SessionLocal
 from app.models import GenerationTask
 from app.models.common import StepStatus, TaskStatus, now_utc
+from app.services.game_assets import AssetGenerationRetryRequired
 from app.services.task_events import publish_task_event
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,45 @@ def _json_object(raw: str | None) -> dict:
 
 def _load_revision_files(game_id: str, version: str) -> list[dict]:
     from app.storage import s3
+    from app.services.artifacts import artifact_from_bytes
+
+    source_prefix = f"game-sources/{game_id}/{version}"
+    source_manifest = s3.get_object(f"{source_prefix}/manifest.json")
+    if source_manifest:
+        try:
+            manifest = json.loads(source_manifest.decode("utf-8"))
+            files = []
+            for item in manifest.get("files") or []:
+                path = str(item.get("path") or "")
+                raw = s3.get_object(f"{source_prefix}/{path}")
+                if raw is None:
+                    raise RuntimeError(f"revision source file is missing: {path}")
+                content_type = str(item.get("content_type") or "application/octet-stream")
+                files.append(artifact_from_bytes(path, raw, content_type))
+            if files:
+                return files
+        except (ValueError, UnicodeDecodeError):
+            pass
+
+    runtime_prefix = f"games/{game_id}/{version}"
+    runtime_manifest = s3.get_object(f"{runtime_prefix}/manifest.json")
+    if runtime_manifest:
+        try:
+            manifest = json.loads(runtime_manifest.decode("utf-8"))
+            files = []
+            for item in manifest.get("files") or []:
+                path = str(item.get("path") or "")
+                if path in {"three.min.js", "phaser.min.js"}:
+                    continue
+                raw = s3.get_object(f"{runtime_prefix}/{path}")
+                if raw is None:
+                    raise RuntimeError(f"revision base file is missing: {path}")
+                content_type = str(item.get("content_type") or "application/octet-stream")
+                files.append(artifact_from_bytes(path, raw, content_type))
+            if files:
+                return files
+        except (ValueError, UnicodeDecodeError):
+            pass
 
     files = []
     for path in ("index.html", "style.css", "game.js"):
@@ -113,6 +153,7 @@ def _cleanup_cancelled_artifacts(db, task, final: dict | None) -> None:
         db.commit()
         try:
             s3.delete_prefix(f"games/{final['game_id']}/")
+            s3.delete_prefix(f"game-sources/{final['game_id']}/")
         except Exception:  # noqa: BLE001  尽力清理，OSS 失败不影响取消语义
             pass
 
@@ -226,6 +267,7 @@ def run_generation(task_id: str, expected_dispatch_generation: int | None = None
                             "repair_attempts": 0,
                             "replan_attempts": 0,
                             "gameplay_repair_attempts": 0,
+                            "gameplay_qa_feedback": None,
                             "last_error": None,
                             "error_code": None,
                             "error_message": None,
@@ -245,16 +287,23 @@ def run_generation(task_id: str, expected_dispatch_generation: int | None = None
                     "repair_attempts": 0,
                     "replan_attempts": 0,
                     "gameplay_repair_attempts": 0,
+                    "gameplay_qa_feedback": None,
                 }
                 if _uses_existing_bundle(task_kind):
                     if not base_game_id or not base_version or not feedback_text:
                         raise RuntimeError(f"{task_kind} task is missing its base version or feedback")
+                    existing_files = _load_revision_files(base_game_id, base_version)
+                    from app.services.vite_projects import VITE_PROJECT_FORMAT, is_vite_project
+
+                    vite_source = is_vite_project(existing_files)
                     initial.update(
                         {
                             "source_feedback": feedback_text,
                             "base_game_id": base_game_id,
                             "base_version": base_version,
-                            "existing_files": _load_revision_files(base_game_id, base_version),
+                            "existing_files": existing_files,
+                            "project_files": existing_files if vite_source else [],
+                            "artifact_format": VITE_PROJECT_FORMAT if vite_source else "legacy-bundle/v1",
                             "game_spec": spec,
                             "game_design": design,
                         }
@@ -267,6 +316,9 @@ def run_generation(task_id: str, expected_dispatch_generation: int | None = None
         except TaskCancelledError:
             # User cancellation is observed at the next node boundary.
             final = None
+        except AssetGenerationRetryRequired as exc:
+            err = str(exc)[:500]
+            error_code = TaskErrorCode.ASSET_GENERATION_FAILED.value
         except TaskBudgetExceededError as exc:
             err = str(exc)[:500]
             error_code = TaskErrorCode.BUDGET_EXCEEDED.value

@@ -535,3 +535,51 @@ def test_publish_remix_creates_new_game_with_source_pointer(client, db_session_f
     assert remix.current_version == "v1"
     assert db.get(GameVersion, version_id).game_id == game_id
     db.close()
+
+
+def test_generated_assets_endpoint_returns_checkpoint_images_and_enforces_owner(client, monkeypatch):
+    from conftest import auth_headers
+
+    from app.services.artifacts import binary_artifact
+    from app.services import task_generated_assets
+
+    headers = auth_headers(client, email="generated-assets@example.com", display_name="Assets")
+    task_id = client.post("/tasks", json={"idea": "show generated art"}, headers=headers).json()["task_id"]
+    image = binary_artifact("public/assets/sheet.png", b"png-bytes", "image/png")
+    audio = binary_artifact("public/assets/bgm.wav", b"wav-bytes", "audio/wav")
+    monkeypatch.setattr(
+        task_generated_assets,
+        "_checkpoint_values",
+        lambda _task_id: {
+            "generated_assets": [image, audio],
+            "asset_manifest": {
+                "assets": [
+                    {
+                        "key": "sheet",
+                        "kind": "spritesheet",
+                        "path": "assets/sheet.png",
+                    }
+                ]
+            },
+        },
+    )
+
+    response = client.get(f"/tasks/{task_id}/generated-assets", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [
+            {
+                "key": "sheet",
+                "name": "Sheet",
+                "kind": "spritesheet",
+                "content_type": "image/png",
+                "bytes": 9,
+                "data_url": "data:image/png;base64,cG5nLWJ5dGVz",
+            }
+        ]
+    }
+
+    other_headers = auth_headers(client, email="generated-assets-other@example.com", display_name="Other")
+    forbidden = client.get(f"/tasks/{task_id}/generated-assets", headers=other_headers)
+    assert forbidden.status_code == 403

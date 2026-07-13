@@ -164,6 +164,26 @@ def test_sandbox_default_limits_accept_vendored_phaser(monkeypatch):
     assert decoded["phaser.min.js"] == engine
 
 
+def test_sandbox_defaults_match_relaxed_vite_limits(monkeypatch):
+    monkeypatch.delenv("SANDBOX_RUNNER_MAX_FILE_BYTES", raising=False)
+    monkeypatch.delenv("SANDBOX_RUNNER_MAX_TOTAL_BYTES", raising=False)
+    fake_playwright = ModuleType("playwright")
+    fake_async_api = ModuleType("playwright.async_api")
+    fake_async_api.Browser = object
+    fake_async_api.Error = Exception
+    fake_async_api.Page = object
+    fake_async_api.async_playwright = lambda: None
+    monkeypatch.setitem(sys.modules, "playwright", fake_playwright)
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake_async_api)
+    monkeypatch.delitem(sys.modules, "sandbox.app.main", raising=False)
+
+    from app.services.vite_projects import MAX_PROJECT_BYTES, MAX_PROJECT_FILE_BYTES
+    from sandbox.app import main as sandbox_main
+
+    assert sandbox_main.settings.max_file_bytes == MAX_PROJECT_FILE_BYTES
+    assert sandbox_main.settings.max_total_bytes == MAX_PROJECT_BYTES
+
+
 def test_setinterval_loop_is_valid_sandbox_activity(monkeypatch):
     from app.agents import nodes
     from app.services.sandbox_client import SandboxResult

@@ -55,6 +55,27 @@ docker compose up --build
 → Play 从 MinIO 远端加载 bundle，在沙箱 iframe 中运行
 ```
 
+### 可选的生成素材与 Phaser/Vite 构建
+
+- `ASSET_GENERATION_ENABLED=true` 启用 `generate_game_assets`，图片、音频、视频按模态分别通过
+  `ASSET_IMAGE_*` / `ASSET_AUDIO_*` / `ASSET_VIDEO_*` 路由供应商；默认 `local` 图片供应商生成离线占位 SVG，避免意外外部费用。
+- `TILEMAP_GENERATION_ENABLED=true` 为适用的 2D archetype 生成确定性的 Tiled JSON + 同源 tileset。
+- 所有新 2D 游戏强制生成模块化 Phaser 3.90 + TypeScript 源工程，由独立 sandbox 使用固定依赖完成
+  `tsc --noEmit` 和 Vite 构建；只将静态 `dist` 写入公开游戏 manifest 和 MinIO。
+- Vite 源工程保存到私有 `game-sources/{game}/{version}` 前缀，Revision 从源码继续修改，不编辑压缩后的产物。
+- 新工程原生使用 TypeScript，并按 `src/scenes`、`src/entities`、`src/systems`、`src/ui`、`src/config`
+  分层。开启 `CODE_AGENT_AUTHOR_ENABLED=true` 后，受限 Project Author Agent 会逐模块读写工程，并通过
+  `tsc --noEmit` 与隔离 Vite 构建后再进入外层验证。
+
+### 可选的 GameCodeAgent 完整追踪
+
+- `CODE_AGENT_DETAILED_LOGGING_ENABLED=false` 为默认值；关闭时不会写入任何完整追踪数据。
+- 开启后，每轮模型输入/输出、完整 system/task prompt、工具参数与结果、最终会话历史、生成代码和异常堆栈
+  会写入独立的 `agent_trace_events` 表。该表不进入普通任务详情或 SSE，避免拖慢 Create 页面。
+- 这些数据包含用户内容和大量源代码，且增长很快，只应在受控调试环境短期开启。
+- 按任务导出 JSONL：`docker compose exec api python -m app.tools.export_agent_traces <task-id>`；
+  加 `--step-id` / `--run-id` 可缩小范围，`--pretty` 输出一个格式化 JSON 数组。
+
 ## 记忆系统（Memory）
 
 GameWeave 已接入面向生成与修改流程的长期记忆系统：

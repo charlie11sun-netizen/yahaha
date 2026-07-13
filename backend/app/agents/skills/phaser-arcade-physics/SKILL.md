@@ -1,9 +1,9 @@
 ---
 name: phaser-arcade-physics
-description: "Arcade Physics in Phaser 4: enabling physics, velocity/gravity/bounce, colliders vs overlaps, dynamic and static groups, world bounds, common pitfalls. Read this when fixing collision, movement, gravity, or physics-group bugs in a Phaser game."
+description: "Arcade Physics in Phaser 3.90: enabling physics, velocity/gravity/bounce, colliders vs overlaps, dynamic and static groups, world bounds, common pitfalls. Read this when fixing collision, movement, gravity, or physics-group bugs in a Phaser game."
 ---
 
-# Arcade Physics (Phaser 4) — distilled
+# Arcade Physics (Phaser 3.90) - distilled
 
 Condensed from the official `skills/physics-arcade` with GameWeave notes.
 
@@ -70,6 +70,12 @@ instead of creating new ones every shot — spawn storms are the top perf bug.
 ## World bounds & cleanup
 
 - `this.physics.world.setBounds(0, 0, w, h)` to size the playfield.
+- Spawn dynamic actors far enough inside those bounds that their entire body,
+  including radius and offset, starts inside the playfield. Edge telegraphs should
+  use an inset derived from body size, not the literal world-bound coordinate.
+- Count delayed or telegraphed actors as pending when enforcing spawn caps. Permit
+  at most one pending timer spawn so a background tab resuming cannot create a
+  burst of actors on all four edges.
 - `sprite.setCollideWorldBounds(true)` keeps it inside; listen for
   `body.onWorldBounds = true` + `this.physics.world.on('worldbounds', ...)` to
   despawn bullets at the edge.

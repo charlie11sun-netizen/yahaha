@@ -2,9 +2,7 @@
 
 import { Edit3, FileText, Image as ImageIcon } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 
 type Brief = {
   title: string;
@@ -22,31 +20,28 @@ export function CreateBriefCard({
   onEditBrief: () => void;
 }) {
   return (
-    <Card className="rounded-lg border-slate-200/80 bg-white/90 shadow-sm">
-      <CardContent className="grid gap-5 p-5 md:grid-cols-[auto_1fr_auto] md:items-center">
-        <span className="flex size-12 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600">
-          <FileText size={26} />
-        </span>
-        <div className="min-w-0 space-y-3">
-          <h2 className="font-display text-xl font-semibold tracking-normal text-slate-950">Game brief</h2>
-          <Badge className="max-w-full truncate border-indigo-200 bg-indigo-50 text-indigo-700" variant="outline">
-            {brief.title}
-          </Badge>
-          <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
-            <ImageIcon size={16} />
-            <span>
-              {brief.assetCount} asset{brief.assetCount === 1 ? "" : "s"} uploaded
-            </span>
-            <span>{brief.genre}</span>
-            <span>{brief.style}</span>
-            <span>{brief.runtime}</span>
-          </div>
-        </div>
-        <Button className="rounded-lg" onClick={onEditBrief} type="button" variant="outline">
-          <Edit3 size={16} />
-          Edit brief
-        </Button>
-      </CardContent>
-    </Card>
+    <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 text-sm text-slate-500">
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600">
+        <FileText size={17} />
+      </span>
+      <h2 className="sr-only">Game brief</h2>
+      <strong className="max-w-full truncate font-medium text-indigo-700 sm:max-w-[320px]">{brief.title}</strong>
+      <span className="hidden text-slate-300 sm:inline">/</span>
+      <span className="inline-flex items-center gap-1.5">
+        <ImageIcon size={14} />
+        {brief.assetCount} asset{brief.assetCount === 1 ? "" : "s"}
+      </span>
+      <div className="flex flex-wrap items-center gap-2">
+        {[brief.genre, brief.style, brief.runtime].map((item) => (
+          <span className="before:mr-2 before:text-slate-300 before:content-['·']" key={item}>
+            {item}
+          </span>
+        ))}
+      </div>
+      <Button className="h-8 rounded-lg px-2 text-slate-500" onClick={onEditBrief} size="sm" type="button" variant="ghost">
+        <Edit3 size={14} />
+        Edit brief
+      </Button>
+    </div>
   );
 }

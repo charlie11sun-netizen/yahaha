@@ -12,7 +12,11 @@ import {
   TasksDrawer,
 } from "@/app/create/_components/CreatePanels";
 import { useNow } from "@/app/create/_lib/use-now";
-import { useCreateTaskQuery, useCreateTasksQuery } from "@/app/create/_lib/use-create-queries";
+import {
+  useCreateTaskQuery,
+  useCreateTasksQuery,
+  useGeneratedTaskAssetsQuery,
+} from "@/app/create/_lib/use-create-queries";
 import { api, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/lib/toast";
@@ -121,6 +125,8 @@ function CreatePageInner() {
   const taskMissing = taskQuery.isMissing;
   const tasksQuery = useCreateTasksQuery(tasksOpen);
   const task = taskQuery.data;
+  const generatedAssetsQuery = useGeneratedTaskAssetsQuery(taskId, task);
+  const generatedAssets = generatedAssetsQuery.data?.items ?? [];
   const MAX_ASSETS = 6;
 
   const pickFiles = async (picked: FileList | File[] | null) => {
@@ -251,15 +257,8 @@ function CreatePageInner() {
   if (loading || !user) return null;
 
   return (
-    <main className="px-5 py-8 sm:px-8 lg:px-10">
-      <section className="mx-auto flex w-full max-w-7xl flex-col gap-8">
-        <header>
-          <h1 className="font-display text-4xl font-semibold tracking-normal text-slate-950 sm:text-5xl">Create with AI</h1>
-          <p className="mt-3 max-w-2xl text-base leading-7 text-slate-600">
-            Describe your idea, upload references, and generate a playable web game.
-          </p>
-        </header>
-
+    <main className="flex-1 bg-white px-4 py-6 sm:px-6 lg:px-8 lg:py-9">
+      <section className="mx-auto flex w-full max-w-[1400px] flex-col gap-6">
         {taskId && taskMissing ? (
           <TaskMissingCard onBack={editBrief} />
         ) : taskId ? (
@@ -270,6 +269,7 @@ function CreatePageInner() {
                 : "Connected"
             }
             files={files}
+            generatedAssets={generatedAssets}
             now={now}
             onCancel={cancelTask}
             onEditBrief={editBrief}
@@ -290,7 +290,6 @@ function CreatePageInner() {
             dimension={dimension}
             files={files}
             idea={idea}
-            now={now}
             onGenerate={startGeneration}
             onOpenActivity={() => setActivityOpen(true)}
             onPickFiles={pickFiles}

@@ -1,6 +1,7 @@
 import "server-only";
 
 import createClient, { type Middleware } from "openapi-fetch";
+import { cookies } from "next/headers";
 import { cache } from "react";
 
 import type { paths } from "./api-types";
@@ -23,6 +24,9 @@ export class ServerApiError extends Error {
 
 const gateMiddleware: Middleware = {
   async onRequest({ request }) {
+    const cookieName = process.env.AUTH_COOKIE_NAME || "gameweave_session";
+    const sessionCookie = (await cookies()).get(cookieName);
+    if (sessionCookie) request.headers.set("Cookie", `${cookieName}=${sessionCookie.value}`);
     const password = sitePassword();
     if (password) request.headers.set("X-Gate-Token", await gateToken(password));
     return request;

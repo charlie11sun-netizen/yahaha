@@ -70,6 +70,7 @@ class UserManager(CoreUserManager):
             try:
                 for game_id in game_ids:
                     s3.delete_prefix(f"games/{game_id}/")
+                    s3.delete_prefix(f"game-sources/{game_id}/")
                 s3.delete_prefix(f"uploads/{uid}/")
             except Exception:  # noqa: BLE001
                 pass

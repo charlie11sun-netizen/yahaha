@@ -73,7 +73,7 @@ def test_delete_game_cleans_object_storage(client, db_session_factory, monkeypat
     monkeypatch.setattr(games_router.s3, "delete_prefix", lambda p: deleted_prefixes.append(p) or 1)
 
     assert client.delete(f"/games/{gid}", headers=author_h).status_code == 200
-    assert deleted_prefixes == [f"games/{gid}/"]
+    assert deleted_prefixes == [f"games/{gid}/", f"game-sources/{gid}/"]
 
 
 def test_like_unlike_roundtrip_consistent(client, db_session_factory):

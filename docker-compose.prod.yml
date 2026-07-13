@@ -80,7 +80,7 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-gameweave}
-    command: alembic upgrade head
+    command: sh -c "alembic upgrade head && python -m app.tools.setup_checkpoints"
     depends_on:
       postgres:
         condition: service_healthy
@@ -208,8 +208,8 @@ services:
       XDG_CACHE_HOME: /tmp/.cache
       SANDBOX_RUNNER_CONCURRENCY: "1"
       SANDBOX_RUNNER_CHROMIUM_NO_SANDBOX: ${SANDBOX_RUNNER_CHROMIUM_NO_SANDBOX:-true}
-      SANDBOX_RUNNER_MAX_FILE_BYTES: ${SANDBOX_RUNNER_MAX_FILE_BYTES:-2000000}
-      SANDBOX_RUNNER_MAX_TOTAL_BYTES: ${SANDBOX_RUNNER_MAX_TOTAL_BYTES:-5000000}
+      SANDBOX_RUNNER_MAX_FILE_BYTES: ${SANDBOX_RUNNER_MAX_FILE_BYTES:-16000000}
+      SANDBOX_RUNNER_MAX_TOTAL_BYTES: ${SANDBOX_RUNNER_MAX_TOTAL_BYTES:-64000000}
     networks:
       - sandbox_net
     healthcheck:
@@ -241,6 +241,7 @@ services:
     environment:
       NODE_ENV: production
       API_INTERNAL_BASE_URL: http://api:8000
+      AUTH_COOKIE_NAME: ${AUTH_COOKIE_NAME:-gameweave_session}
       # The front-door password. Read at runtime by middleware.ts; never exposed
       # to the client. Empty => site is OPEN, so it is required here.
       SITE_PASSWORD: ${SITE_PASSWORD:?set SITE_PASSWORD in .env — site must not be public}

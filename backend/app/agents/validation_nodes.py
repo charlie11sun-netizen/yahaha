@@ -3,6 +3,18 @@
 from app.agents.nodes_common import *
 
 
+# 脚手架自带的品质库文件：判定"游戏是否用了反馈特效/边界处理/素材"时要剔除,
+# 否则库本身的实现代码会让检查永真。gameConfig.ts 同理——它的 JSON 里天然含
+# "sheet"/"background" 字段名,不剔除的话素材未用检测永真。
+_STOCK_KIT_FILES = {
+    "src/systems/Juice.ts",
+    "src/systems/Sfx.ts",
+    "src/systems/Bounds.ts",
+    "src/systems/Backdrop.ts",
+}
+_NON_GAMEPLAY_FILES = _STOCK_KIT_FILES | {"src/config/gameConfig.ts"}
+
+
 def _sandbox_files_for_qa(files: list[dict], dimension: str | None = None) -> list[dict]:
     payload = [dict(file) for file in files]
     has_three_reference = any(
@@ -205,8 +217,16 @@ def _gameplay_qa(state: dict) -> dict:
     archetype = spec.get("archetype") or design.get("archetype") or ("webgl_3d" if state.get("dimension") == "3d" else "canvas_arcade")
     validation_result = state.get("validation_result") or {}
     files = state.get("generated_files") or []
-    js = next((f.get("content", "") for f in files if f.get("path") == "game.js"), "")
-    html = next((f.get("content", "") for f in files if f.get("path") == "index.html"), "")
+    source_files = state.get("project_files") or files
+    js = next((f.get("content", "") for f in source_files if f.get("path") == "game.js"), "")
+    if not js and state.get("artifact_format") == "phaser-vite/v1":
+        js = "\n".join(
+            str(f.get("content") or "")
+            for f in source_files
+            if str(f.get("path") or "").endswith((".ts", ".tsx", ".js", ".mjs"))
+            and f.get("content_b64") is None
+        )
+    html = next((f.get("content", "") for f in source_files if f.get("path") == "index.html"), "")
     low = (js + "\n" + html).lower()
 
     issues: list[str] = []
@@ -214,12 +234,13 @@ def _gameplay_qa(state: dict) -> dict:
 
     # Phaser 产物的循环/输入都由引擎驱动：game.js 里不会出现字面 rAF / addEventListener，
     # 按 Canvas 规则会被误杀。识别引擎特征后放行循环检查、补充 Phaser 输入惯用法。
-    uses_phaser = any(tok in low for tok in ["phaser.min.js", "new phaser", "phaser.game", "phaser.scene"])
+    uses_vite = state.get("artifact_format") == "phaser-vite/v1"
+    uses_phaser = uses_vite or any(tok in low for tok in ["phaser.min.js", "new phaser", "phaser.game", "phaser.scene"])
 
     if not validation_result.get("valid"):
         issues.append("static validation must pass before gameplay QA")
     if len(js) < 400:
-        issues.append("game.js is too small to be a real game")
+        issues.append("game source is too small to be a real game")
     if "requestanimationframe" not in low and "setinterval" not in low and not uses_phaser:
         issues.append("no game loop (requestAnimationFrame/setInterval) found")
     has_input = any(tok in low for tok in [
@@ -230,7 +251,10 @@ def _gameplay_qa(state: dict) -> dict:
         issues.append("no input handling found")
     if uses_phaser:
         issues.extend(_phaser_player_overlap_issues(js))
-        issues.extend(_phaser_removed_api_issues(js))
+        # The modular Vite runtime is pinned to Phaser 3.90, where setTintFill
+        # remains valid. The removed-API lint only applies to legacy Phaser 4 bundles.
+        if not uses_vite:
+            issues.extend(_phaser_removed_api_issues(js))
         issues.extend(_phaser_destroyed_body_issues(js))
     has_restart = any(tok in low for tok in [
         "restart", "reset(", "replay", "again", "location.reload", '"rs"', "'rs'",
@@ -239,7 +263,10 @@ def _gameplay_qa(state: dict) -> dict:
         warnings.append("no obvious restart affordance detected")
 
     # 运行时冒烟：先用 V8 快速预检，再用真浏览器沙箱观察加载错误和动画帧。
-    smoke_ok, smoke_detail = smoke.run_smoke(js)
+    if uses_vite:
+        smoke_ok, smoke_detail = True, "skipped: Vite module source is verified by the isolated build and browser"
+    else:
+        smoke_ok, smoke_detail = smoke.run_smoke(js)
     if not smoke_ok:
         issues.append(f"runtime smoke test: game crashed on load — {smoke_detail}")
     elif smoke_detail.startswith("skipped"):
@@ -289,10 +316,102 @@ def _gameplay_qa(state: dict) -> dict:
     else:
         depth_tokens = ["shadowblur", "createlineargradient", "createradialgradient"]
         if uses_phaser:
-            depth_tokens += ["generatetexture", "settint", "tweens.add", "particles", "setblendmode", "postfx"]
+            depth_tokens += ["generatetexture", "settint", "tweens.add", "particles", "setblendmode", "postfx", "juice."]
         depth_metric = any(tok in low for tok in depth_tokens)
         if not depth_metric:
             warnings.append("art may look flat: no gradient/glow detected")
+        if uses_vite:
+            # 质量底线（只对模块化 2D 产物）：剔除脚手架库文件后，玩法代码里必须
+            # 真的接了反馈特效；作者模式产物必须替换掉占位玩法。
+            gameplay_low = "\n".join(
+                str(f.get("content") or "")
+                for f in source_files
+                if str(f.get("path") or "").endswith((".ts", ".tsx", ".js", ".mjs"))
+                and f.get("content_b64") is None
+                and str(f.get("path") or "") not in _NON_GAMEPLAY_FILES
+            ).lower()
+            fx_tokens = ["juice.", "tweens.add", "particles", ".shake(", "settintfill", "floattext(", ".flash("]
+            feedback_fx = any(tok in gameplay_low for tok in fx_tokens)
+            if not feedback_fx:
+                issues.append(
+                    "no gameplay feedback effects found: wire hit/score events to the scaffold's Juice helpers "
+                    "(hitFlash/burst/shake/floatText) or tweens/particles"
+                )
+            if "sfx." not in gameplay_low and "audiocontext" not in gameplay_low:
+                warnings.append("no audio usage detected (Sfx presets are available at src/systems/Sfx.ts)")
+            if state.get("code_source") == "author" and "gw_placeholder_gameplay" in gameplay_low:
+                issues.append(
+                    "authored project still contains the GW_PLACEHOLDER_GAMEPLAY placeholder; "
+                    "replace it with the designed gameplay"
+                )
+            # 出界防线：用了物理速度/追踪移动却没有任何世界边界处理 —— 敌人会
+            # 漂出场外滞留。作者产物走修复回环,模板/修订只提示。
+            moves = any(tok in gameplay_low for tok in ["setvelocity", "movetoobject", "moveto("])
+            handles_bounds = any(
+                tok in gameplay_low
+                for tok in ["collideworldbounds", "bounds.", "worldbounds", "despawnoutside", "wrap(", "clamp("]
+            )
+            if moves and not handles_bounds:
+                bounds_msg = (
+                    "moving physics bodies but no world-edge handling found: use the scaffold's Bounds system "
+                    "(collideWorld/clamp/wrap/despawnOutside) so actors cannot drift out of the arena"
+                )
+                if state.get("code_source") == "author":
+                    issues.append(bounds_msg)
+                else:
+                    warnings.append(bounds_msg)
+            # 生成素材必须真的被用上：花钱生成的雪碧图/背景图被 preload 却不显示,
+            # 玩家看到的还是程序化圆点(2026-07-13 实测:背景图进包但零引用)。
+            # token 表必须包含 sheetFrame——脚手架推荐的取帧辅助函数定义在
+            # gameConfig.ts(已被 _NON_GAMEPLAY_FILES 剔除),玩法代码只会出现
+            # sheetFrame(...) 调用;漏掉它会把正确用法误判为未使用,修复回环
+            # 反复整包重生成也永远过不了门禁(2026-07-13 两任务实测)。
+            manifest_assets = (state.get("asset_manifest") or {}).get("assets") or []
+            has_sheet_asset = any(
+                isinstance(a, dict) and str(a.get("kind")) == "spritesheet" and a.get("frames")
+                for a in manifest_assets
+            )
+            has_bg_asset = any(
+                isinstance(a, dict) and str(a.get("kind")) == "image" and "background" in str(a.get("key") or "")
+                for a in manifest_assets
+            )
+            if has_sheet_asset and not any(
+                tok in gameplay_low for tok in ["gameconfig.sheet", "sheet.frames", "sheet.key", "sheetframe"]
+            ):
+                sheet_msg = (
+                    "generated sprite sheet is preloaded but never used: build sprites and animations "
+                    "from gameConfig.sheet frames instead of procedural shapes"
+                )
+                if state.get("code_source") == "author":
+                    issues.append(sheet_msg)
+                else:
+                    warnings.append(sheet_msg)
+            if has_bg_asset and not any(
+                tok in gameplay_low
+                for tok in ["backdrop.", "assetkeys.background", "'background'", '"background"']
+            ):
+                warnings.append(
+                    "generated background image is preloaded but never displayed (Backdrop.draw keeps it visible)"
+                )
+            # 阻挡类实体防线:设计声明了 obstacle 桶实体(掩体/墙/平台/砖块...),
+            # 玩法代码却毫无对应痕迹 —— 枪战没掩体就退化成空场对枪(2026-07-12
+            # 用户实测反馈)。作者产物走修复回环,模板/修订只提示。token 词表须
+            # 覆盖各类型的自然命名(platformer 写 platforms、breakout 写 brick)。
+            from app.services.game_assets import design_obstacles
+
+            if design_obstacles(state.get("game_design") or {}) and not _has_any(
+                gameplay_low,
+                ["obstacle", "cover", "barrier", "crate", "barricade", "wall", "platform", "block", "brick", "terrain", "掩体"],
+            ):
+                obstacle_msg = (
+                    "design declares obstacle/blocking entities but gameplay code never creates them: "
+                    "spawn them as static or destructible physics bodies (their sheet frames are generated; "
+                    "resolve via sheetFrame()) that actually block movement and projectiles"
+                )
+                if state.get("code_source") == "author":
+                    issues.append(obstacle_msg)
+                else:
+                    warnings.append(obstacle_msg)
         if archetype == "vertical_shooter":
             if not _has_any(low, ["bullet", "shoot", "fire", "projectile", "laser"]):
                 warnings.append("shooter has no obvious projectile logic")
@@ -327,7 +446,7 @@ def _gameplay_qa_log_lines(result: dict) -> list[str]:
     depth_val = m.get("uses_three_webgl", m.get("uses_gradient_or_glow"))
     lines = [
         f"playtest archetype: {result.get('archetype')}",
-        f"code smoke: game.js={m.get('js_bytes')} bytes, input={m.get('has_input')}, restart={m.get('has_restart')}, {depth_label}={depth_val}",
+        f"code smoke: source={m.get('js_bytes')} bytes, input={m.get('has_input')}, restart={m.get('has_restart')}, {depth_label}={depth_val}",
     ]
     if m.get("runtime_smoke_ok") is not None:
         smoke_detail = str(m.get("runtime_smoke_detail") or "")
@@ -353,7 +472,15 @@ def _gameplay_qa_log_lines(result: dict) -> list[str]:
 
 
 def build_validation_node(state: dict) -> dict:
-    result = validation.validate_files(state.get("generated_files") or [])
+    result = validation.validate_files(
+        state.get("generated_files") or [],
+        bundle_type=str(state.get("artifact_format") or "legacy-bundle/v1"),
+    )
+    build_result = state.get("build_result") or {}
+    if build_result and not build_result.get("ok", True):
+        result = dict(result)
+        result["valid"] = False
+        result["errors"] = list(build_result.get("errors") or []) + list(result.get("errors") or [])
     if state.get("task_kind") in {"revision", "remix"} and not (state.get("revision_result") or {}).get("changed_files"):
         result = dict(result)
         result["valid"] = False

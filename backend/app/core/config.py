@@ -75,16 +75,68 @@ class Settings(BaseSettings):
     CODE_AGENT_ENABLED: bool = False
     CODE_AGENT_MAX_TURNS: int = 8
     CODE_AGENT_MODEL: str = ""  # 留空复用 MODEL_NAME
-    # 作者模式试点（2D）：real 任务由 agent 在工具循环里从骨架逐文件写出游戏，
-    # 文件结构自定（write_file / V4A Add File，平铺 .js/.css，配额见 validation）。
-    # 每轮一个小 patch，绕开单请求超时墙；agent 不可用/产出过短自动回落单次整包
-    # 生成。产物仍过 build_validation / gameplay QA 门禁。
+    # Optional Responses API routing key. Leave empty for compatible proxies
+    # that reject prompt_cache_key; official OpenAI endpoints may opt in.
+    # 非空才会随请求发送 prompt_cache_key。多上游负载均衡的网关靠它做缓存
+    # 分片/渠道亲和;不发的话逐轮命中率全看路由运气（2026-07-13 实测:15 轮
+    # 整跑仅 48%,单轮在 0%/52%/97% 之间波动）。
+    CODE_AGENT_PROMPT_CACHE_KEY_PREFIX: str = "gameweave"
+    # 作者模式：real 任务由 agent 在受限工具循环里逐文件扩展骨架。
+    # For Phaser/Vite this agent edits the typed scenes/entities/systems/ui/config
+    # tree and must pass TypeScript plus the isolated Vite build before returning.
     CODE_AGENT_AUTHOR_ENABLED: bool = False
     CODE_AGENT_AUTHOR_MAX_TURNS: int = 32
-    # 2D 生成运行时试点：true 时 real 模式的 2D 代码生成改用自托管 Phaser 4
-    # （vendor/phaser.min.js，全局 Phaser，与 3D three.min.js 同模式随包发布）。
-    # 模板兜底仍是 Canvas；模型失败/过短的回退逻辑不变。默认关闭灰度。
-    PHASER_2D_ENABLED: bool = False
+    # Opt-in because this persists complete prompts, model responses, tool
+    # arguments/results, generated code, and exception tracebacks.
+    CODE_AGENT_DETAILED_LOGGING_ENABLED: bool = False
+    # All newly generated 2D games use modular Phaser 3.90 + TypeScript.
+    VITE_BUILD_TIMEOUT_MS: int = 120_000
+    SANDBOX_BUILD_TIMEOUT_OVERHEAD_MS: int = 15_000
+
+    # Game asset generation. Each modality is configured independently so an
+    # operator may mix providers. "local" produces deterministic placeholders;
+    # "openai-compatible" uses the configured /images, /audio, or /videos
+    # endpoint. Disabled by default to avoid surprising external spend.
+    ASSET_GENERATION_ENABLED: bool = False
+    ASSET_GENERATION_FAIL_OPEN: bool = True
+    # sheet 最多 ASSET_SHEET_MAX_PAGES(10) 页 + 背景变体(3) + 关键词触发的
+    # bgm/动图,给足余量到 20;配额过小会把溢出页图集、场景变体或显式要求的
+    # bgm 静默截掉(tileset 不占该配额,走 tilemap 分支)。
+    ASSET_GENERATION_MAX_ITEMS: int = 20
+    # 同时向图像网关发起的生成调用数。单张 sheet 实测 ~72s(quality=medium),
+    # 3 页图集+背景串行要 ~5 分钟;并行 2 路把墙钟时间近似砍半,又不至于
+    # 触发网关的并发限流。
+    ASSET_GENERATION_CONCURRENCY: int = 2
+    # 姿势/技能/敌人动作/道具动画帧扩容后,一局的图集页数上限(每页一次图像
+    # 调用,16 格)。这是上限不是目标:排版器按 roster 实际大小开页,普通设计
+    # 仍是 2-3 页;两梯队动画帧全开的满编 roster(12 敌人移动+攻击帧、Boss 特技、
+    # 6 道具激活帧、玩家 5 技能+跳跃/死亡/胜利 ≈ 75-80 格)也只到第 5 页,10 是
+    # "永不截断"的余量。角色帧组永不跨页(Phaser 动画帧必须同纹理)。
+    ASSET_SHEET_MAX_PAGES: int = 10
+    # 场景背景变体数(1-3):主场景 / 同场景高压(Boss)阶段 / 换区变体,
+    # gameplay 代码按阶段切换 Backdrop 制造场景变化。
+    ASSET_BACKGROUND_VARIANTS: int = 3
+    TILEMAP_GENERATION_ENABLED: bool = True
+    # gpt-image 级别的图片生成常见 90-180s；120s 会让客户端先断开、上游报
+    # "context canceled"（2026-07-13 实测事故）。给足余量。
+    ASSET_PROVIDER_TIMEOUT_SECONDS: int = 300
+    ASSET_PROVIDER_MAX_BYTES: int = 8_000_000
+    ASSET_IMAGE_PROVIDER: str = "local"
+    ASSET_IMAGE_API_KEY: str = ""
+    ASSET_IMAGE_BASE_URL: str = ""
+    ASSET_IMAGE_MODEL: str = ""
+    # OpenAI's Image API can emit partial-image SSE events. Keep this opt-in:
+    # some third-party "compatible" gateways return an empty 200 SSE response.
+    ASSET_IMAGE_STREAMING_ENABLED: bool = False
+    ASSET_IMAGE_PARTIAL_IMAGES: int = 1
+    ASSET_AUDIO_PROVIDER: str = ""
+    ASSET_AUDIO_API_KEY: str = ""
+    ASSET_AUDIO_BASE_URL: str = ""
+    ASSET_AUDIO_MODEL: str = ""
+    ASSET_VIDEO_PROVIDER: str = ""
+    ASSET_VIDEO_API_KEY: str = ""
+    ASSET_VIDEO_BASE_URL: str = ""
+    ASSET_VIDEO_MODEL: str = ""
 
     # Observability. Empty DSN / OTLP endpoint keeps local development fully
     # offline. LOG_FORMAT=json is intended for production log aggregation.

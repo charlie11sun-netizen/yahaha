@@ -42,6 +42,42 @@ def _postgres_connection_string() -> str:
     return url.set(drivername="postgresql").render_as_string(hide_password=False)
 
 
+def _setup_postgres_saver(saver: Any) -> None:
+    global _postgres_ready
+    if _postgres_ready:
+        return
+    with _setup_lock:
+        if _postgres_ready:
+            return
+        saver.conn.execute(
+            "SELECT pg_advisory_lock(%s)",
+            (_POSTGRES_SETUP_LOCK_KEY,),
+        )
+        try:
+            saver.setup()
+        finally:
+            saver.conn.execute(
+                "SELECT pg_advisory_unlock(%s)",
+                (_POSTGRES_SETUP_LOCK_KEY,),
+            )
+        _postgres_ready = True
+
+
+def setup_checkpointer() -> None:
+    """Apply LangGraph's PostgreSQL schema before API and worker startup."""
+
+    if make_url(settings.DATABASE_URL).get_backend_name() != "postgresql":
+        return
+
+    from langgraph.checkpoint.postgres import PostgresSaver
+
+    try:
+        with PostgresSaver.from_conn_string(_postgres_connection_string()) as saver:
+            _setup_postgres_saver(saver)
+    except Exception as exc:  # noqa: BLE001 - normalize driver/setup failures
+        raise CheckpointStorageError("LangGraph checkpoint storage is unavailable") from exc
+
+
 @contextmanager
 def open_checkpointer() -> Iterator[Any]:
     """Yield a durable saver for production or a shared in-memory saver in tests."""
@@ -56,24 +92,7 @@ def open_checkpointer() -> Iterator[Any]:
     stack = ExitStack()
     try:
         saver = stack.enter_context(PostgresSaver.from_conn_string(_postgres_connection_string()))
-        if not _postgres_ready:
-            with _setup_lock:
-                if not _postgres_ready:
-                    # setup() applies the checkpointer package's own migrations.
-                    # Serialize the first deployment across API/worker processes,
-                    # not only threads in this process.
-                    saver.conn.execute(
-                        "SELECT pg_advisory_lock(%s)",
-                        (_POSTGRES_SETUP_LOCK_KEY,),
-                    )
-                    try:
-                        saver.setup()
-                    finally:
-                        saver.conn.execute(
-                            "SELECT pg_advisory_unlock(%s)",
-                            (_POSTGRES_SETUP_LOCK_KEY,),
-                        )
-                    _postgres_ready = True
+        _setup_postgres_saver(saver)
     except Exception as exc:  # noqa: BLE001 - normalize driver/setup failures
         stack.close()
         raise CheckpointStorageError("LangGraph checkpoint storage is unavailable") from exc

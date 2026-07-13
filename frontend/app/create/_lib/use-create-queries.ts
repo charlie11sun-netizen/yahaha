@@ -142,6 +142,19 @@ export function useCreateTaskQuery(taskId: string | null) {
   };
 }
 
+export function useGeneratedTaskAssetsQuery(taskId: string | null, task?: Task) {
+  return useQuery({
+    queryKey: ["task-generated-assets", taskId],
+    queryFn: () => api.generatedTaskAssets(taskId as string),
+    enabled: Boolean(taskId && task && !task.game),
+    refetchInterval: (query) => {
+      if (query.state.data?.items.length) return false;
+      return isActiveTask(task?.status) ? 3000 : false;
+    },
+    staleTime: 60000,
+  });
+}
+
 export function useCreateTasksQuery(enabled: boolean) {
   return useQuery({
     queryKey: ["tasks"],

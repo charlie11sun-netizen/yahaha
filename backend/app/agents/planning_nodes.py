@@ -98,9 +98,9 @@ def mechanic_planner_node(state: dict) -> dict:
     if state.get("use_real"):
         try:
             raw, tokens = llm.chat(
-                "Plan concrete mini-game mechanics as bounded JSON. Prefer proven mechanics over novelty.",
+                "Plan concrete mini-game mechanics as bounded JSON. Anchor on one proven core loop, then add exactly ONE signature twist that makes this game distinct from the genre default; both must be implementable in a small Phaser game.",
                 (
-                    "Return JSON with keys archetype_hint, primary_action, secondary_action, risk_model, reward_model, "
+                    "Return JSON with keys archetype_hint, primary_action, secondary_action, signature_twist, risk_model, reward_model, "
                     "enemy_behaviors, reward_items, powerups, feedback, skill_tests. "
                     f"Spec: {json.dumps(spec, ensure_ascii=False)}\nBrief: {json.dumps(brief, ensure_ascii=False)}"
                 ),
@@ -126,12 +126,17 @@ def archetype_router_node(state: dict) -> dict:
     else:
         spec["dimension"] = "2d"
         result = _route_archetype(spec, prompt, state.get("expanded_brief"), state.get("mechanic_plan"))
+    # archetype 只是元数据（QA 启发式 / replan 兜底 / 参考选取用），不再覆写模型
+    # 已经给出的 genre/core_loop —— 早期把创意压进四原型是产出趋同的主因之一。
     spec["archetype"] = result["archetype"]
-    spec["genre"] = result["genre"]
-    spec["core_loop"] = result["core_loop"]
+    filled = []
+    for key in ("genre", "core_loop"):
+        if not spec.get(key):
+            spec[key] = result[key]
+            filled.append(key)
     tags = [str(tag) for tag in (spec.get("tags") or [])]
-    for tag in [result["genre"], result["archetype"].replace("_", "-")]:
-        if tag not in tags:
+    for tag in [str(spec.get("genre") or result["genre"]), result["archetype"].replace("_", "-")]:
+        if tag and tag not in tags:
             tags.append(tag)
     spec["tags"] = tags[:5]
     return {
@@ -139,13 +144,17 @@ def archetype_router_node(state: dict) -> dict:
         "archetype_result": result,
         "_agent": "ArchetypeRouterAgent",
         "_logs": [
-            f"archetype selected: {result['archetype']} ({result['label']})",
+            f"archetype tagged: {result['archetype']} ({result['label']}) — metadata only, design stays free",
             f"routing reason: {result['reason']}",
-            f"core loop locked: {result['core_loop']}",
+            (
+                f"filled missing spec keys from archetype defaults: {', '.join(filled)}"
+                if filled
+                else f"spec genre/core_loop kept from model: {spec.get('genre')} / {_clip(spec.get('core_loop'), 80)}"
+            ),
             (
                 "runtime: 3D WebGL (Three.js, self-hosted) — model-authored, no template fallback"
                 if is_3d
-                else "template family: deterministic canvas, no network, no storage"
+                else "runtime: neutral Phaser 3.90 + TypeScript stage, no network or storage"
             ),
         ],
     }
@@ -214,12 +223,18 @@ def content_plan_node(state: dict) -> dict:
     plan = _content_plan(archetype, spec, brief, mechanics)
     design = dict(state.get("game_design") or _heuristic_design(spec))
     design["mechanic_plan"] = mechanics
-    design["content_plan"] = plan
+    # 罐头 content plan 只补缺：模型设计已有 waves/节奏时不再覆盖——固定的
+    # 3-4 波时间轴曾让所有游戏共用同一副节奏骨架。
+    if not design.get("waves"):
+        design["content_plan"] = plan
+        logs = _content_log_lines(plan)
+    else:
+        logs = ["model design already provides waves/pacing; canned content plan kept out of the design"]
     return {
         "game_design": design,
         "content_plan": plan,
         "_agent": "ContentPlanAgent",
-        "_logs": _content_log_lines(plan),
+        "_logs": logs,
     }
 
 

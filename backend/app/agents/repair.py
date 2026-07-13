@@ -1,5 +1,5 @@
 """Repair and replan nodes for the GameWeave LangGraph pipeline."""
-from app.agents.codegen import _generate_code, _generate_revision_code
+from app.agents.codegen import _generate_code, _generate_revision_code, _prepare_generated_artifacts
 from app.agents.nodes_common import (
     MAX_GAMEPLAY_REPAIR,
     MAX_REPAIR,
@@ -21,6 +21,7 @@ from app.agents.planning_spec import (
     _simplify_design,
     _simplify_design_3d,
 )
+from app.services.vite_projects import VITE_PROJECT_FORMAT
 
 
 def _nodes_facade_attr(name: str, fallback):
@@ -28,6 +29,27 @@ def _nodes_facade_attr(name: str, fallback):
 
     facade = sys.modules.get("app.agents.nodes")
     return getattr(facade, name, fallback) if facade is not None else fallback
+
+
+def _repair_input_files(state: dict) -> list[dict]:
+    if state.get("artifact_format") == VITE_PROJECT_FORMAT:
+        return [
+            dict(item)
+            for item in (state.get("project_files") or [])
+            if item.get("path") and item.get("content_b64") is None
+        ]
+    return list(state.get("generated_files") or state.get("existing_files") or [])
+
+
+def _prepared_repair_files(state: dict, repaired: list[dict]) -> dict:
+    if state.get("artifact_format") != VITE_PROJECT_FORMAT:
+        return {"generated_files": repaired}
+    replacements = {str(item.get("path")): dict(item) for item in repaired if item.get("path")}
+    project = [
+        replacements.get(str(item.get("path")), dict(item))
+        for item in (state.get("project_files") or state.get("existing_files") or [])
+    ]
+    return {"generated_files": [], "project_files": project, "build_result": {}}
 
 
 _RUNTIME_QA_PATCHABLE = (
@@ -44,16 +66,33 @@ _RUNTIME_QA_SYMPTOMS = (
 )
 
 
+# 作者产物的质量门禁（素材未接线/占位玩法/无反馈特效/无边界/无障碍物）都是局部
+# 接线问题：包能跑、烟测过。整包重生成一轮 author ≈ 百万 token 且对失因一无所知,
+# 最小 patch 把缺的线接上才收敛（2026-07-13 两任务各烧两轮重生成的教训）。
+_QUALITY_QA_PATCHABLE = (
+    "generated sprite sheet is preloaded but never used",
+    "no gameplay feedback effects found",
+    "authored project still contains the GW_PLACEHOLDER_GAMEPLAY placeholder",
+    "moving physics bodies but no world-edge handling found",
+    "design declares obstacle/blocking entities but gameplay code never creates them",
+)
+
+
 def _classify_gameplay_failure(qa_result: dict) -> tuple[str, list[str]]:
     """"runtime"：全部 issue 都是运行时报错或其伴随症状（崩溃后零帧/超时），且至少
-    一条报错——这是局部代码 bug（如 Phaser API 误用），适合最小 patch。其余（太难/
-    无输入/无循环等玩法指标）返回 "design"，走 balance 调参 + 整包重生成。"""
+    一条报错——这是局部代码 bug（如 Phaser API 误用），适合最小 patch。"quality"：
+    全部 issue 都是质量门禁（生成素材未用/占位玩法/无反馈特效……），同样是局部
+    接线问题，走最小 patch。其余（太难/无输入/无循环等玩法指标）返回 "design"，
+    走 balance 调参 + 整包重生成。"""
     issues = [str(item) for item in (qa_result or {}).get("issues") or []]
-    patchable = [item for item in issues if item.startswith(_RUNTIME_QA_PATCHABLE)]
+    runtime = [item for item in issues if item.startswith(_RUNTIME_QA_PATCHABLE)]
     symptoms = [item for item in issues if item.startswith(_RUNTIME_QA_SYMPTOMS)]
-    if patchable and len(patchable) + len(symptoms) == len(issues):
-        return "runtime", patchable
-    return "design", patchable
+    quality = [item for item in issues if item.startswith(_QUALITY_QA_PATCHABLE)]
+    if runtime and len(runtime) + len(symptoms) + len(quality) == len(issues):
+        return "runtime", runtime + quality
+    if quality and len(quality) == len(issues):
+        return "quality", quality
+    return "design", runtime
 
 
 def _repair_balance(balance: dict, archetype: str, attempt: int) -> dict:
@@ -82,9 +121,13 @@ def repair_code_node(state: dict) -> dict:
     # 自测通过才提交；不可用/不收敛回落下面的整体重生成。外层 build_validation
     # 仍会独立复检，agent 的自测不作数。
     agent_tokens = 0
-    if code_agent.enabled(state):
+    project_author_repair = (
+        state.get("artifact_format") == VITE_PROJECT_FORMAT
+        and code_agent.author_enabled(state)
+    )
+    if code_agent.enabled(state) or project_author_repair:
         outcome = code_agent.run_repair(
-            state.get("generated_files") or [],
+            _repair_input_files(state),
             error=str(state.get("last_error") or "build validation failed"),
             dimension=str(state.get("dimension") or "2d"),
         )
@@ -93,13 +136,26 @@ def repair_code_node(state: dict) -> dict:
             logs += [f"repair mode: agent tool loop ({outcome.turns} model turn(s))"] + outcome.logs
             if outcome.checks_ok:
                 return {
-                    "generated_files": outcome.files,
+                    **_prepared_repair_files(state, outcome.files),
                     "repair_attempts": attempts,
                     "_agent": "GameCodeAgentRepair",
                     "_tokens_delta": agent_tokens,
                     "_logs": logs
                     + _file_log_lines(outcome.files)
                     + ["agent self-checks passed", "queued validation retry"],
+                }
+            if state.get("artifact_format") == VITE_PROJECT_FORMAT:
+                return {
+                    **_prepared_repair_files(state, outcome.files),
+                    "repair_attempts": attempts,
+                    "_agent": "GameCodeAgentRepair",
+                    "_tokens_delta": agent_tokens,
+                    "_logs": logs
+                    + _file_log_lines(outcome.files)
+                    + [
+                        f"agent self-checks still failing ({_clip(outcome.note, 120)})",
+                        "preserved repaired project for isolated build validation",
+                    ],
                 }
             logs.append(
                 f"agent loop did not converge ({_clip(outcome.note, 120)}); falling back to full regeneration"
@@ -108,8 +164,9 @@ def repair_code_node(state: dict) -> dict:
             logs.append("agent loop unavailable; falling back to full regeneration")
     generate_code = _nodes_facade_attr("_generate_code", _generate_code)
     files, tokens, mode, regen_agent_logs = generate_code({**state, "repair_attempts": attempts}, repair_error=state.get("last_error"))
+    prepared = _prepare_generated_artifacts(files, state)
     return {
-        "generated_files": files,
+        **prepared,
         "repair_attempts": attempts,
         "_agent": "GameCodeAgentRepair",
         "_tokens_delta": tokens + agent_tokens,
@@ -130,7 +187,7 @@ def revision_repair_node(state: dict) -> dict:
     agent_tokens = 0
     if code_agent.enabled(state):
         outcome = code_agent.run_repair(
-            state.get("generated_files") or state.get("existing_files") or [],
+            _repair_input_files(state),
             error=str(state.get("last_error") or "revision validation failed"),
             dimension=str(state.get("dimension") or "2d"),
             task_note=(
@@ -144,7 +201,7 @@ def revision_repair_node(state: dict) -> dict:
             # 外层门禁要求 revision/remix 至少改动一个文件，空编辑等于没修
             if outcome.checks_ok and outcome.changed:
                 return {
-                    "generated_files": outcome.files,
+                    **_prepared_repair_files(state, outcome.files),
                     "revision_result": {"changed_files": outcome.changed, "base_version": state.get("base_version")},
                     "validation_result": {},
                     "gameplay_qa_result": {},
@@ -170,8 +227,11 @@ def revision_repair_node(state: dict) -> dict:
         if state.get("use_real"):
             _real_model_fallback_or_raise("CodeRevisionRepairAgent", exc, exc)
         files, tokens, changed, mode = state.get("generated_files") or state.get("existing_files") or [], 0, [], f"revision repair failed: {_clip(exc, 160)}"
+    vite_revision = state.get("artifact_format") == VITE_PROJECT_FORMAT
     return {
-        "generated_files": files,
+        "generated_files": [] if vite_revision else files,
+        "project_files": files if vite_revision else [],
+        "build_result": {},
         "revision_result": {"changed_files": changed, "base_version": state.get("base_version")},
         "validation_result": {},
         "gameplay_qa_result": {},
@@ -195,25 +255,41 @@ def gameplay_repair_node(state: dict) -> dict:
         f"gameplay repair attempt: {attempts}/{MAX_GAMEPLAY_REPAIR}",
         "QA issues: " + ("; ".join(issues[:3]) if issues else "balance threshold miss"),
     ]
-    # 运行时报错（页面崩溃/console error/Phaser API 误用）是局部 bug：优先内层
-    # 工具循环 agent 做最小 patch，保住已生成的玩法，避免整包重生把好的部分改坏。
-    # patch 成功回 build_validation 外层门禁复检（agent 自测不作数），再进
-    # gameplay_qa；玩法指标问题或 agent 不可用/不收敛，仍走 balance 调参 + 重生成。
+    # 运行时报错（页面崩溃/console error/Phaser API 误用）和质量门禁（生成素材
+    # 未接线/占位玩法/无反馈特效）都是局部 bug：优先内层工具循环 agent 做最小
+    # patch，保住已生成的玩法，避免整包重生把好的部分改坏。patch 成功回
+    # build_validation 外层门禁复检（agent 自测不作数），再进 gameplay_qa；
+    # 玩法指标问题或 agent 不可用/不收敛，仍走 balance 调参 + 重生成。
     agent_tokens = 0
-    failure_kind, runtime_issues = _classify_gameplay_failure(qa_result)
-    if failure_kind == "runtime" and code_agent.enabled(state):
-        outcome = code_agent.run_repair(
-            state.get("generated_files") or [],
-            error="; ".join(runtime_issues),
-            dimension=str(state.get("dimension") or "2d"),
-            failure_label="Browser gameplay QA",
-            task_note=(
+    failure_kind, patch_issues = _classify_gameplay_failure(qa_result)
+    if failure_kind in ("runtime", "quality") and code_agent.enabled(state):
+        if failure_kind == "runtime":
+            failure_label = "Browser gameplay QA"
+            task_note = (
                 "This bundle already passes static build validation and the V8 smoke test; the error(s) above "
                 "came from a real headless-browser run. run_checks may therefore report ALL CHECKS PASSED before "
                 "you change anything — that alone does NOT mean the bug is fixed. Locate the root cause of the "
                 "reported browser error (usually a wrong engine/API call in game.js), apply the smallest fix, "
                 "then re-verify with run_checks. Do not redesign gameplay, difficulty or balance."
-            ),
+            )
+        else:
+            failure_label = "Gameplay quality QA"
+            task_note = (
+                "This bundle builds, passes static validation and the headless-browser smoke run; the finding(s) "
+                "above are QUALITY gate failures from inspecting the gameplay modules. run_checks will report ALL "
+                "CHECKS PASSED regardless — that does NOT satisfy the findings. Make the smallest wiring edits that "
+                "resolve each finding: build sprites and animations from the generated sheet frames (gameConfig.sheet "
+                "/ sheetFrame()) instead of procedural shapes, wire hit/score events to the Juice/Sfx helpers, spawn "
+                "declared obstacle entities as blocking physics bodies, or route moving actors through the Bounds "
+                "system — whichever the findings name. Re-read the flagged modules to confirm each finding is "
+                "addressed. Do not redesign gameplay, difficulty or balance."
+            )
+        outcome = code_agent.run_repair(
+            _repair_input_files(state),
+            error="; ".join(patch_issues),
+            dimension=str(state.get("dimension") or "2d"),
+            failure_label=failure_label,
+            task_note=task_note,
         )
         if outcome is not None:
             agent_tokens = outcome.tokens
@@ -221,7 +297,7 @@ def gameplay_repair_node(state: dict) -> dict:
             # 浏览器 bug 在 run_checks 里本就不复现，空编辑等于没修，必须有实际改动
             if outcome.checks_ok and outcome.changed:
                 return {
-                    "generated_files": outcome.files,
+                    **_prepared_repair_files(state, outcome.files),
                     "validation_result": {},
                     "gameplay_qa_result": {},
                     "gameplay_repair_attempts": attempts,
@@ -240,7 +316,7 @@ def gameplay_repair_node(state: dict) -> dict:
             )
         else:
             logs.append("agent loop unavailable; falling back to balance repair + regeneration")
-    elif failure_kind == "runtime":
+    elif failure_kind in ("runtime", "quality"):
         logs.append(
             "code agent disabled (needs CODE_AGENT_ENABLED=true and a real-model task); "
             "falling back to balance repair + regeneration"
@@ -253,8 +329,13 @@ def gameplay_repair_node(state: dict) -> dict:
         "balance_config": balance,
         "game_design": design,
         "generated_files": [],
+        "project_files": [],
+        "build_result": {},
         "validation_result": {},
         "gameplay_qa_result": {},
+        # 重生成不能对失因失忆：作者跑一轮 ≈ 百万 token，盲跑只会复刻同样的产物。
+        # 把本轮 QA 结论带给下一次 code_generation（作者提示词里必须逐条解决）。
+        "gameplay_qa_feedback": issues,
         "gameplay_repair_attempts": attempts,
         "last_error": None,
         "_agent": "GameplayRepairAgent",
@@ -284,8 +365,11 @@ def replan_game_design_node(state: dict) -> dict:
     out = {
         "game_design": design,
         "generated_files": [],
+        "project_files": [],
+        "build_result": {},
         "validation_result": {},
         "gameplay_qa_result": {},
+        "gameplay_qa_feedback": None,  # 设计已重排，旧 QA 结论不再成立
         "repair_attempts": 0,
         "gameplay_repair_attempts": 0,
         "replan_attempts": attempts,
@@ -312,12 +396,13 @@ def replan_game_design_node(state: dict) -> dict:
 def next_after_gameplay_repair(state: dict) -> str:
     # patch 路径带着修好的 bundle 回外层门禁复检；重生成路径已清空
     # generated_files，回 code_generation 整包重做。
-    return "build_validation" if state.get("generated_files") else "code_generation"
+    return "project_build" if state.get("generated_files") or state.get("project_files") else "code_generation"
 
 
 __all__ = [
     '_RUNTIME_QA_PATCHABLE',
     '_RUNTIME_QA_SYMPTOMS',
+    '_QUALITY_QA_PATCHABLE',
     '_classify_gameplay_failure',
     '_repair_balance',
     'repair_code_node',

@@ -25,6 +25,7 @@ export type AgentLogEvent = NonNullable<Schemas["AgentLogEntryOut"]["event"]>;
 export type AgentLogEntry = Schemas["AgentLogEntryOut"];
 export type DesignPreview = Schemas["DesignPreviewOut"];
 export type TaskAsset = Schemas["TaskAssetOut"];
+export type GeneratedTaskAsset = Schemas["TaskGeneratedAssetOut"];
 export type Task = Schemas["TaskOut"];
 export type TaskListResponse = Schemas["TaskListOut"];
 export type TaskIdResponse = Schemas["TaskIdOut"];

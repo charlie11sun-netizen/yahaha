@@ -143,6 +143,32 @@ class AgentLog(Base):
     step: Mapped["AgentStep"] = relationship(back_populates="logs")
 
 
+class AgentTraceEvent(PkMixin, TimestampMixin, Base):
+    """Opt-in full-fidelity code-agent trace; never included in normal task DTOs."""
+
+    __tablename__ = "agent_trace_events"
+    __table_args__ = (
+        Index("ix_agent_trace_events_step_id_seq", "step_id", "seq"),
+        Index("ix_agent_trace_events_task_id_created_at", "task_id", "created_at"),
+        Index("ix_agent_trace_events_run_id_seq", "run_id", "seq"),
+    )
+
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("generation_tasks.id", ondelete="CASCADE"), index=False
+    )
+    step_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_steps.id", ondelete="CASCADE"), index=False
+    )
+    run_id: Mapped[str] = mapped_column(String(36))
+    seq: Mapped[int] = mapped_column(Integer)
+    source: Mapped[str] = mapped_column(String(32))
+    event_type: Mapped[str] = mapped_column(String(40))
+    agent: Mapped[str] = mapped_column(String(120))
+    model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+    payload_chars: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
 class LLMCall(PkMixin, TimestampMixin, Base):
     __tablename__ = "llm_calls"
 
@@ -156,6 +182,8 @@ class LLMCall(PkMixin, TimestampMixin, Base):
     prompt_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
     completion_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
     total_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    # prompt_tokens 中命中 prompt cache 的部分（provider 侧折价读取）。
+    cached_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     retried: Mapped[bool] = mapped_column(Boolean, default=False)
     cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 6), nullable=True)

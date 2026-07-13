@@ -5,6 +5,7 @@ from hashlib import blake2b
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.agents.state import MAX_GAMEPLAY_REPAIR, MAX_REPAIR
 from app.core.config import settings
 from app.core.checkpointing import checkpoint_exists, delete_checkpoint_thread
 from app.core.errors import TaskErrorCode
@@ -171,7 +172,16 @@ def create_task(db: Session, body: TaskCreateIn, user, *, queue) -> GenerationTa
     if body.task_kind == "remix":
         task = _create_remix_task(db, body, user)
     else:
-        task = GenerationTask(user_id=user.id, idea=body.idea, status=TaskStatus.PENDING, dimension=body.dimension)
+        task = GenerationTask(
+            user_id=user.id,
+            idea=body.idea,
+            status=TaskStatus.PENDING,
+            dimension=body.dimension,
+            # 生成任务的修复预算是两条回环之和（构建修复 + 玩法修复），
+            # 与 tracing 落库的合并计数保持同一口径；revision/remix 只有
+            # 构建修复一条回环，沿用模型默认值 2
+            max_repair_attempts=MAX_REPAIR + MAX_GAMEPLAY_REPAIR,
+        )
         _attach_owned_assets(db, task, user.id, body.asset_ids)
         db.add(task)
     return _commit_and_dispatch(db, task, queue)

@@ -59,7 +59,7 @@ def _heuristic_spec(prompt: str) -> dict:
         "summary": (prompt[:117] + "...") if len(prompt) > 120 else prompt,
         "genre": genre,
         "theme": theme,
-        "target_runtime": "canvas",
+        "target_runtime": "phaser-vite",
         "core_loop": _ARCHETYPES["vertical_shooter" if genre == "shooter" else "logic_grid" if genre == "puzzle" else "lane_runner" if genre == "runner" else "topdown_collect"]["loop"],
         "controls": controls,
         "win_condition": "reach_target_score",
@@ -139,8 +139,20 @@ def _coerce_design(data: dict, spec: dict | None = None) -> dict:
         if isinstance(data.get("ui"), dict):
             base["ui"].update(data["ui"])
         # 模型优先：保留 GameDesignAgent 产出的丰富结构，原样喂给 Coder
-        # ("scene" 是 3D 设计的相机/环境/空间，必须保留)
-        for key in ("scene", "background", "player", "waves", "powerups", "boss", "juice"):
+        # ("scene" 是 3D 设计的相机/环境/空间，必须保留；palette/signature_twist/
+        # sfx_events 是每局的视觉身份、辨识度机制与音效清单)
+        for key in (
+            "scene",
+            "background",
+            "player",
+            "waves",
+            "powerups",
+            "boss",
+            "juice",
+            "palette",
+            "signature_twist",
+            "sfx_events",
+        ):
             if data.get(key):
                 base[key] = data[key]
     return base

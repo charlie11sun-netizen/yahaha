@@ -235,6 +235,8 @@ export const api = {
   tasks: async () => unwrap(await client.GET("/tasks")),
   task: async (task_id: string) =>
     unwrap(await client.GET("/tasks/{task_id}", { params: { path: { task_id } } })),
+  generatedTaskAssets: async (task_id: string) =>
+    unwrap(await client.GET("/tasks/{task_id}/generated-assets", { params: { path: { task_id } } })),
   retryTask: async (task_id: string) =>
     unwrap(await client.POST("/tasks/{task_id}/retry", { params: { path: { task_id } } })),
   reviseTask: async (task_id: string, feedback: string) =>

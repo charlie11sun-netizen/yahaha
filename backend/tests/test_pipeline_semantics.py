@@ -467,6 +467,81 @@ def test_retry_endpoint_replays_failed_node_and_resets_budgets(
     db.close()
 
 
+def test_image_failure_waits_for_manual_retry_and_resumes_asset_node(
+    client, db_session_factory, monkeypatch
+):
+    from typing import TypedDict
+
+    from langgraph.graph import END, START, StateGraph
+
+    from app.agents.pipeline import run_generation
+    from app.agents.tracing import logged
+    from app.core.checkpointing import checkpoint_exists
+    from app.models import AgentStep, GenerationTask
+    from app.models.common import StepStatus, TaskStatus
+    from app.services.game_assets import AssetGenerationRetryRequired
+
+    headers = auth_headers(client, email="asset-manual-retry@t.com", display_name="P0")
+    task_id = _make_task(client, headers)
+    calls = []
+
+    class AssetState(TypedDict, total=False):
+        task_id: str
+        use_real: bool
+        status: str
+        game_id: str
+        version_id: str
+
+    def build_asset_graph(checkpointer):
+        def asset_generation(state):
+            calls.append(dict(state))
+            if len(calls) == 1:
+                raise AssetGenerationRetryRequired(
+                    "Image asset 'sheet' failed after the automatic retry. "
+                    "Generation is paused; retry the failed step manually."
+                )
+            return {"status": "succeeded", "game_id": "g-asset", "version_id": "v-asset"}
+
+        builder = StateGraph(AssetState)
+        builder.add_node("asset_generation", logged("asset_generation")(asset_generation))
+        builder.add_edge(START, "asset_generation")
+        builder.add_edge("asset_generation", END)
+        return builder.compile(checkpointer=checkpointer)
+
+    monkeypatch.setattr("app.agents.pipeline.SessionLocal", db_session_factory)
+    monkeypatch.setattr("app.agents.tracing.SessionLocal", db_session_factory)
+    monkeypatch.setattr(
+        "app.agents.graph.build_graph",
+        lambda *, checkpointer=None: build_asset_graph(checkpointer),
+    )
+
+    run_generation(task_id)
+
+    db = db_session_factory()
+    task = db.get(GenerationTask, task_id)
+    assert task.status == TaskStatus.FAILED
+    assert task.error_code == "ASSET_GENERATION_FAILED"
+    assert "retry the failed step manually" in task.error
+    steps = db.query(AgentStep).filter_by(task_id=task_id).all()
+    assert len(steps) == 1 and steps[0].status == StepStatus.FAILED
+    assert checkpoint_exists(task_id) is True
+    db.close()
+
+    response = client.post(f"/tasks/{task_id}/retry", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["mode"] == "resume"
+
+    run_generation(task_id)
+
+    db = db_session_factory()
+    task = db.get(GenerationTask, task_id)
+    assert task.status == TaskStatus.SUCCEEDED
+    assert len(calls) == 2
+    assert db.query(AgentStep).filter_by(task_id=task_id).count() == 2
+    assert checkpoint_exists(task_id) is False
+    db.close()
+
+
 def test_retry_endpoint_from_scratch_deletes_native_thread(client, db_session_factory):
     from app.core.checkpointing import checkpoint_exists
     from app.models import AgentStep, GenerationTask

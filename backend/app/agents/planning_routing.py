@@ -122,10 +122,16 @@ def _balance_plan(archetype: str, spec: dict, prompt: str) -> dict:
 
 
 def _merge_balance_into_design(design: dict, archetype: str, balance: dict) -> dict:
+    """挂上 archetype 元数据与可选的 balance 默认值。
+
+    只补缺不覆盖：模型设计给出的节奏（survive_seconds 等）优先——写死的
+    balance 表覆盖模型数值曾是产出同质化的来源之一。balance 本身作为
+    advisory 默认值原样带给作者 agent，用不用由玩法代码决定。
+    """
     merged = dict(design or {})
     merged["archetype"] = archetype
     rules = dict(merged.get("rules") if isinstance(merged.get("rules"), dict) else {})
-    rules["survive_seconds"] = balance.get("round_seconds", rules.get("survive_seconds", 55))
+    rules.setdefault("survive_seconds", balance.get("round_seconds", 55))
     merged["rules"] = rules
     merged["balance"] = balance
     return merged

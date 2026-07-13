@@ -892,6 +892,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/tasks/{task_id}/generated-assets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Task Generated Assets */
+        get: operations["get_task_generated_assets_tasks__task_id__generated_assets_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/tasks/{task_id}/retry": {
         parameters: {
             query?: never;
@@ -2093,6 +2110,26 @@ export interface components {
              * @enum {string}
              */
             task_kind: "generation" | "remix";
+        };
+        /** TaskGeneratedAssetListOut */
+        TaskGeneratedAssetListOut: {
+            /** Items */
+            items: components["schemas"]["TaskGeneratedAssetOut"][];
+        };
+        /** TaskGeneratedAssetOut */
+        TaskGeneratedAssetOut: {
+            /** Bytes */
+            bytes: number;
+            /** Content Type */
+            content_type: string;
+            /** Data Url */
+            data_url: string;
+            /** Key */
+            key: string;
+            /** Kind */
+            kind: string;
+            /** Name */
+            name: string;
         };
         /** TaskIdOut */
         TaskIdOut: {
@@ -4425,6 +4462,37 @@ export interface operations {
                 content: {
                     "application/json": unknown;
                     "text/event-stream": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_task_generated_assets_tasks__task_id__generated_assets_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskGeneratedAssetListOut"];
                 };
             };
             /** @description Validation Error */

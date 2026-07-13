@@ -6,6 +6,19 @@
 import hashlib
 import re
 
+from app.services.artifacts import (
+    ArtifactError,
+    artifact_bytes,
+    artifact_size,
+    artifact_text,
+    normalize_artifact_path,
+)
+from app.services.vite_projects import (
+    MAX_PROJECT_BYTES,
+    MAX_PROJECT_FILE_BYTES,
+    VITE_PROJECT_FORMAT,
+)
+
 # (正则, 展示名)
 FORBIDDEN_PATTERNS = [
     (r"eval\s*\(", "eval()"),
@@ -26,10 +39,13 @@ FORBIDDEN_PATTERNS = [
 
 REQUIRED_FILES = {"index.html", "style.css", "game.js"}
 MAX_FILE_BYTES = 400_000
-MAX_BUNDLE_FILES = 12
+MAX_RUNTIME_FILE_BYTES = MAX_PROJECT_FILE_BYTES
+MAX_RUNTIME_BYTES = MAX_PROJECT_BYTES
+MAX_LEGACY_FILES = 12
+MAX_BUNDLE_FILES = 120
 # 引擎文件由发布/沙箱环节注入（不属于生成 bundle），但 index.html 可以引用。
 ENGINE_FILES = {"three.min.js", "phaser.min.js"}
-_BUNDLE_PATH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.(?:js|css|html)$")
+_BUNDLE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SCRIPT_SRC_RE = re.compile(r"<script[^>]+src=[\"']([^\"']+)[\"']", re.IGNORECASE)
 
 
@@ -200,55 +216,84 @@ def _js_completeness_error(source: str) -> str | None:
     return None
 
 
-def validate_files(files: list[dict]) -> dict:
-    paths = {f["path"] for f in files}
+def validate_files(files: list[dict], bundle_type: str = "legacy-bundle/v1") -> dict:
+    normalized_files: list[tuple[str, dict]] = []
     errors: list[str] = []
+    for item in files:
+        try:
+            path = normalize_artifact_path(str(item.get("path") or ""))
+        except ArtifactError as exc:
+            errors.append(str(exc))
+            continue
+        if any(not _BUNDLE_SEGMENT_RE.match(part) for part in path.split("/")):
+            errors.append(f"invalid file path {path!r}")
+            continue
+        normalized_files.append((path, item))
 
-    missing = REQUIRED_FILES - paths
+    paths = {path for path, _ in normalized_files}
+    required = {"index.html"} if bundle_type == VITE_PROJECT_FORMAT else REQUIRED_FILES
+
+    missing = required - paths
     if missing:
         errors.append(f"missing required files: {sorted(missing)}")
-    if len(files) != len(paths):
+    if len(normalized_files) != len(paths):
         errors.append("duplicate file paths in bundle")
-    if len(paths) > MAX_BUNDLE_FILES:
-        errors.append(f"bundle has {len(paths)} files; max {MAX_BUNDLE_FILES}")
+    max_files = MAX_BUNDLE_FILES if bundle_type == VITE_PROJECT_FORMAT else MAX_LEGACY_FILES
+    if len(paths) > max_files:
+        errors.append(f"bundle has {len(paths)} files; max {max_files}")
 
-    for f in files:
-        path = str(f["path"])
-        content = f.get("content", "")
-        if not _BUNDLE_PATH_RE.match(path):
-            errors.append(f"invalid file path {path!r}: flat filename ending in .js/.css/.html required")
-        elif path.endswith(".html") and path != "index.html":
+    total_bytes = 0
+    for path, f in normalized_files:
+        content = artifact_text(f)
+        size = artifact_size(f)
+        total_bytes += size
+        if bundle_type != VITE_PROJECT_FORMAT and path.endswith(".html") and path != "index.html":
             errors.append(f"unexpected extra html file {path!r}; index.html is the only page")
-        for pattern, label in FORBIDDEN_PATTERNS:
-            if re.search(pattern, content, re.IGNORECASE):
-                errors.append(f"forbidden API in {f['path']}: {label}")
-        if len(content.encode("utf-8")) > MAX_FILE_BYTES:
-            errors.append(f"{f['path']} exceeds {MAX_FILE_BYTES // 1000}KB")
-        if path.endswith(".js"):
+        scan_security = content is not None and (
+            bundle_type != VITE_PROJECT_FORMAT or path == "index.html"
+        )
+        if scan_security:
+            patterns = FORBIDDEN_PATTERNS if bundle_type != VITE_PROJECT_FORMAT else FORBIDDEN_PATTERNS[-2:]
+            for pattern, label in patterns:
+                if re.search(pattern, content, re.IGNORECASE):
+                    errors.append(f"forbidden API in {path}: {label}")
+        limit = MAX_RUNTIME_FILE_BYTES if bundle_type == VITE_PROJECT_FORMAT else MAX_FILE_BYTES
+        if size > limit:
+            errors.append(f"{path} exceeds {limit // 1000}KB")
+        if bundle_type != VITE_PROJECT_FORMAT and path.endswith(".js") and content is not None:
             incomplete = _js_completeness_error(content)
             if incomplete:
-                errors.append(f"{f['path']} appears incomplete: {incomplete}")
+                errors.append(f"{path} appears incomplete: {incomplete}")
+    if total_bytes > MAX_RUNTIME_BYTES:
+        errors.append(f"bundle exceeds {MAX_RUNTIME_BYTES} bytes")
 
-    idx = next((f for f in files if f["path"] == "index.html"), None)
-    if idx and "game.js" not in idx["content"]:
+    idx = next((f for path, f in normalized_files if path == "index.html"), None)
+    idx_text = artifact_text(idx) if idx else None
+    if bundle_type != VITE_PROJECT_FORMAT and idx_text is not None and "game.js" not in idx_text:
         errors.append("index.html does not reference game.js")
-    if idx:
-        srcs = script_srcs(idx["content"])
+    if idx_text is not None:
+        srcs = script_srcs(idx_text)
         for src in srcs:
-            if src not in paths and src not in ENGINE_FILES:
+            try:
+                normalized_src = normalize_artifact_path(src)
+            except ArtifactError:
+                normalized_src = src
+            if normalized_src not in paths and normalized_src not in ENGINE_FILES:
                 errors.append(f"index.html references missing script {src!r}")
-        referenced = set(srcs)
-        for f in files:
-            path = str(f["path"])
-            if path.endswith(".js") and path not in referenced:
-                errors.append(f"{path} is not referenced by a <script src> in index.html")
+        if bundle_type != VITE_PROJECT_FORMAT:
+            referenced = set(srcs)
+            for path, _ in normalized_files:
+                if path.endswith(".js") and path not in referenced:
+                    errors.append(f"{path} is not referenced by a <script src> in index.html")
 
-    infos = [
-        {
-            "path": f["path"],
-            "sha256": hashlib.sha256(f["content"].encode("utf-8")).hexdigest(),
-            "size": len(f["content"].encode("utf-8")),
-        }
-        for f in files
-    ]
+    infos = []
+    for path, file in normalized_files:
+        raw = artifact_bytes(file)
+        infos.append(
+            {
+                "path": path,
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "size": len(raw),
+            }
+        )
     return {"valid": not errors, "errors": errors, "warnings": [], "files": infos}

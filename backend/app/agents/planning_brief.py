@@ -138,7 +138,7 @@ def _heuristic_mechanic_plan(spec: dict, brief: dict, prompt: str) -> dict:
 def _coerce_mechanic_plan(data: dict, spec: dict, brief: dict, prompt: str) -> dict:
     base = _heuristic_mechanic_plan(spec, brief, prompt)
     if isinstance(data, dict):
-        for key in ("archetype_hint", "primary_action", "secondary_action", "risk_model", "reward_model"):
+        for key in ("archetype_hint", "primary_action", "secondary_action", "signature_twist", "risk_model", "reward_model"):
             if data.get(key):
                 base[key] = str(data[key])[:180]
         for key in ("enemy_behaviors", "reward_items", "powerups"):

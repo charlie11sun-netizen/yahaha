@@ -10,7 +10,16 @@ from app.api.deps import get_current_user, rate_limit
 from app.db.session import SessionLocal, get_db
 from app.models import GenerationTask
 from app.models.common import TaskStatus
-from app.schemas import OkOut, TaskIdOut, TaskListOut, TaskOut, TaskRetryOut, TaskCreateIn, TaskRevisionIn
+from app.schemas import (
+    OkOut,
+    TaskCreateIn,
+    TaskGeneratedAssetListOut,
+    TaskIdOut,
+    TaskListOut,
+    TaskOut,
+    TaskRetryOut,
+    TaskRevisionIn,
+)
 from app.services import task_actions
 from app.services.errors import ServiceError
 from app.services.serialize import task_out
@@ -58,6 +67,22 @@ def list_tasks(
 def get_task(task_id: str, user=Depends(get_current_user), db: Session = Depends(get_db)):
     task = _run(lambda: task_actions.get_task(db, task_id, user))
     return task_out(task)
+
+
+@router.get(
+    "/{task_id}/generated-assets",
+    response_model=TaskGeneratedAssetListOut,
+    response_model_exclude_unset=True,
+)
+def get_task_generated_assets(
+    task_id: str,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    task = _run(lambda: task_actions.get_task(db, task_id, user))
+    from app.services.task_generated_assets import generated_image_previews
+
+    return {"items": generated_image_previews(task.id)}
 
 
 def _event_snapshot(task_id: str, user_id: str) -> tuple[str, dict | None]:

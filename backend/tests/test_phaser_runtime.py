@@ -1,8 +1,9 @@
-"""Phaser 2D 运行时试点：组装注入、QA 放行、发布挂载、提示词切换、skills 可读（全离线）。"""
+"""Legacy Phaser playback plus modular Phaser generation checks."""
 from types import SimpleNamespace
 
-from app.agents import code_agent, nodes, prompts, smoke, validation
+from app.agents import author_runner, code_agent, nodes, smoke, validation
 from app.services import packaging
+from app.services.phaser_projects import create_modular_phaser_project
 
 # 黄金样例：地道的 Phaser 4 产物 —— 没有字面 requestAnimationFrame/addEventListener，
 # 输入、循环、纹理全走引擎 API。旧的 Canvas 规则会把它误杀，本文件证明现在不会。
@@ -172,6 +173,41 @@ def test_phaser_removed_api_lint_flags_set_tint_fill():
     ]
 
 
+def test_gameplay_qa_allows_set_tint_fill_in_phaser_390_vite(monkeypatch):
+    monkeypatch.setattr(nodes.sandbox_client, "run_bundle", _skipped_sandbox)
+    source = """
+import Phaser from "phaser";
+class PlayScene extends Phaser.Scene {
+  private player!: Phaser.GameObjects.Sprite;
+  create() {
+    this.player = this.add.sprite(100, 100, "player").setTintFill(0xffffff);
+    const cursors = this.input.keyboard!.createCursorKeys();
+    this.input.on("pointerdown", () => this.player.setTint(0x00ffff));
+    this.input.keyboard!.on("keydown-R", () => this.scene.restart());
+    this.tweens.add({ targets: this.player, alpha: 0.8, yoyo: true, repeat: -1 });
+    void cursors;
+  }
+  update() { this.player.rotation += 0.01; }
+}
+new Phaser.Game({ type: Phaser.AUTO, scene: [PlayScene] });
+"""
+    result = nodes._gameplay_qa(
+        {
+            "artifact_format": "phaser-vite/v1",
+            "game_spec": {"archetype": "topdown_collect"},
+            "validation_result": {"valid": True},
+            "project_files": [
+                {"path": "index.html", "content": '<div id="app"></div><script type="module" src="/src/main.ts"></script>'},
+                {"path": "src/main.ts", "content": source},
+            ],
+            "generated_files": [{"path": "index.html", "content": "<html></html>"}],
+        }
+    )
+
+    assert not any("setTintFill" in issue for issue in result["issues"])
+    assert result["passed"], result["issues"]
+
+
 def test_phaser_destroyed_body_lint_flags_knockback_after_kill():
     bad = """
 class PlayScene extends Phaser.Scene {
@@ -221,53 +257,76 @@ def test_publish_helpers_know_phaser():
     assert packaging.phaser_engine_bytes(), "vendored phaser.min.js missing or empty"
 
 
-# ---- 生成侧：提示词与运行时切换 ----
+# ---- 生成侧：新 2D 游戏只允许模块化 Phaser/Vite ----
 
-def test_generate_code_switches_to_phaser_prompt(monkeypatch):
-    monkeypatch.setattr(nodes.settings, "PHASER_2D_ENABLED", True)
-    monkeypatch.setattr(nodes.templating, "select_template", lambda spec, design: "t")
-    monkeypatch.setattr(nodes.templating, "build_config", lambda *a, **kw: {"title": "T"})
-    monkeypatch.setattr(nodes.templating, "render_files", lambda *a, **kw: [])
+def test_generate_code_always_returns_modular_typescript(monkeypatch):
     monkeypatch.setattr(nodes.code_agent, "author_enabled", lambda state: False)
-    seen = {}
-
-    def fake_chat(system, user, **kwargs):
-        seen["system"] = system
-        seen["user"] = user
-        js = "// phaser game\n" + _PHASER_JS
-        return (f"```html\n\n```\n```css\ncanvas{{}}\n```\n```js\n{js}\n```", 42)
-
-    monkeypatch.setattr(nodes.llm, "chat", fake_chat)
+    monkeypatch.setattr(
+        nodes.llm,
+        "chat",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("2D must not use legacy one-shot generation")),
+    )
     files, tokens, mode, _agent_logs = nodes._generate_code({"use_real": True, "game_spec": {}, "game_design": {}})
-    assert seen["system"] is prompts.CODE_SYSTEM_PROMPT_PHASER
-    assert mode.startswith("model (phaser")
-    index = next(f["content"] for f in files if f["path"] == "index.html")
-    assert "phaser.min.js" in index
+    paths = {f["path"] for f in files}
+    assert tokens == 0
+    assert mode == "modular TypeScript template"
+    assert {"src/main.ts", "src/scenes/PlayScene.ts", "src/entities/Player.ts"}.issubset(paths)
+    assert "game.js" not in paths
 
 
-def test_generate_code_canvas_default_unchanged(monkeypatch):
-    monkeypatch.setattr(nodes.settings, "PHASER_2D_ENABLED", False)
-    monkeypatch.setattr(nodes.templating, "select_template", lambda spec, design: "t")
-    monkeypatch.setattr(nodes.templating, "build_config", lambda *a, **kw: {"title": "T"})
-    monkeypatch.setattr(nodes.templating, "render_files", lambda *a, **kw: [])
-    monkeypatch.setattr(nodes.code_agent, "author_enabled", lambda state: False)
-    seen = {}
+def test_modular_phaser_scaffold_is_neutral_stage_with_quality_kit():
+    files = create_modular_phaser_project({"title": "Boundary test"}, {})
+    by_path = {item["path"]: item["content"] for item in files}
 
-    def fake_chat(system, user, **kwargs):
-        seen["system"] = system
-        return ("```html\n\n```\n```css\nc{}\n```\n```js\n" + "var x=1;" * 80 + "\n```", 7)
+    # 中性舞台：不再自带"追踪敌人+收集"成品玩法（那是产出趋同的母版）。
+    assert "src/entities/Enemy.ts" not in by_path
+    assert "src/systems/SpawnSystem.ts" not in by_path
+    # 品质基建齐备，占位玩法带显式标记且演示 Juice/Sfx 用法。
+    assert "hitStop" in by_path["src/systems/Juice.ts"]
+    assert "floatText" in by_path["src/systems/Juice.ts"]
+    assert "playPitched" in by_path["src/systems/Sfx.ts"]
+    play = by_path["src/scenes/PlayScene.ts"]
+    assert "GW_PLACEHOLDER_GAMEPLAY" in play
+    assert "this.juice" in play and "Sfx.play" in play
+    assert "GameOverScene" in by_path["src/main.ts"]
+    config = by_path["src/config/gameConfig.ts"]
+    assert '"palette"' in config and '"params"' in config
+    # dodge-collect 专用字段不再出现在类型契约里。
+    assert "enemySpeed" not in config and "spawnMs" not in config
 
-    monkeypatch.setattr(nodes.llm, "chat", fake_chat)
-    files, tokens, mode, _agent_logs = nodes._generate_code({"use_real": True, "game_spec": {}, "game_design": {}})
-    assert seen["system"] is prompts.CODE_SYSTEM_PROMPT
-    assert mode in {"model (full bundle)", "model (game.js)"}
-    index = next(f["content"] for f in files if f["path"] == "index.html")
-    assert "phaser.min.js" not in index
+
+def test_scaffold_palette_prefers_design_and_varies_by_title():
+    from app.services.phaser_projects import _PALETTES, _palette_for
+
+    designed = _palette_for(
+        {"title": "Any", "theme": "any"},
+        {"palette": {"bg": "#123456", "primary": "#abcdef", "accent": "bad", "danger": "#FF0000"}},
+    )
+    assert designed["bg"] == "#123456"
+    assert designed["primary"] == "#abcdef"
+    assert designed["danger"] == "#ff0000"
+    # 非法值回落到确定性调色板
+    assert designed["accent"] in {p["accent"] for p in _PALETTES}
+
+    fallbacks = {_palette_for({"title": f"Game {i}", "theme": "retro"}, {})["bg"] for i in range(12)}
+    assert len(fallbacks) > 1, "fallback palettes must rotate so games look different"
 
 
-def test_build_code_prompt_reframes_reference_for_phaser():
-    text = prompts.build_code_prompt({}, {}, reference="// ref game", runtime="phaser")
-    assert "Phaser 4" in text and "raw-Canvas" in text
+def test_project_author_prompt_prevents_edge_spawn_bursts():
+    instructions = author_runner._PROJECT_AUTHOR_INSTRUCTIONS
+    assert "fully inside the configured world bounds" in instructions
+    assert "include pending entities in wave caps" in instructions
+    assert "background-tab catch-up" in instructions
+
+
+def test_project_author_prompt_demands_quality_and_placeholder_replacement():
+    instructions = author_runner._PROJECT_AUTHOR_INSTRUCTIONS
+    assert "GW_PLACEHOLDER_GAMEPLAY" in instructions
+    assert "signature_twist" in instructions
+    assert "game-quality-bar" in instructions
+    assert "hitFlash" in instructions and "floatText" in instructions
+    assert "gameConfig.palette" in instructions
+    assert "risk-reward" in instructions
 
 
 # ---- 修复 agent 侧：skills 真的可读、会被列进任务输入 ----

@@ -8,16 +8,35 @@ from decimal import Decimal, InvalidOperation
 from openai import OpenAI
 from sqlalchemy import func
 
+from app.agents import detailed_trace
 from app.core.config import settings
 from app.core.telemetry import get_context
 from app.db.session import SessionLocal
 from app.models import AgentLog, GenerationTask, LLMCall
+from app.services.task_events import publish_task_event
 
 _DEFAULT_MODEL_PRICING = {
     "gpt-5.5": {"in": 1.25, "out": 10.0},
 }
 _TRANSIENT_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504, 520, 522, 524}
-_STREAM_PROGRESS_INTERVAL_SECONDS = 2.0
+_TRANSIENT_ERROR_CODES = {"rate_limit_exceeded", "server_error", "vector_store_timeout"}
+_TRANSIENT_ERROR_MESSAGES = (
+    "retry your request",
+    "temporarily unavailable",
+    "temporary error",
+    "internal server error",
+    "server error",
+    "service unavailable",
+    "rate limit",
+    "overloaded",
+)
+_STREAM_PROGRESS_INTERVAL_SECONDS = 1.0
+
+
+class LLMResponseError(RuntimeError):
+    def __init__(self, message: str, *, code: str | None = None):
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -30,6 +49,7 @@ class LLMResult:
     latency_ms: int
     cost_usd: Decimal | None = None
     partial: bool = False
+    cached_tokens: int = 0
 
     def __iter__(self):
         # Backward compatible with existing `raw, tokens = llm.chat(...)` calls.
@@ -62,8 +82,14 @@ def _retryable(exc: Exception) -> bool:
     status = _status_code(exc)
     if status in _TRANSIENT_STATUS_CODES:
         return True
+    code = str(getattr(exc, "code", "") or "").lower()
+    if code in _TRANSIENT_ERROR_CODES:
+        return True
     message = str(exc).lower()
-    return "timeout" in message or "timed out" in message or "connection" in message
+    return any(
+        marker in message
+        for marker in ("timeout", "timed out", "connection", *_TRANSIENT_ERROR_MESSAGES)
+    )
 
 
 def _retry_delay(attempt: int) -> float:
@@ -123,6 +149,7 @@ def _record_call(result: LLMResult, *, retried: bool = False) -> None:
                 prompt_tokens=result.prompt_tokens,
                 completion_tokens=result.completion_tokens,
                 total_tokens=result.total_tokens,
+                cached_tokens=result.cached_tokens,
                 latency_ms=result.latency_ms,
                 retried=retried,
                 cost_usd=result.cost_usd,
@@ -139,8 +166,9 @@ def _record_call(result: LLMResult, *, retried: bool = False) -> None:
         db.close()
 
 
-def _record_stream_progress(line: str) -> None:
+def _record_stream_progress(line: str, payload: dict | None = None) -> None:
     ctx = get_context()
+    task_id = ctx.get("task_id")
     step_id = ctx.get("step_id")
     if not step_id:
         return
@@ -152,8 +180,17 @@ def _record_stream_progress(line: str) -> None:
             .scalar()
             or 0
         )
-        db.add(AgentLog(step_id=step_id, seq=int(seq), line=line))
+        db.add(
+            AgentLog(
+                step_id=step_id,
+                seq=int(seq),
+                line=line,
+                payload_json=json.dumps(payload, ensure_ascii=False) if payload else None,
+            )
+        )
         db.commit()
+        if task_id:
+            publish_task_event(task_id, "log_appended")
     except Exception:  # noqa: BLE001
         db.rollback()
     finally:
@@ -167,6 +204,7 @@ def record_usage(
     latency_ms: int,
     *,
     retried: bool = False,
+    cached_tokens: int = 0,
 ) -> LLMResult:
     """把外部执行的模型调用并入统一记账（LLMCall 行 + task.cost_usd）。
 
@@ -183,6 +221,7 @@ def record_usage(
         model=model,
         latency_ms=int(latency_ms or 0),
         cost_usd=_price_for(model, prompt_tokens, completion_tokens),
+        cached_tokens=int(cached_tokens or 0),
     )
     _record_call(result, retried=retried)
     return result
@@ -198,15 +237,16 @@ def _extract_response_text(response: object | None) -> str:
     return "".join(chunks)
 
 
-def _event_error_message(event: object) -> str:
+def _event_error(event: object) -> LLMResponseError:
     error = getattr(event, "error", None)
     if error is None:
         response = getattr(event, "response", None)
         error = getattr(response, "error", None)
     if error is None:
-        return str(event)
+        return LLMResponseError(str(event))
     message = getattr(error, "message", None) or getattr(error, "code", None) or str(error)
-    return str(message)
+    code = getattr(error, "code", None)
+    return LLMResponseError(str(message), code=str(code) if code else None)
 
 
 def _partial_stream_result(
@@ -268,6 +308,26 @@ def chat(
     if response_format is not None and response_format.get("type") != "json_object":
         kwargs["text"] = {"format": response_format}
 
+    context = get_context()
+    trace_recorder = detailed_trace.create_recorder(
+        source="responses_api",
+        agent=context.get("agent") or "GameCodeAgent",
+        model=requested_model,
+        require_code_context=True,
+    )
+    if trace_recorder:
+        trace_recorder.record(
+            "run_start",
+            {
+                "system_prompt": system,
+                "user_input": user,
+                "request": kwargs,
+                "response_format": response_format,
+                "allow_partial": allow_partial,
+                "timeout": timeout,
+            },
+        )
+
     max_retries = max(0, int(settings.OPENAI_MAX_RETRIES or 0))
     partial_min_chars = max(0, int(settings.OPENAI_PARTIAL_STREAM_MIN_CHARS or 0))
     retried = False
@@ -278,6 +338,11 @@ def chat(
         completed_response = None
         streamed_chars = 0
         try:
+            if trace_recorder:
+                trace_recorder.record(
+                    "llm_input",
+                    {"attempt": attempt + 1, "request": kwargs},
+                )
             _record_stream_progress("stream_tokens=0")
             stream = _client(timeout=timeout).responses.create(**kwargs)
             last_progress_at = start
@@ -296,11 +361,11 @@ def chat(
                 elif event_type == "response.completed":
                     completed_response = getattr(event, "response", None)
                 elif event_type in {"response.failed", "response.incomplete", "error"}:
-                    raise RuntimeError(_event_error_message(event))
+                    raise _event_error(event)
             if completed_response is None:
                 partial_text = ("".join(text_parts) or done_text).strip()
                 if allow_partial and len(partial_text) >= partial_min_chars:
-                    return _partial_stream_result(
+                    partial_result = _partial_stream_result(
                         text=partial_text,
                         requested_model=requested_model,
                         system=system,
@@ -308,12 +373,28 @@ def chat(
                         start=start,
                         retried=retried,
                     )
+                    if trace_recorder:
+                        trace_recorder.record(
+                            "llm_output",
+                            {
+                                "attempt": attempt + 1,
+                                "partial": True,
+                                "text": partial_result.text,
+                                "usage": partial_result,
+                                "reason": "stream_ended_before_completed",
+                            },
+                        )
+                        trace_recorder.record(
+                            "run_end",
+                            {"status": "partial", "result": partial_result},
+                        )
+                    return partial_result
                 raise RuntimeError("Responses stream ended before response.completed")
             break
         except Exception as exc:  # noqa: BLE001
             partial_text = ("".join(text_parts) or done_text).strip()
             if allow_partial and len(partial_text) >= partial_min_chars:
-                return _partial_stream_result(
+                partial_result = _partial_stream_result(
                     text=partial_text,
                     requested_model=requested_model,
                     system=system,
@@ -321,7 +402,48 @@ def chat(
                     start=start,
                     retried=retried,
                 )
-            if attempt >= max_retries or not _retryable(exc):
+                if trace_recorder:
+                    trace_recorder.record(
+                        "llm_error",
+                        {
+                            "attempt": attempt + 1,
+                            "partial_text": partial_text,
+                            "will_retry": False,
+                            **detailed_trace.exception_payload(exc),
+                        },
+                    )
+                    trace_recorder.record(
+                        "llm_output",
+                        {
+                            "attempt": attempt + 1,
+                            "partial": True,
+                            "text": partial_result.text,
+                            "usage": partial_result,
+                            "reason": "stream_error_with_usable_partial",
+                        },
+                    )
+                    trace_recorder.record(
+                        "run_end",
+                        {"status": "partial", "result": partial_result},
+                    )
+                return partial_result
+            will_retry = attempt < max_retries and _retryable(exc)
+            if trace_recorder:
+                trace_recorder.record(
+                    "llm_error",
+                    {
+                        "attempt": attempt + 1,
+                        "partial_text": partial_text,
+                        "will_retry": will_retry,
+                        **detailed_trace.exception_payload(exc),
+                    },
+                )
+            if not will_retry:
+                if trace_recorder:
+                    trace_recorder.record(
+                        "run_end",
+                        {"status": "failed", "attempts": attempt + 1},
+                    )
                 raise
             retried = True
             time.sleep(_retry_delay(attempt))
@@ -337,9 +459,26 @@ def chat(
     total_tokens = int(getattr(usage, "total_tokens", 0) or 0) if usage else 0
     if total_tokens <= 0:
         total_tokens = prompt_tokens + completion_tokens
+    usage_details = getattr(usage, "input_tokens_details", None) if usage else None
+    cached_tokens = int(getattr(usage_details, "cached_tokens", 0) or 0)
     if latency_ms >= int(_STREAM_PROGRESS_INTERVAL_SECONDS * 1000):
         _record_stream_progress(f"stream_tokens={completion_tokens or _estimate_tokens(len(text))}")
     actual_model = str(getattr(completed_response, "model", None) or requested_model)
+    if prompt_tokens:
+        # 0% 也要落一行：一次性调用的命中率此前无人观测，"零"与"没测"必须可区分。
+        cache_pct = cached_tokens * 100 // prompt_tokens
+        _record_stream_progress(
+            f"prompt cache: {cached_tokens}/{prompt_tokens} read ({cache_pct}%)",
+            payload={
+                "type": "usage",
+                "input_tokens": prompt_tokens,
+                "output_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+                "cached_tokens": cached_tokens,
+                "requests": 1,
+                "cache_percent": cache_pct,
+            },
+        )
     result = LLMResult(
         text=text,
         prompt_tokens=prompt_tokens,
@@ -348,6 +487,30 @@ def chat(
         model=actual_model,
         latency_ms=latency_ms,
         cost_usd=_price_for(actual_model, prompt_tokens, completion_tokens),
+        cached_tokens=cached_tokens,
     )
+    if trace_recorder:
+        trace_recorder.record(
+            "llm_output",
+            {
+                "attempt": attempt + 1,
+                "partial": False,
+                "text": text,
+                "response": completed_response,
+                "usage": result,
+            },
+            model=actual_model,
+        )
     _record_call(result, retried=retried)
+    if trace_recorder:
+        trace_recorder.record(
+            "run_end",
+            {
+                "status": "completed",
+                "attempts": attempt + 1,
+                "retried": retried,
+                "result": result,
+            },
+            model=actual_model,
+        )
     return result

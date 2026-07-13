@@ -265,7 +265,14 @@ def leaderboard(game_id: str, user=Depends(get_optional_user), db: Session = Dep
 @router.get("/games/{game_id}/files/{token}/{version}/{file_path:path}")
 def game_file(game_id: str, token: str, version: str, file_path: str, db: Session = Depends(get_db)):
     body, media_type = _run(lambda: game_actions.game_file(db, game_id, token, version, file_path))
-    return Response(content=body, media_type=media_type)
+    # 运行时 iframe 带 sandbox（无 allow-same-origin）,文档 origin 是 opaque,
+    # Phaser 的 XHR 资产请求携带 Origin: null,不在 CORS 白名单里;这里对
+    # token 门禁的只读 GET 显式放行,否则 sheet/background/tilemap 全部加载失败。
+    return Response(
+        content=body,
+        media_type=media_type,
+        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "private, max-age=300"},
+    )
 
 
 @router.get("/games/{game_id}/manifest", response_model=GameManifestOut, response_model_exclude_unset=True)

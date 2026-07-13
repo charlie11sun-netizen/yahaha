@@ -22,25 +22,12 @@ from app.agents.author_runner import (
     run_author,
     run_repair,
 )
-from app.agents.patch_parser import (
-    _ADD_PREFIX,
-    _BEGIN_PATCH,
-    _Chunk,
-    _DELETE_PREFIX,
-    _END_PATCH,
-    _EOF_MARK,
-    _FORMAT_HINT,
-    _PatchError,
-    _SECTION_STOPS,
-    _UPDATE_PREFIX,
-    _V4AParser,
-    _apply_chunks,
-    _find_context,
-    _find_context_core,
-    _peek_section,
-    _prepare_patch_lines,
-    _resolve_bundle_path,
-    _strip_patch_fence,
+from app.agents.patch_execution import (
+    AppliedPatchDelta,
+    PatchFileChange,
+    PatchOperationKind,
+    VerifiedPatch,
+    verify_patch_operation,
 )
 from app.agents.repair_session import (
     RepairOutcome,
@@ -59,11 +46,16 @@ from app.agents.repair_session import (
 from app.core.config import settings
 
 __all__ = [
+    "AppliedPatchDelta",
+    "PatchFileChange",
+    "PatchOperationKind",
     "RepairOutcome",
     "RepairSession",
+    "VerifiedPatch",
     "available_skills",
     "author_enabled",
     "enabled",
     "run_author",
     "run_repair",
+    "verify_patch_operation",
 ]

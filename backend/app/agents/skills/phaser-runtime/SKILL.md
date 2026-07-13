@@ -1,9 +1,14 @@
 ---
 name: phaser-runtime
-description: "Phaser 4 inside the GameWeave sandbox: boot config, scene lifecycle, procedural textures (no loader!), input idioms, restart, score reporting, smoke-test constraints. Read this when fixing a Phaser game that fails validation, crashes on load, or shows a black screen."
+description: "LEGACY single-file bundles only (game.js + global Phaser via phaser.min.js): boot config, scene lifecycle, procedural textures (no loader!), input idioms, restart, score reporting, smoke-test constraints. Read this when fixing a legacy Phaser bundle that fails validation, crashes on load, or shows a black screen. For modular Vite/TS projects use the scaffold conventions and the game-quality-bar skill instead — Vite projects MAY load manifest assets via BootScene preload."
 ---
 
-# Phaser 4 in the GameWeave Sandbox
+# Phaser 4 in the GameWeave Sandbox (LEGACY bundles)
+
+SCOPE: this applies to legacy single-file bundles that load `phaser.min.js` as a
+global. Modular Phaser 3.90 + Vite + TypeScript projects follow different rules:
+their BootScene preloads AssetManifest files, and quality guidance lives in the
+game-quality-bar skill.
 
 Distilled from the official phaser repo `skills/` (game-setup-and-config, scenes,
 input, graphics-and-shapes) and REWRITTEN for this sandbox: no network, no asset

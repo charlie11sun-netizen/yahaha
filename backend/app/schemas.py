@@ -46,7 +46,7 @@ class ScoreIn(BaseModel):
 class TaskCreateIn(BaseModel):
     idea: str = Field(min_length=1, max_length=2000)
     asset_ids: list[str] = []
-    dimension: Literal["2d", "3d"] = "2d"  # 2D Canvas 还是 3D WebGL(Three.js)
+    dimension: Literal["2d", "3d"] = "2d"  # 2D Phaser/Vite or 3D WebGL (Three.js)
     task_kind: Literal["generation", "remix"] = "generation"
     source_game_id: str | None = None
 
@@ -231,6 +231,19 @@ class TaskAssetOut(BaseModel):
     kind: str | None = None
     scan_status: str | None = None
     url: str | None = None
+
+
+class TaskGeneratedAssetOut(BaseModel):
+    key: str
+    name: str
+    kind: str
+    content_type: str
+    bytes: int
+    data_url: str
+
+
+class TaskGeneratedAssetListOut(BaseModel):
+    items: list[TaskGeneratedAssetOut]
 
 
 class AgentBundleFileOut(BaseModel):

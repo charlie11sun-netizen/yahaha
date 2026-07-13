@@ -9,6 +9,13 @@ import json
 import os
 
 from app.models.common import now_utc
+from app.services.artifacts import (
+    artifact_bytes,
+    artifact_content_type,
+    artifact_text,
+    normalize_artifact_path,
+    text_artifact,
+)
 from app.services.runtime_urls import game_manifest_url
 from app.storage import s3
 
@@ -35,10 +42,72 @@ def _content_type_for(path: str, default: str = "text/plain; charset=utf-8") -> 
         return _CONTENT_TYPE[name]
     return _EXT_CONTENT_TYPE.get(os.path.splitext(name)[1].lower(), default)
 
+
+def _prepare_runtime_file(file: dict) -> tuple[str, bytes, str]:
+    path = normalize_artifact_path(str(file.get("path") or ""))
+    item = dict(file)
+    if path == "index.html":
+        text = artifact_text(item)
+        if text is None:
+            raise RuntimeError("index.html must be UTF-8 text")
+        item = text_artifact(path, inject_csp(text), "text/html; charset=utf-8")
+    return path, artifact_bytes(item), artifact_content_type(item)
+
+
+def _upload_runtime_files(prefix: str, files: list[dict]) -> tuple[list[dict], int]:
+    uploaded: list[dict] = []
+    total_bytes = 0
+    for file in files:
+        path, body, content_type = _prepare_runtime_file(file)
+        s3.put_object(f"{prefix}/{path}", body, content_type)
+        total_bytes += len(body)
+        uploaded.append(
+            {
+                "path": path,
+                "sha256": hashlib.sha256(body).hexdigest(),
+                "size": len(body),
+                "content_type": content_type,
+            }
+        )
+    return uploaded, total_bytes
+
+
+def _source_prefix(game_id: str, version: str) -> str:
+    return f"game-sources/{game_id}/{version}"
+
+
+def _upload_source_project(game_id: str, version: str, files: list[dict]) -> None:
+    if not files:
+        return
+    prefix = _source_prefix(game_id, version)
+    manifest_files = []
+    for file in files:
+        path = normalize_artifact_path(str(file.get("path") or ""))
+        body = artifact_bytes(file)
+        content_type = artifact_content_type(file)
+        s3.put_object(f"{prefix}/{path}", body, content_type)
+        manifest_files.append(
+            {
+                "path": path,
+                "sha256": hashlib.sha256(body).hexdigest(),
+                "size": len(body),
+                "content_type": content_type,
+            }
+        )
+    source_manifest = {"schema_version": "game-source/v1", "files": manifest_files}
+    s3.put_object(
+        f"{prefix}/manifest.json",
+        json.dumps(source_manifest, ensure_ascii=False, indent=2),
+        "application/json",
+    )
+
 # iframe 的 sandbox 属性并不拦网络请求；manifest 承诺的 permissions.network=false
-# 靠这里注入的 CSP 在浏览器层强制：connect-src 'none' 掐断 fetch/XHR/WebSocket/
-# sendBeacon，default-src 'none' 掐断外链脚本等一切非白名单加载；同前缀相对
-# 路径资源（style.css / game.js / three.min.js）经 'self' 放行。
+# 靠这里注入的 CSP 在浏览器层强制：default-src 'none' 掐断外链脚本等一切非白名单
+# 加载；同前缀相对路径资源（style.css / game.js / three.min.js）经 'self' 放行。
+# connect-src 必须是 'self' 而非 'none'：Phaser 3 的 Loader 对图片/图集/tilemap
+# JSON 一律走 XHR（拿 blob 再建纹理），'none' 会把生成的 sheet.png/background.png
+# 全部拦成 missing-texture 绿框（2026-07-12 实测事故）。'self' 仍然掐断一切跨源
+# fetch/XHR/WebSocket/sendBeacon 外呼，防外泄语义不变。
 _CSP_META = (
     '<meta http-equiv="Content-Security-Policy" content="'
     "default-src 'none'; "
@@ -47,7 +116,7 @@ _CSP_META = (
     "img-src 'self' data: blob:; "
     "media-src 'self' data: blob:; "
     "font-src 'self' data:; "
-    "connect-src 'none'; "
+    "connect-src 'self'; "
     "form-action 'none'; "
     "base-uri 'none'\">"
 )
@@ -86,8 +155,8 @@ def three_engine_bytes() -> bytes | None:
     return _three_engine_bytes()
 
 
-# 自托管的 2D 引擎（vendored Phaser 4 UMD，暴露全局 Phaser）。PHASER_2D_ENABLED
-# 试点：2D 产物引用 <script src="phaser.min.js"> 时随 bundle 同源发布，同 three 模式。
+# Historical self-hosted Phaser UMD engine retained only for legacy bundle playback.
+# Legacy bundles that reference phaser.min.js still receive the same-origin engine.
 _PHASER_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "agents", "vendor", "phaser.min.js")
 _PHASER_CACHE: bytes | None = None
 
@@ -194,17 +263,8 @@ def publish_generated(state: dict) -> tuple[str, str, str]:
         gid = game.id
 
         prefix = s3.game_prefix(gid, "v1")
-        uploaded = []
-        total_bytes = 0
-        for f in files:
-            content = inject_csp(f["content"]) if f["path"] == "index.html" else f["content"]
-            key = f"{prefix}/{f['path']}"
-            s3.put_object(key, content, _content_type_for(f["path"]))
-            total_bytes += len(content.encode("utf-8"))
-            uploaded.append({
-                "path": f["path"],
-                "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
-            })
+        uploaded, total_bytes = _upload_runtime_files(prefix, files)
+        _upload_source_project(gid, "v1", state.get("project_files") or [])
 
         # 引擎随包发布：把自托管引擎放进同一前缀，bundle 内用相对路径加载（不进 validate_files）。
         if str(state.get("dimension")) == "3d":
@@ -227,9 +287,10 @@ def publish_generated(state: dict) -> tuple[str, str, str]:
                 })
 
         index_sha = next((u["sha256"] for u in uploaded if u["path"] == "index.html"), "")
+        runtime = "phaser-vite-dist" if state.get("artifact_format") == "phaser-vite/v1" else "iframe-html"
         version = GameVersion(
             game_id=gid, version="v1", manifest_key=f"{prefix}/manifest.json",
-            bundle_key=f"{prefix}/index.html", entry="index.html", runtime="iframe-html",
+            bundle_key=f"{prefix}/index.html", entry="index.html", runtime=runtime,
             sha256=index_sha, size_bytes=total_bytes,
             source_task_id=state.get("task_id"),
         )
@@ -239,9 +300,11 @@ def publish_generated(state: dict) -> tuple[str, str, str]:
 
         manifest = {
             "schema_version": "game-manifest/v1", "game_id": gid, "version_id": vid, "title": title,
-            "runtime": "iframe-html", "entry": "index.html",
+            "runtime": runtime, "entry": "index.html",
             "files": uploaded, "assets": asset_manifest.get("assets", []),
             "permissions": {"network": False, "storage": False, "cookies": False},
+            "artifact_format": state.get("artifact_format") or "legacy-bundle/v1",
+            "build": state.get("build_result") or {},
         }
         s3.put_object(f"{prefix}/manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2), "application/json")
         db.commit()
@@ -293,23 +356,8 @@ def publish_revision(state: dict) -> tuple[str, str, str, str]:
                 version_numbers.append(int(value[1:]))
         version_name = f"v{max(version_numbers or [0]) + 1}"
         prefix = s3.game_prefix(game.id, version_name)
-        uploaded = []
-        size_bytes = 0
-        for file in files:
-            path = str(file.get("path") or "")
-            content = str(file.get("content") or "")
-            if path not in {"index.html", "style.css", "game.js"}:
-                continue
-            if path == "index.html":
-                content = inject_csp(content)
-            key = f"{prefix}/{path}"
-            encoded = content.encode("utf-8")
-            s3.put_object(key, encoded, _content_type_for(path))
-            size_bytes += len(encoded)
-            uploaded.append({
-                "path": path,
-                "sha256": hashlib.sha256(encoded).hexdigest(),
-            })
+        uploaded, size_bytes = _upload_runtime_files(prefix, files)
+        _upload_source_project(game.id, version_name, state.get("project_files") or [])
 
         if str(state.get("dimension")) == "3d":
             engine = _three_engine_bytes()
@@ -331,13 +379,14 @@ def publish_revision(state: dict) -> tuple[str, str, str, str]:
                 })
 
         index_sha = next((item["sha256"] for item in uploaded if item["path"] == "index.html"), "")
+        runtime = "phaser-vite-dist" if state.get("artifact_format") == "phaser-vite/v1" else "iframe-html"
         version = GameVersion(
             game_id=game.id,
             version=version_name,
             manifest_key=f"{prefix}/manifest.json",
             bundle_key=f"{prefix}/index.html",
             entry="index.html",
-            runtime="iframe-html",
+            runtime=runtime,
             sha256=index_sha,
             size_bytes=size_bytes,
             source_task_id=state.get("task_id"),
@@ -349,10 +398,12 @@ def publish_revision(state: dict) -> tuple[str, str, str, str]:
             "game_id": game.id,
             "version_id": version.id,
             "title": game.title,
-            "runtime": "iframe-html",
+            "runtime": runtime,
             "entry": "index.html",
             "files": uploaded,
             "permissions": {"network": False, "storage": False, "cookies": False},
+            "artifact_format": state.get("artifact_format") or "legacy-bundle/v1",
+            "build": state.get("build_result") or {},
             "revision": {
                 "base_version": base_version,
                 "changed_files": (state.get("revision_result") or {}).get("changed_files") or [],
@@ -431,23 +482,8 @@ def publish_remix(state: dict) -> tuple[str, str, str]:
         db.flush()
 
         prefix = s3.game_prefix(game.id, "v1")
-        uploaded = []
-        size_bytes = 0
-        for file in files:
-            path = str(file.get("path") or "")
-            content = str(file.get("content") or "")
-            if path not in {"index.html", "style.css", "game.js"}:
-                continue
-            if path == "index.html":
-                content = inject_csp(content)
-            encoded = content.encode("utf-8")
-            key = f"{prefix}/{path}"
-            s3.put_object(key, encoded, _content_type_for(path))
-            size_bytes += len(encoded)
-            uploaded.append({
-                "path": path,
-                "sha256": hashlib.sha256(encoded).hexdigest(),
-            })
+        uploaded, size_bytes = _upload_runtime_files(prefix, files)
+        _upload_source_project(game.id, "v1", state.get("project_files") or [])
 
         if str(state.get("dimension")) == "3d":
             engine = _three_engine_bytes()
@@ -469,13 +505,14 @@ def publish_remix(state: dict) -> tuple[str, str, str]:
                 })
 
         index_sha = next((item["sha256"] for item in uploaded if item["path"] == "index.html"), "")
+        runtime = "phaser-vite-dist" if state.get("artifact_format") == "phaser-vite/v1" else "iframe-html"
         version = GameVersion(
             game_id=game.id,
             version="v1",
             manifest_key=f"{prefix}/manifest.json",
             bundle_key=f"{prefix}/index.html",
             entry="index.html",
-            runtime="iframe-html",
+            runtime=runtime,
             sha256=index_sha,
             size_bytes=size_bytes,
             source_task_id=state.get("task_id"),
@@ -487,10 +524,12 @@ def publish_remix(state: dict) -> tuple[str, str, str]:
             "game_id": game.id,
             "version_id": version.id,
             "title": title,
-            "runtime": "iframe-html",
+            "runtime": runtime,
             "entry": "index.html",
             "files": uploaded,
             "permissions": {"network": False, "storage": False, "cookies": False},
+            "artifact_format": state.get("artifact_format") or "legacy-bundle/v1",
+            "build": state.get("build_result") or {},
             "remix": {
                 "source_game_id": source.id,
                 "source_version": source_version,

@@ -11,6 +11,7 @@ from app.models import Comment, Favorite, Game, GameVersion, Like, PlayEvent, Sc
 from app.models.common import GameStatus, now_utc
 from app.models.game import game_tags
 from app.services import content_safety
+from app.services.artifacts import content_type_for
 from app.services.errors import ServiceError
 from app.services.pagination import normalize_pagination
 from app.services.runtime_urls import (
@@ -298,6 +299,7 @@ def delete_game(db: Session, game_id: str, user) -> None:
     db.commit()
     try:
         s3.delete_prefix(f"games/{gid}/")
+        s3.delete_prefix(f"game-sources/{gid}/")
     except Exception:  # noqa: BLE001
         pass
 
@@ -390,7 +392,7 @@ def leaderboard(db: Session, game_id: str, user=None) -> list[Score]:
 
 
 def _content_type_for_game_file(path: str) -> str:
-    return _FILE_CONTENT_TYPES.get(os.path.splitext(path)[1].lower(), "application/octet-stream")
+    return _FILE_CONTENT_TYPES.get(os.path.splitext(path)[1].lower(), content_type_for(path))
 
 
 def _manifest_with_runtime_urls(data: dict, *, game: Game, version: str) -> dict:

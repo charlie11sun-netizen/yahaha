@@ -24,7 +24,7 @@ def _spec_log_lines(spec: dict, source: str) -> list[str]:
     return [
         f"source: {source}",
         f"title: {_clip(spec.get('title'), 80)}",
-        f"genre/theme/runtime: {spec.get('genre', 'arcade')} / {spec.get('theme', 'retro')} / {spec.get('target_runtime', 'canvas')}",
+        f"genre/theme/runtime: {spec.get('genre', 'arcade')} / {spec.get('theme', 'retro')} / {spec.get('target_runtime', 'phaser-vite')}",
         f"core loop: {_clip(spec.get('core_loop'), 120)}",
         f"win/lose: {spec.get('win_condition', 'reach_target_score')} / {spec.get('lose_condition', 'timer_or_lives_depleted')}",
         f"controls: {_controls_line(controls)}",
@@ -51,7 +51,7 @@ def _design_log_lines(design: dict) -> list[str]:
             rule_bits.append(f"{key}={rules[key]}")
     lines = [
         f"archetype: {design.get('archetype', 'unknown')}",
-        f"screen: {screen.get('width', 900)}x{screen.get('height', 600)} canvas",
+        f"screen: {screen.get('width', 1152)}x{screen.get('height', 768)} Phaser",
         f"entities: {entity_text}",
         "rules: " + (", ".join(str(bit) for bit in rule_bits) or "default game loop"),
     ]

@@ -48,16 +48,16 @@ Create 链路是本系统的核心。它不能只是普通 CRUD，也不能只�
 
 模型层见 [`backend/app/agents/llm.py`](../backend/app/agents/llm.py)：只发 `model + messages`，换 provider / 模型只改 `.env` 的 `OPENAI_BASE_URL` / `MODEL_NAME`。real 模式下另有一个可选增强开关 `CODE_AGENT_ENABLED`：把构建 / 修订的**修复节点**从整体重生成升级为 OpenAI Agents SDK 的内层工具循环（见 §2.4① / §6.12），默认关闭、可灰度、失败自动回落。
 
-### 1.2 两种维度：2D Canvas 与 3D WebGL
+### 1.2 两种维度：2D Phaser/Vite 与 3D WebGL
 
 创建任务时通过 `dimension`（`"2d"` | `"3d"`）选择产线，两条产线复用同一张图、同一套安全 / 校验 / 发布逻辑，只在路由、设计提示词、代码生成策略上分叉：
 
 | 维度 | 运行时 | 代码生成策略 |
 | --- | --- | --- |
-| `2d` | iframe-html + Canvas 2D（无外部依赖）；`PHASER_2D_ENABLED=true` 试点切换为**自托管 Phaser 4**（全局 `Phaser`，vendored v4.2.0，与 3D 引擎同模式随包发布） | **模型优先**，确定性 Jinja 模板兜底（兜底始终是 Canvas） |
+| `2d` | Phaser 3.90 + TypeScript + Vite；沙箱执行 `tsc --noEmit` 与固定 Vite 构建 | 模块化工程骨架 + 可选 Project Author Agent；稳定回退仍为模块化 TypeScript 工程 |
 | `3d` | iframe-html + WebGL（自托管 Three.js，全局 `THREE`） | **完全模型产出**，无模板兜底（失败交给 repair / replan） |
 
-Phaser 试点的接线与 3D 完全对称：`_assemble_bundle` 注入相对 `<script src="phaser.min.js">`、QA 沙箱与三个 publish 入口按 index 引用随包上传引擎、V8 冒烟桩加 `Phaser` 全局、`gameplay_qa` 识别引擎驱动的循环/输入惯用法（否则 Phaser 产物会被 Canvas 规则误杀）。`CODE_SYSTEM_PROMPT_PHASER` 内嵌从 phaser 官方仓库 `skills/` 蒸馏、按沙箱合同改写的 API 备忘单（禁 loader 文件路径，纹理程序化生成）；修复 agent 侧配套 `skills/phaser-runtime`、`skills/phaser-arcade-physics` 两份可 `read_skill` 的参考。
+历史 `legacy-bundle/v1` 仍可读取、运行和修订，但不再作为新游戏生成或失败回退目标。新 2D 项目源码私有保存，公开发布的只有 Vite `dist`。
 
 ---
 
@@ -936,7 +936,6 @@ backend/app/
     prompts.py          # real 模式系统提示词（2D + 3D）
     validation.py       # BuildValidate（forbidden API / 白名单 / sha256）
     smoke.py            # V8 运行时冒烟（py_mini_racer）
-    templating.py       # 2D 确定性模板（select/build_config/render）
     bundles.py          # few-shot 参考 bundle + 标题启发式
     tracing.py          # logged() 装饰器：步骤/日志实时落库
     pipeline.py         # run_generation 执行入口
@@ -944,7 +943,7 @@ backend/app/
     vendor/three.min.js # 自托管 3D 引擎
   api/routers/          # auth / users / oauth / uploads / tasks / games
   models/               # user / asset / task(+step+log) / game / social
-  services/             # packaging（发布）/ serialize（DTO）/ ...
+  services/             # packaging（发布）/ serialize（DTO）/ phaser_projects（2D 模块化工程）/ ...
   tasks/                # celery_app / generate
   storage/s3.py         # 对象存储
 ```

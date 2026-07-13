@@ -52,6 +52,8 @@ from app.agents.planning import (
     should_continue_after_safety,
 )
 from app.agents.codegen import *
+from app.agents.assets import *
+from app.agents.project_build import *
 from app.agents.validation_nodes import *
 from app.agents.repair import *
 from app.agents.publish import *
@@ -65,7 +67,6 @@ __all__ = [
     'llm',
     'prompts',
     'smoke',
-    'templating',
     'validation',
     'MAX_GAMEPLAY_REPAIR',
     'MAX_REPAIR',
@@ -123,6 +124,7 @@ __all__ = [
     'mechanic_planner_node',
     'archetype_router_node',
     'asset_processing_node',
+    'asset_generation_node',
     'game_design_node',
     'content_plan_node',
     'balance_plan_node',
@@ -144,6 +146,7 @@ __all__ = [
     '_generate_revision_code',
     'code_revision_node',
     'code_generation_node',
+    'project_build_node',
     '_sandbox_files_for_qa',
     '_js_braced_body',
     '_js_method',

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 import httpx
 
 from app.core.config import settings
+from app.services.artifacts import artifact_bytes
 
 
 class SandboxUnavailableError(RuntimeError):
@@ -27,15 +28,28 @@ class SandboxResult:
     detail: str = ""
 
 
+@dataclass
+class ViteBuildResult:
+    ok: bool
+    files: list[dict] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    logs: list[str] = field(default_factory=list)
+    duration_ms: int = 0
+    timed_out: bool = False
+    skipped: bool = False
+    detail: str = ""
+
+
 def _payload(files: list[dict], entry: str, timeout_ms: int, simulate_input: bool) -> dict:
     encoded = []
     for item in files:
         path = str(item.get("path") or "").lstrip("/")
-        content = str(item.get("content") or "")
         encoded.append(
             {
                 "path": path,
-                "content_b64": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+                "content_b64": base64.b64encode(artifact_bytes(item)).decode("ascii"),
+                "content_type": item.get("content_type"),
             }
         )
     return {
@@ -108,5 +122,52 @@ def run_bundle(
         frames_observed=int(data.get("frames_observed") or 0),
         intervals_observed=int(data.get("intervals_observed") or 0),
         load_ms=int(data.get("load_ms") or 0),
+        timed_out=bool(data.get("timed_out")),
+    )
+
+
+def build_vite_project(files: list[dict], *, timeout_ms: int | None = None) -> ViteBuildResult:
+    url = settings.SANDBOX_URL.strip().rstrip("/")
+    if not url:
+        if settings.SANDBOX_REQUIRED:
+            raise SandboxUnavailableError("sandbox disabled (SANDBOX_URL is empty)")
+        return ViteBuildResult(ok=False, skipped=True, detail="sandbox disabled (SANDBOX_URL is empty)")
+
+    timeout = int(timeout_ms or settings.VITE_BUILD_TIMEOUT_MS)
+    payload = _payload(files, "index.html", timeout, False)
+    try:
+        response = httpx.post(
+            f"{url}/build/vite",
+            json={"files": payload["files"], "timeout_ms": timeout},
+            timeout=(timeout + max(1000, int(settings.SANDBOX_BUILD_TIMEOUT_OVERHEAD_MS))) / 1000,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except httpx.HTTPStatusError as exc:
+        detail = f"vite build sandbox unavailable: {_http_error_detail(exc)}"
+        if settings.SANDBOX_REQUIRED:
+            raise SandboxUnavailableError(detail) from exc
+        return ViteBuildResult(ok=False, skipped=True, detail=detail)
+    except (httpx.RequestError, ValueError) as exc:
+        detail = f"vite build sandbox unavailable: {exc}"
+        if settings.SANDBOX_REQUIRED:
+            raise SandboxUnavailableError(detail) from exc
+        return ViteBuildResult(ok=False, skipped=True, detail=detail)
+
+    output_files = [
+        {
+            "path": str(item.get("path") or ""),
+            "content_b64": str(item.get("content_b64") or ""),
+            "content_type": item.get("content_type"),
+        }
+        for item in (data.get("files") or [])
+    ]
+    return ViteBuildResult(
+        ok=bool(data.get("ok")),
+        files=output_files,
+        errors=[str(item) for item in (data.get("errors") or [])],
+        warnings=[str(item) for item in (data.get("warnings") or [])],
+        logs=[str(item) for item in (data.get("logs") or [])],
+        duration_ms=int(data.get("duration_ms") or 0),
         timed_out=bool(data.get("timed_out")),
     )

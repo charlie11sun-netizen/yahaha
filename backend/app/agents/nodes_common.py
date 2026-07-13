@@ -2,11 +2,12 @@
 import json
 import re
 
-from app.agents import bundles, code_agent, llm, prompts, smoke, templating, validation
+from app.agents import bundles, code_agent, llm, prompts, smoke, validation
 from app.agents.state import MAX_GAMEPLAY_REPAIR, MAX_REPAIR, MAX_REPLAN, STEP_META
 from app.core.config import settings
 from app.core.errors import TaskErrorCode
 from app.services import content_safety, sandbox_client
+from app.services.artifacts import artifact_size
 from app.storage import s3
 
 
@@ -102,9 +103,9 @@ def _has_any(text: str, words: list[str]) -> bool:
 def _file_log_lines(files: list[dict]) -> list[str]:
     if not files:
         return ["generated files: none"]
-    total = sum(len((file.get("content") or "").encode("utf-8")) for file in files)
+    total = sum(artifact_size(file) for file in files)
     names = ", ".join(file.get("path", "?") for file in files)
-    lines = [f"{file.get('path', '?')}: {len((file.get('content') or '').encode('utf-8'))} bytes" for file in files]
+    lines = [f"{file.get('path', '?')}: {artifact_size(file)} bytes" for file in files]
     lines.append(f"bundle size: {total} bytes")
     # 摘要行放最后：task_out 取步骤末行当 step summary，前端进度页直接显示文件结构
     lines.append(f"generated files: {names} ({len(files)} file(s))")
@@ -133,7 +134,6 @@ __all__ = [
     'llm',
     'prompts',
     'smoke',
-    'templating',
     'validation',
     'MAX_GAMEPLAY_REPAIR',
     'MAX_REPAIR',

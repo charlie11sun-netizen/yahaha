@@ -24,10 +24,12 @@ def build_graph(*, checkpointer=None):
     g.add_node("mechanic_planner", logged("mechanic_planner")(nodes.mechanic_planner_node))
     g.add_node("archetype_router", logged("archetype_router")(nodes.archetype_router_node))
     g.add_node("asset_processing", logged("asset_processing")(nodes.asset_processing_node))
+    g.add_node("asset_generation", logged("asset_generation")(nodes.asset_generation_node))
     g.add_node("game_design", logged("game_design")(nodes.game_design_node))
     g.add_node("content_plan", logged("content_plan")(nodes.content_plan_node))
     g.add_node("balance_plan", logged("balance_plan")(nodes.balance_plan_node))
     g.add_node("code_generation", logged("code_generation")(nodes.code_generation_node))
+    g.add_node("project_build", logged("project_build")(nodes.project_build_node))
     g.add_node("build_validation", logged("build_validation")(nodes.build_validation_node))
     g.add_node("repair_code", logged("repair_code")(nodes.repair_code_node))
     g.add_node("replan_game_design", logged("replan_game_design")(nodes.replan_game_design_node))
@@ -56,13 +58,15 @@ def build_graph(*, checkpointer=None):
     g.add_edge("asset_processing", "game_design")
     g.add_edge("game_design", "content_plan")
     g.add_edge("content_plan", "balance_plan")
-    g.add_edge("balance_plan", "code_generation")
-    g.add_edge("code_generation", "build_validation")
+    g.add_edge("balance_plan", "asset_generation")
+    g.add_edge("asset_generation", "code_generation")
+    g.add_edge("code_generation", "project_build")
+    g.add_edge("project_build", "build_validation")
     g.add_conditional_edges("build_validation", nodes.should_continue_after_validation,
                             {"gameplay_qa": "gameplay_qa", "repair_code": "repair_code",
                              "replan_game_design": "replan_game_design", "revision_repair": "revision_repair",
                              "failed": "failed"})
-    g.add_edge("repair_code", "build_validation")
+    g.add_edge("repair_code", "project_build")
     g.add_edge("replan_game_design", "balance_plan")
     g.add_conditional_edges("gameplay_qa", nodes.should_continue_after_gameplay_qa,
                             {"publish_artifact": "publish_artifact", "gameplay_repair": "gameplay_repair",
@@ -70,11 +74,11 @@ def build_graph(*, checkpointer=None):
                              "publish_remix": "publish_remix", "revision_repair": "revision_repair",
                              "failed": "failed"})
     g.add_conditional_edges("gameplay_repair", nodes.next_after_gameplay_repair,
-                            {"build_validation": "build_validation", "code_generation": "code_generation"})
+                            {"project_build": "project_build", "code_generation": "code_generation"})
     g.add_edge("publish_artifact", "memory_update")
     g.add_edge("feedback_understanding", "code_revision")
-    g.add_edge("code_revision", "build_validation")
-    g.add_edge("revision_repair", "build_validation")
+    g.add_edge("code_revision", "project_build")
+    g.add_edge("revision_repair", "project_build")
     g.add_edge("publish_revision", "memory_update")
     g.add_edge("publish_remix", "memory_update")
     g.add_edge("memory_update", "done")

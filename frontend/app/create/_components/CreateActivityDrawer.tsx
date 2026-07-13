@@ -87,8 +87,8 @@ export function ActivityDrawer({ onClose, task }: { onClose: () => void; task?: 
                     </div>
                     {changes.length > 0 ? (
                       <div className="mt-3 grid gap-2">
-                        {changes.map((change) => (
-                          <FileChangeRow change={change} key={`${change.action}-${change.path}-${change.line}`} showDiff />
+                        {changes.map((change, changeIndex) => (
+                          <FileChangeRow change={change} key={`${change.action}-${change.path}-${changeIndex}`} showDiff />
                         ))}
                       </div>
                     ) : null}

@@ -216,7 +216,7 @@ def _design_preview(spec: dict, design: dict):
 
     add("标题", spec.get("title"))
     add("类型", spec.get("genre"))
-    add("维度", "3D · WebGL" if str(spec.get("dimension")) == "3d" else "2D · Canvas")
+    add("维度", "3D · WebGL" if str(spec.get("dimension")) == "3d" else "2D · Phaser")
     add("主题", spec.get("theme"))
     add("视觉风格", spec.get("visual_style"))
     add("玩法原型", design.get("archetype") or spec.get("archetype"))

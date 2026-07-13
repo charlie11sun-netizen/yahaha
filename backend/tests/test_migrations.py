@@ -173,6 +173,29 @@ def test_outbox_migration_backfills_only_pending_tasks(tmp_path, monkeypatch):
     assert event["last_error"] is None
 
 
+def test_upgrade_head_tolerates_create_all_tables_ahead_of_revision(tmp_path, monkeypatch):
+    db_path = tmp_path / "create-all-drift.db"
+    url = f"sqlite:///{db_path.as_posix()}"
+    monkeypatch.setattr(settings, "DATABASE_URL", url)
+    _run_upgrade_head(db_path, "0005_resume_snapshot")
+
+    engine = create_engine(url)
+    Base.metadata.create_all(bind=engine)
+    assert "generation_dispatch_outbox" in inspect(engine).get_table_names()
+    assert "dispatch_generation" not in {
+        column["name"] for column in inspect(engine).get_columns("generation_tasks")
+    }
+    engine.dispose()
+
+    _run_upgrade_head(db_path)
+
+    engine = create_engine(url)
+    assert "dispatch_generation" in {
+        column["name"] for column in inspect(engine).get_columns("generation_tasks")
+    }
+    engine.dispose()
+
+
 def test_outbox_migration_renders_postgresql_offline_sql(monkeypatch, capsys):
     monkeypatch.setattr(
         settings,

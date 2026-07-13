@@ -63,6 +63,19 @@ services:
       exit 0;
       "
 
+  migrate:
+    build: ./backend
+    restart: "no"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD:-gameweave}@postgres:5432/${POSTGRES_DB:-gameweave}
+    command: sh -c "alembic upgrade head && python -m app.tools.setup_checkpoints"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   api:
     build: ./backend
     mem_limit: 512m
@@ -84,6 +97,8 @@ services:
       redis:
         condition: service_healthy
       createbuckets:
+        condition: service_completed_successfully
+      migrate:
         condition: service_completed_successfully
 
   worker:
@@ -111,6 +126,8 @@ services:
         condition: service_healthy
       createbuckets:
         condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
       sandbox:
         condition: service_healthy
 
@@ -130,6 +147,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   beat:
     build: ./backend
@@ -147,6 +166,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   sandbox:
     build: ./sandbox
@@ -165,8 +186,8 @@ services:
       XDG_CACHE_HOME: /tmp/.cache
       SANDBOX_RUNNER_CONCURRENCY: "1"
       SANDBOX_RUNNER_CHROMIUM_NO_SANDBOX: ${SANDBOX_RUNNER_CHROMIUM_NO_SANDBOX:-true}
-      SANDBOX_RUNNER_MAX_FILE_BYTES: ${SANDBOX_RUNNER_MAX_FILE_BYTES:-2000000}
-      SANDBOX_RUNNER_MAX_TOTAL_BYTES: ${SANDBOX_RUNNER_MAX_TOTAL_BYTES:-5000000}
+      SANDBOX_RUNNER_MAX_FILE_BYTES: ${SANDBOX_RUNNER_MAX_FILE_BYTES:-16000000}
+      SANDBOX_RUNNER_MAX_TOTAL_BYTES: ${SANDBOX_RUNNER_MAX_TOTAL_BYTES:-64000000}
     networks:
       - sandbox_net
     healthcheck:
@@ -200,6 +221,7 @@ services:
     environment:
       NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
       API_INTERNAL_BASE_URL: http://api:8000
+      AUTH_COOKIE_NAME: ${AUTH_COOKIE_NAME:-gameweave_session}
       # 整站访问密码门禁。留空 = 不启用（本地开发默认开放）；
       # 部署时在 .env 里设好 SITE_PASSWORD，打开网站即需先输入此密码。
       SITE_PASSWORD: ${SITE_PASSWORD:-}
@@ -207,7 +229,7 @@ services:
       # Bind mounts on Windows/Docker don't deliver inotify events; poll so HMR
       # detects host edits and never leaves .next half-compiled.
       WATCHPACK_POLLING: "true"
-    command: npm run dev
+    command: sh -c "npm install --no-audit --no-fund && npm run dev"
     ports:
       - "3000:3000"
     volumes:

@@ -27,6 +27,7 @@ from app.models.moderation import ModerationEvent
 from app.models.task import (
     AgentLog,
     AgentStep,
+    AgentTraceEvent,
     Asset,
     GenerationDispatchOutbox,
     GenerationTask,
@@ -70,5 +71,6 @@ __all__ = [
     "GenerationDispatchOutbox",
     "AgentStep",
     "AgentLog",
+    "AgentTraceEvent",
     "LLMCall",
 ]
