@@ -1,6 +1,6 @@
 """固定 LangGraph 顶层工作流（docs/multi-agent_design.md §7.2）。
 
-safety_intake → intent_spec → asset_processing → game_design → code_generation → build_validation
+safety_intake → intent_spec → gameplay_planning → archetype_router → asset_processing → game_design → code_generation → build_validation
 build_validation 失败：repair_code（≤2）→ 仍失败则 replan_game_design（≤1）→ 仍失败则 failed。
 gameplay_qa 失败：gameplay_repair（≤2）——浏览器运行时报错先走内层 agent 最小 patch，
 patch 成功带产物回 build_validation 复检；玩法指标问题调 balance 后回 code_generation 重生成。
@@ -20,8 +20,7 @@ def build_graph(*, checkpointer=None):
     g.add_node("safety_intake", logged("safety_intake")(nodes.safety_intake_node))
     g.add_node("memory_retrieval", logged("memory_retrieval")(nodes.memory_retrieval_node))
     g.add_node("intent_spec", logged("intent_spec")(nodes.intent_spec_node))
-    g.add_node("brief_expansion", logged("brief_expansion")(nodes.brief_expansion_node))
-    g.add_node("mechanic_planner", logged("mechanic_planner")(nodes.mechanic_planner_node))
+    g.add_node("gameplay_planning", logged("gameplay_planning")(nodes.gameplay_planning_node))
     g.add_node("archetype_router", logged("archetype_router")(nodes.archetype_router_node))
     g.add_node("asset_processing", logged("asset_processing")(nodes.asset_processing_node))
     g.add_node("asset_generation", logged("asset_generation")(nodes.asset_generation_node))
@@ -51,9 +50,8 @@ def build_graph(*, checkpointer=None):
                              "failed": "failed"})
     g.add_conditional_edges("memory_retrieval", nodes.next_after_memory_retrieval,
                             {"intent_spec": "intent_spec", "feedback_understanding": "feedback_understanding"})
-    g.add_edge("intent_spec", "brief_expansion")
-    g.add_edge("brief_expansion", "mechanic_planner")
-    g.add_edge("mechanic_planner", "archetype_router")
+    g.add_edge("intent_spec", "gameplay_planning")
+    g.add_edge("gameplay_planning", "archetype_router")
     g.add_edge("archetype_router", "asset_processing")
     g.add_edge("asset_processing", "game_design")
     g.add_edge("game_design", "content_plan")

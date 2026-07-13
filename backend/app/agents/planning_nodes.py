@@ -68,51 +68,59 @@ def intent_spec_node(state: dict) -> dict:
     return {"game_spec": spec, "_agent": "IntentSpecAgent", "_logs": _spec_log_lines(spec, "offline heuristic")}
 
 
-def brief_expansion_node(state: dict) -> dict:
+def gameplay_planning_node(state: dict) -> dict:
     prompt = state.get("normalized_prompt") or state.get("prompt", "")
     spec = state.get("game_spec") or {}
     if state.get("use_real"):
         try:
             raw, tokens = llm.chat(
-                "Expand a short game prompt into compact JSON for a playable browser mini-game. Do not add unsafe APIs.",
                 (
-                    "Return JSON with keys player_fantasy, objective, core_verbs, mechanic_requirements, "
-                    "reward_loop, difficulty_beats, feedback, keywords, minimum_content. "
+                    "You are GameplayPlanningAgent. Expand the player's GameSpec into one coherent, bounded plan "
+                    "for a small Phaser game. Preserve the requested genre and fantasy. Choose one proven core "
+                    "loop plus exactly one implementable signature twist. Do not add unsafe APIs."
+                ),
+                (
+                    "Return JSON with exactly two top-level objects. expanded_brief keys: player_fantasy, "
+                    "objective, core_verbs, mechanic_requirements, reward_loop, difficulty_beats, feedback, "
+                    "keywords, minimum_content. mechanic_plan keys: archetype_hint, primary_action, "
+                    "secondary_action, signature_twist, risk_model, reward_model, enemy_behaviors, reward_items, "
+                    "powerups, feedback, skill_tests. Make mechanic_plan realize expanded_brief without "
+                    "contradicting the GameSpec. "
                     f"Prompt: {prompt}\nSpec: {json.dumps(spec, ensure_ascii=False)}"
                 ),
             )
-            brief = _coerce_brief(_parse_json(raw), prompt, spec)
-            return {"expanded_brief": brief, "_agent": "BriefExpansionAgent", "_tokens_delta": tokens, "_logs": _brief_log_lines(brief, "model brief expansion")}
+            parsed = _parse_json(raw)
+            brief = _coerce_brief(parsed.get("expanded_brief") or {}, prompt, spec)
+            plan = _coerce_mechanic_plan(parsed.get("mechanic_plan") or {}, spec, brief, prompt)
+            return {
+                "expanded_brief": brief,
+                "mechanic_plan": plan,
+                "_agent": "GameplayPlanningAgent",
+                "_tokens_delta": tokens,
+                "_logs": _brief_log_lines(brief, "model combined gameplay plan")
+                + _mechanic_log_lines(plan, "model combined gameplay plan"),
+            }
         except Exception as exc:  # noqa: BLE001
-            _real_model_fallback_or_raise("BriefExpansionAgent", exc, exc)
+            _real_model_fallback_or_raise("GameplayPlanningAgent", exc, exc)
             brief = _heuristic_brief(prompt, spec)
-            return {"expanded_brief": brief, "_agent": "BriefExpansionAgent", "_logs": [f"model failed: {_clip(exc, 120)}"] + _brief_log_lines(brief, "heuristic fallback")}
-    brief = _heuristic_brief(prompt, spec)
-    return {"expanded_brief": brief, "_agent": "BriefExpansionAgent", "_logs": _brief_log_lines(brief, "offline heuristic")}
-
-
-def mechanic_planner_node(state: dict) -> dict:
-    prompt = state.get("normalized_prompt") or state.get("prompt", "")
-    spec = state.get("game_spec") or {}
-    brief = state.get("expanded_brief") or _heuristic_brief(prompt, spec)
-    if state.get("use_real"):
-        try:
-            raw, tokens = llm.chat(
-                "Plan concrete mini-game mechanics as bounded JSON. Anchor on one proven core loop, then add exactly ONE signature twist that makes this game distinct from the genre default; both must be implementable in a small Phaser game.",
-                (
-                    "Return JSON with keys archetype_hint, primary_action, secondary_action, signature_twist, risk_model, reward_model, "
-                    "enemy_behaviors, reward_items, powerups, feedback, skill_tests. "
-                    f"Spec: {json.dumps(spec, ensure_ascii=False)}\nBrief: {json.dumps(brief, ensure_ascii=False)}"
-                ),
-            )
-            plan = _coerce_mechanic_plan(_parse_json(raw), spec, brief, prompt)
-            return {"mechanic_plan": plan, "_agent": "MechanicPlannerAgent", "_tokens_delta": tokens, "_logs": _mechanic_log_lines(plan, "model mechanic plan")}
-        except Exception as exc:  # noqa: BLE001
-            _real_model_fallback_or_raise("MechanicPlannerAgent", exc, exc)
             plan = _heuristic_mechanic_plan(spec, brief, prompt)
-            return {"mechanic_plan": plan, "_agent": "MechanicPlannerAgent", "_logs": [f"model failed: {_clip(exc, 120)}"] + _mechanic_log_lines(plan, "heuristic fallback")}
+            return {
+                "expanded_brief": brief,
+                "mechanic_plan": plan,
+                "_agent": "GameplayPlanningAgent",
+                "_logs": [f"model failed: {_clip(exc, 120)}"]
+                + _brief_log_lines(brief, "heuristic fallback")
+                + _mechanic_log_lines(plan, "heuristic fallback"),
+            }
+    brief = _heuristic_brief(prompt, spec)
     plan = _heuristic_mechanic_plan(spec, brief, prompt)
-    return {"mechanic_plan": plan, "_agent": "MechanicPlannerAgent", "_logs": _mechanic_log_lines(plan, "offline heuristic")}
+    return {
+        "expanded_brief": brief,
+        "mechanic_plan": plan,
+        "_agent": "GameplayPlanningAgent",
+        "_logs": _brief_log_lines(brief, "offline heuristic")
+        + _mechanic_log_lines(plan, "offline heuristic"),
+    }
 
 
 def archetype_router_node(state: dict) -> dict:
@@ -319,8 +327,7 @@ def should_continue_after_safety(state: dict) -> str:
 
 __all__ = [
     "intent_spec_node",
-    "brief_expansion_node",
-    "mechanic_planner_node",
+    "gameplay_planning_node",
     "archetype_router_node",
     "asset_processing_node",
     "game_design_node",

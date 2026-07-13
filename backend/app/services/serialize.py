@@ -12,6 +12,8 @@ _STAGES = [
     ("SafetyIntakeAgent", "safety_intake", "检查创意和素材"),
     ("MemoryRetrievalAgent", "memory_retrieval", "检索创作记忆"),
     ("IntentSpecAgent", "intent_spec", "理解你的游戏创意"),
+    ("GameplayPlanningAgent", "gameplay_planning", "扩展简报并规划机制"),
+    # Read-only compatibility for task histories created before the two planning agents were merged.
     ("BriefExpansionAgent", "brief_expansion", "扩展玩法简报"),
     ("MechanicPlannerAgent", "mechanic_planner", "规划核心机制"),
     ("ArchetypeRouterAgent", "archetype_router", "选择玩法原型"),
@@ -46,7 +48,8 @@ _REMIX_STAGES = [
     ("PublishRemixAgent", "publish_remix", "保存 Remix 预览"),
     ("MemoryUpdateAgent", "memory_update", "保存创作记忆"),
 ]
-_PROGRESS = {"safety_intake": 10, "intent_spec": 18, "brief_expansion": 24, "mechanic_planner": 30,
+_PROGRESS = {"safety_intake": 10, "intent_spec": 18, "gameplay_planning": 30,
+             "brief_expansion": 24, "mechanic_planner": 30,
              "archetype_router": 34, "asset_processing": 40, "game_design": 50, "content_plan": 56,
              "balance_plan": 62, "code_generation": 72, "build_validation": 82,
              "gameplay_qa": 90, "gameplay_repair": 88, "publish_artifact": 96,

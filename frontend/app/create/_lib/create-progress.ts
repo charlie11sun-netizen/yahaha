@@ -7,7 +7,11 @@ export type UserStep = { key: string; label: string; backendKeys?: readonly stri
 
 const USER_STEPS: UserStep[] = [
   { key: "safety_intake", label: "Idea checked" },
-  { key: "intent_spec", label: "Game spec created", backendKeys: ["intent_spec", "brief_expansion", "mechanic_planner", "archetype_router"] },
+  {
+    key: "intent_spec",
+    label: "Game spec created",
+    backendKeys: ["intent_spec", "gameplay_planning", "brief_expansion", "mechanic_planner", "archetype_router"],
+  },
   { key: "asset_processing", label: "Assets processed" },
   { key: "game_design", label: "Game designed", backendKeys: ["game_design", "content_plan", "balance_plan"] },
   { key: "code_generation", label: "Files generated" },
@@ -253,7 +257,7 @@ export function friendlyMessage(message: string) {
   const compact = message.replace(/\s+/g, " ").trim();
   if (isStreamTokenLine(compact)) return "";
   const lower = compact.toLowerCase();
-  if (lower.includes("brief expansion") || lower.includes("intent spec")) return "Turning your idea into a playable game brief";
+  if (lower.includes("gameplay planning") || lower.includes("brief expansion") || lower.includes("intent spec")) return "Turning your idea into a playable game brief";
   if (lower.startsWith("tags:")) return "Core gameplay and themes identified";
   if (lower.startsWith("runtime:")) return "Browser runtime selected";
   if (lower.includes("retrieval strategy: none")) return "Using your brief without external references";

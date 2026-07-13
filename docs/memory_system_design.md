@@ -160,7 +160,7 @@ flowchart TD
     A["用户输入 idea"] --> B{{"safety_intake"}}
     B --> C["memory_retrieval"]
     C --> D["intent_spec"]
-    D --> E["brief_expansion / mechanic_planner / game_design"]
+    D --> E["gameplay_planning / game_design"]
     E --> F["code_generation"]
     F --> G["preview"]
     G --> H["memory_update"]

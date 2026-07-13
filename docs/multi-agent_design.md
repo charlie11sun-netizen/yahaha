@@ -99,8 +99,7 @@ ReAct 的典型模式是 `Thought → Action → Observation → …`，适合�
 safety_intake
 → memory_retrieval
 → intent_spec
-→ brief_expansion
-→ mechanic_planner
+→ gameplay_planning
 → archetype_router
 → asset_processing
 → game_design
@@ -124,8 +123,7 @@ safety_intake
 
 ```text
 IntentSpecAgent      = Plan  —— 自然语言 → 结构化 GameSpec
-BriefExpansionAgent  = Plan  —— GameSpec → 更完整的可玩简报（玩家幻想 / 动词 / 反馈 / 最小内容量）
-MechanicPlannerAgent = Plan  —— 选定具体机制（敌人 / 奖励 / 道具 / 反馈）
+GameplayPlanningAgent = Plan  —— GameSpec → 可玩简报 + 具体机制（玩家幻想 / 动词 / 敌人 / 奖励 / 道具 / 反馈）
 ArchetypeRouterAgent = Plan  —— 锁定受支持的玩法原型（2D/3D 不同集合）
 GameDesignAgent      = Plan  —— 原型 → 具体可执行设计（实体 / 规则 / 波次 / boss）
 ContentPlanAgent     = Plan  —— 设计 → 关卡内容（教学 / 波次 / 道具铺排）
@@ -138,7 +136,7 @@ MemoryUpdateAgent    = Context —— Preview / Revision 成功后写入原始�
 
 Plan-and-Execute 只用于局部游戏生成，不控制系统级流程。Planner 可以决定“这是一个 2D 躲避类游戏、玩家是飞船、胜利条件是存活”，但**不能**决定“是否跳过安全检查 / 构建校验 / 玩法 QA / 直接发布 / 访问后端密钥”。
 
-> 与历史版本相比：原 9 节点设计里只有 `intent_spec → game_design` 两段规划；现实现把规划拆成 7 段（`intent → brief → mechanic → archetype → design → content → balance`），让每一步都有结构化产物与可观测日志。
+> 与历史版本相比：原 9 节点设计里只有 `intent_spec → game_design` 两段规划；现实现使用 6 段规划（`intent → gameplay planning → archetype → design → content → balance`），其中简报扩展与机制规划在一次模型调用中产出两个结构化结果。
 
 ### 2.4 局部使用两个 bounded ReAct repair loop
 
@@ -282,8 +280,7 @@ flowchart TD
 | `safety_intake`      | SafetyIntakeAgent           | 检查 prompt 长度 / 注入 / 素材  |
 | `memory_retrieval`   | MemoryRetrievalAgent        | 检索用户偏好和当前游戏项目记忆 |
 | `intent_spec`        | IntentSpecAgent             | 自然语言 → 结构化 GameSpec     |
-| `brief_expansion`    | BriefExpansionAgent         | 扩展为更完整的可玩简报             |
-| `mechanic_planner`   | MechanicPlannerAgent        | 选定具体机制 / 敌人 / 奖励 / 道具   |
+| `gameplay_planning`  | GameplayPlanningAgent       | 一次生成可玩简报与具体机制           |
 | `archetype_router`   | ArchetypeRouterAgent        | 锁定受支持的玩法原型（2D/3D）       |
 | `asset_processing`   | AssetAgent                  | 处理上传素材，生成 AssetManifest |
 | `game_design`        | GameDesignAgent             | 原型 → 具体游戏设计（2D/3D 提示词不同）|
@@ -308,7 +305,7 @@ flowchart TD
   A -->|rejected| X[failed]
   M --> B[intent_spec]
 
-  B --> BE[brief_expansion] --> MP[mechanic_planner] --> AR[archetype_router]
+  B --> GP[gameplay_planning] --> AR[archetype_router]
   AR --> AS[asset_processing] --> D[game_design] --> CP[content_plan] --> BP[balance_plan]
   BP --> E[code_generation] --> F[build_validation]
 
@@ -338,8 +335,7 @@ flowchart TD
 pending
 → running / safety_intake
 → running / intent_spec
-→ running / brief_expansion
-→ running / mechanic_planner
+→ running / gameplay_planning
 → running / archetype_router
 → running / asset_processing
 → running / game_design
@@ -385,8 +381,8 @@ class GenerationState(TypedDict, total=False):
 
     safety_result: dict
     game_spec: dict
-    expanded_brief: dict       # BriefExpansionAgent 输出
-    mechanic_plan: dict        # MechanicPlannerAgent 输出
+    expanded_brief: dict       # GameplayPlanningAgent 的简报输出
+    mechanic_plan: dict        # GameplayPlanningAgent 的机制输出
     archetype_result: dict     # ArchetypeRouterAgent 输出
     asset_manifest: dict
     game_design: dict
@@ -445,15 +441,11 @@ class GenerationState(TypedDict, total=False):
 
 GameSpec 关键字段：`title, summary, genre, theme, target_runtime, core_loop, controls{keyboard,pointer,hint}, win_condition, lose_condition, score_rule, difficulty_curve, visual_style, tags[]`。
 
-### 6.3 BriefExpansionAgent (`brief_expansion`)
+### 6.3 GameplayPlanningAgent (`gameplay_planning`)
 
-把简短 prompt 扩成更完整的可玩简报，产出：`player_fantasy, objective, core_verbs, mechanic_requirements, reward_loop, difficulty_beats, feedback, keywords, minimum_content{hazards,rewards,powerups,waves}`。real 模式调模型，失败回退 `_heuristic_brief`。这一步把“玩家幻想 / 核心动词 / 难度节拍 / 最小内容量”显式化，供后续机制 / 内容 / 路由消费。
+一次模型调用同时产出两个顶层对象：`expanded_brief` 包含 `player_fantasy, objective, core_verbs, mechanic_requirements, reward_loop, difficulty_beats, feedback, keywords, minimum_content{hazards,rewards,powerups,waves}`；`mechanic_plan` 包含 `archetype_hint, primary_action, secondary_action, signature_twist, risk_model, reward_model, enemy_behaviors[], reward_items[], powerups[], feedback[], skill_tests[]`。两者由同一上下文生成，避免简报与机制互相偏离。`_coerce_brief`、`_coerce_mechanic_plan` 仍分别校正结构；real 模式失败时一次性回退 `_heuristic_brief` + `_heuristic_mechanic_plan`。
 
-### 6.4 MechanicPlannerAgent (`mechanic_planner`)
-
-选定具体机制，产出：`archetype_hint, primary_action, secondary_action, risk_model, reward_model, enemy_behaviors[], reward_items[], powerups[], feedback[], skill_tests[]`。`_coerce_mechanic_plan` 会把 `archetype_hint` 限制在受支持的 2D 原型集合内。real 模式调模型，失败回退 `_heuristic_mechanic_plan`。
-
-### 6.5 ArchetypeRouterAgent (`archetype_router`)
+### 6.4 ArchetypeRouterAgent (`archetype_router`)
 
 在详细设计前锁定一个**受支持的玩法原型**，避免不可实现的设计流到 codegen。原型集合按维度分叉：
 
@@ -467,7 +459,7 @@ GameSpec 关键字段：`title, summary, genre, theme, target_runtime, core_loop
 
 路由结果写回 `game_spec`（`archetype/genre/core_loop/tags`）+ `archetype_result`。
 
-### 6.6 AssetAgent (`asset_processing`)
+### 6.5 AssetAgent (`asset_processing`)
 
 从 DB 读取上传素材（`Asset`），生成轻量 `asset_manifest`：
 
@@ -478,7 +470,7 @@ GameSpec 关键字段：`title, summary, genre, theme, target_runtime, core_loop
 * `cover` 是按主题选的 CSS 渐变字符串（`_theme_cover`），**不是**生成的 cover.png。
 * 当前实现不做素材转码 / 默认素材合成 / `assets.json` 落 OSS——上传素材主要作为风格参考与 manifest 记录；游戏美术由 Coder 程序化绘制（2D）或用图元构建（3D）。
 
-### 6.7 GameDesignAgent (`game_design`)
+### 6.6 GameDesignAgent (`game_design`)
 
 把 GameSpec + AssetManifest 细化为**具体可执行**的设计（Plan 第二层）。2D / 3D 用不同系统提示词：
 
@@ -487,17 +479,17 @@ GameSpec 关键字段：`title, summary, genre, theme, target_runtime, core_loop
 
 real 失败回退 `_heuristic_design`。3D 设计完成后调用 `_reconcile_archetype_3d` 用相机回校 archetype。
 
-### 6.8 ContentPlanAgent (`content_plan`)
+### 6.7 ContentPlanAgent (`content_plan`)
 
 把设计落成可铺排的关卡内容（确定性，`_content_plan`）：`tutorial, waves[], hazard_names[], reward_names[], powerups[], pacing[], mechanic_label`。结果合并进 `game_design.content_plan`，供 2D 模板配置与日志展示。
 
-### 6.9 BalanceAgent (`balance_plan`)
+### 6.8 BalanceAgent (`balance_plan`)
 
 把设计意图转成**数值约束 + QA 阈值**（确定性，`_balance_plan`，按 archetype 取预设并按 prompt 难度词微调）：`round_seconds, target_score, lives, player_speed, hazard_speed, hazard_spawn_ms, collectible_speed, collectible_spawn_ms, max_hazards, lanes, qa{...}`。数值写进 `balance_config` 并 `_merge_balance_into_design` 合并回 `game_design.balance`，同时把 `rules.survive_seconds` 对齐 `round_seconds`。
 
 > BalanceAgent / ContentPlanAgent 刻意做成确定性节点（不调模型）：数值与内容铺排可控、可复现，也是 replan / gameplay_repair 的调参着力点。
 
-### 6.10 GameCodeAgent (`code_generation`)
+### 6.9 GameCodeAgent (`code_generation`)
 
 Execute 阶段，模型优先（详见 §2.6）。`_generate_code` 返回 `(files, tokens, mode)`，`mode` 记录本次出码来源（`model (full bundle)` / `template` / `template (model output too short)` / `model 3D failed: …` 等），写入日志便于排查。`_assemble_bundle` 统一成三件套，3D 时确保 `three.min.js` 先于 `game.js`。
 
@@ -509,7 +501,7 @@ files: index.html / style.css / game.js
 3D runtime: iframe-html + webgl(Three.js, 全局 THREE, 自托管), 仅相对引用 three.min.js
 ```
 
-### 6.11 BuildValidateAgent (`build_validation`)
+### 6.10 BuildValidateAgent (`build_validation`)
 
 确定性静态校验（[`validation.py`](../backend/app/agents/validation.py)），也是构建 repair loop 的 Observation 来源：
 
@@ -530,7 +522,7 @@ localStorage  |  sessionStorage  |  fetch(  |  XMLHttpRequest  |  WebSocket
 
 > 与历史版本的差异：新增 `WebSocket`、通用外链 URL 拦截；**放行 `window.parent.postMessage`**——这是 Coder 上报分数的唯一允许的父页面访问（计分契约 `{type:"gameweave:score", points, name}`），与提示词约束一致。
 
-### 6.12 RepairCodeNode (`repair_code`)
+### 6.11 RepairCodeNode (`repair_code`)
 
 校验失败且仍有次数时修复代码，`repair_attempts += 1`，回 `build_validation`。不改设计，只修代码层问题。上限 `MAX_REPAIR = 2`。
 
@@ -543,7 +535,7 @@ localStorage  |  sessionStorage  |  fetch(  |  XMLHttpRequest  |  WebSocket
 
 > **工具面与安全**：`RepairSession`（纯 Python，离线可单测）封装 bundle 快照与编辑集——`write_file` 只接受 `{index.html, style.css, game.js}` 白名单且强制 ≤ 400KB，`read_skill` 拒绝路径穿越。skill 文档放在 [`backend/app/agents/skills/<name>/SKILL.md`](../backend/app/agents/skills/)（现有 `gameweave-runtime` 记录沙箱运行时合同），未来接入 Phaser 等运行时时只需向该目录投放 skill，agent 即可读到，无需改代码。
 
-### 6.13 GameplayQAAgent (`gameplay_qa`)
+### 6.12 GameplayQAAgent (`gameplay_qa`)
 
 **新增的玩法闸**（`_gameplay_qa`）：纯确定性检查（静态启发式 + V8 加载期冒烟），不调用模型、不模拟任何一帧运行；只硬卡“这不是一个真游戏”，质量缺口降级为 warning（绝不把产物退化成模板）。第一帧之后才出现的运行时错误不在本闸门覆盖范围内。
 
@@ -559,11 +551,11 @@ localStorage  |  sessionStorage  |  fetch(  |  XMLHttpRequest  |  WebSocket
 
 输出 `{passed, archetype, issues[], warnings[], metrics{js_bytes, has_input, has_restart, runtime_smoke_ok, uses_three_webgl|uses_gradient_or_glow}}`。
 
-### 6.14 GameplayRepairAgent (`gameplay_repair`)
+### 6.13 GameplayRepairAgent (`gameplay_repair`)
 
 QA 硬失败且仍有次数时，调**更安全的数值**（`_repair_balance`：更长回合、更低目标分、加命；非 puzzle 还会提速玩家、降速障碍、拉长刷新间隔、降障碍上限），重置 `generated_files/validation_result/gameplay_qa_result`，回 `code_generation` 重生成。上限 `MAX_GAMEPLAY_REPAIR = 2`。
 
-### 6.15 ReplanGameDesignNode (`replan_game_design`)
+### 6.14 ReplanGameDesignNode (`replan_game_design`)
 
 构建 repair 或玩法 repair 都耗尽后触发（见 §2.5 / §14）。
 
@@ -572,7 +564,7 @@ QA 硬失败且仍有次数时，调**更安全的数值**（`_repair_balance`�
 
 重置 `repair_attempts / gameplay_repair_attempts = 0`，`replan_attempts += 1`，清空产物 / 校验 / QA 结果，回 `balance_plan`。2D 额外置 `use_template_code=True`（强制模板兜底）；3D 保持模型优先。上限 `MAX_REPLAN = 1`。
 
-### 6.16 PublishArtifactAgent (`publish_artifact`)
+### 6.15 PublishArtifactAgent (`publish_artifact`)
 
 确定性上传 + 写库（不调模型，[`services/packaging.py` `publish_generated`](../backend/app/services/packaging.py)）：
 
@@ -639,8 +631,7 @@ def build_graph():
     g.add_node("safety_intake", logged("safety_intake")(nodes.safety_intake_node))
     g.add_node("memory_retrieval", logged("memory_retrieval")(nodes.memory_retrieval_node))
     g.add_node("intent_spec", logged("intent_spec")(nodes.intent_spec_node))
-    g.add_node("brief_expansion", logged("brief_expansion")(nodes.brief_expansion_node))
-    g.add_node("mechanic_planner", logged("mechanic_planner")(nodes.mechanic_planner_node))
+    g.add_node("gameplay_planning", logged("gameplay_planning")(nodes.gameplay_planning_node))
     g.add_node("archetype_router", logged("archetype_router")(nodes.archetype_router_node))
     g.add_node("asset_processing", logged("asset_processing")(nodes.asset_processing_node))
     g.add_node("game_design", logged("game_design")(nodes.game_design_node))
@@ -662,9 +653,8 @@ def build_graph():
                             {"memory_retrieval": "memory_retrieval", "failed": "failed"})
     g.add_conditional_edges("memory_retrieval", nodes.next_after_memory_retrieval,
                             {"intent_spec": "intent_spec", "feedback_understanding": "feedback_understanding"})
-    g.add_edge("intent_spec", "brief_expansion")
-    g.add_edge("brief_expansion", "mechanic_planner")
-    g.add_edge("mechanic_planner", "archetype_router")
+    g.add_edge("intent_spec", "gameplay_planning")
+    g.add_edge("gameplay_planning", "archetype_router")
     g.add_edge("archetype_router", "asset_processing")
     g.add_edge("asset_processing", "game_design")
     g.add_edge("game_design", "content_plan")

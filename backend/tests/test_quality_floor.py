@@ -4,10 +4,12 @@
 archetype 降级为元数据、design 丰富键(palette/signature_twist/sfx_events)保留、
 作者链路可读 game-quality-bar skill。
 """
+import json
+
 from app.agents import validation_nodes
 from app.agents.codegen import code_generation_node
 from app.agents.planning_brief import _coerce_mechanic_plan
-from app.agents.planning_nodes import archetype_router_node, content_plan_node
+from app.agents.planning_nodes import archetype_router_node, content_plan_node, gameplay_planning_node
 from app.agents.planning_routing import _merge_balance_into_design
 from app.agents.planning_spec import _coerce_design
 from app.agents.repair_session import RepairSession, available_skills
@@ -74,6 +76,54 @@ def test_archetype_router_keeps_model_genre_and_core_loop():
     assert spec["genre"] == "platformer"
     assert spec["core_loop"] == "run, jump and flip gravity across rooftops"
     assert spec["archetype"]  # 元数据仍然打标
+
+
+def test_gameplay_planning_combines_brief_and_mechanics_in_one_model_call(monkeypatch):
+    calls = []
+
+    def fake_chat(system_prompt, user_prompt):
+        calls.append((system_prompt, user_prompt))
+        return json.dumps(
+            {
+                "expanded_brief": {
+                    "player_fantasy": "command a storm fighter",
+                    "core_verbs": ["fly", "shoot", "dodge"],
+                },
+                "mechanic_plan": {
+                    "archetype_hint": "vertical_shooter",
+                    "primary_action": "shoot",
+                    "signature_twist": "lightning chains through marked enemies",
+                },
+            }
+        ), 37
+
+    monkeypatch.setattr("app.agents.planning_nodes.llm.chat", fake_chat)
+    out = gameplay_planning_node(
+        {
+            "use_real": True,
+            "prompt": "a storm fighter vertical shooter",
+            "game_spec": {"title": "Storm Wing", "genre": "shooter"},
+        }
+    )
+
+    assert len(calls) == 1
+    assert out["_agent"] == "GameplayPlanningAgent"
+    assert out["_tokens_delta"] == 37
+    assert out["expanded_brief"]["player_fantasy"] == "command a storm fighter"
+    assert out["mechanic_plan"]["signature_twist"] == "lightning chains through marked enemies"
+
+
+def test_generation_graph_has_one_combined_gameplay_planning_node():
+    from app.agents.graph import build_graph
+
+    graph = build_graph().get_graph()
+    edges = {(edge.source, edge.target) for edge in graph.edges}
+
+    assert "gameplay_planning" in graph.nodes
+    assert "brief_expansion" not in graph.nodes
+    assert "mechanic_planner" not in graph.nodes
+    assert ("intent_spec", "gameplay_planning") in edges
+    assert ("gameplay_planning", "archetype_router") in edges
 
 
 def test_content_plan_only_fills_gap_when_design_lacks_waves():
