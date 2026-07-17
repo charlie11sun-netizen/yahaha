@@ -514,7 +514,7 @@ Cost: 2.8s
 BuildValidateAgent
 Step: build_validation
 Level: warn
-Message: Forbidden pattern found in game.js: fetch()
+Message: Forbidden pattern found in generated source/runtime: fetch()
 ```
 
 Repair 时展示：
@@ -530,7 +530,7 @@ Replan 时展示：
 ```text
 GameDesignAgentReplan
 Step: replan_game_design
-Message: Replanned from 3D multiplayer tower defense to single-player 2D Canvas tower defense.
+Message: Replanned from 3D multiplayer tower defense to a simpler 2D Phaser/Vite tower defense.
 ```
 
 ---
@@ -682,9 +682,8 @@ tower.png 使用默认素材
 校验项：
 
 ```text
-index.html 已生成
-game.js 已生成
-style.css 已生成
+2D source project 已生成（package.json / tsconfig.json / src/**）
+sandbox 构建 dist 已完成
 未发现危险 API
 正在生成 manifest
 ```
@@ -704,7 +703,7 @@ Debug 层显示：
 
 ```text
 BuildValidateAgent failed:
-Forbidden pattern found in game.js: fetch()
+Forbidden pattern found in generated source/runtime: fetch()
 
 GameCodeAgentRepair attempt #1 started
 ```
@@ -777,7 +776,7 @@ Debug 层：
 
 ```text
 Failed at: build_validation
-Reason: Missing required files: game.js
+Reason: Missing required source/runtime files or dist output
 Repair attempts: 2 / 2
 Replan attempts: 1 / 1
 ```
@@ -1033,7 +1032,7 @@ GET /tasks/:task_id
 {
   "type": "step_completed",
   "step": "code_generation",
-  "summary": "已生成 index.html、style.css、game.js"
+  "summary": "已生成 2D source project，等待 sandbox 构建与 QA"
 }
 ```
 

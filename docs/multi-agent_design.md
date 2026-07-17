@@ -1,7 +1,7 @@
 # AI Native 互动游戏平台 Multi-Agent 设计文档
 
 > 本文档描述 `backend/app/agents/` 下的**真实实现**，与代码保持同步。关键节点附源码位置。
-> 上一版（模板优先、9 节点、仅 2D）的演进背景见 [gameweave_multiagent_gameplay_quality_redesign.md](gameweave_multiagent_gameplay_quality_redesign.md)（历史 RFC，记录从“可运行”到“可玩 + 可验证”的升级思路）。
+> 上一版（模板优先、9 节点、仅 2D）的演进背景见 [gameweave_multiagent_gameplay_quality_redesign.md](gameweave_multiagent_gameplay_quality_redesign.md)（历史 RFC，记录从“可运行”到“可玩 + 可验证”的升级思路）。本文更新日期：2026-07-16。
 
 ## 1. 背景与目标
 
@@ -44,9 +44,9 @@ Create 链路是本系统的核心。它不能只是普通 CRUD，也不能只�
 | 模式 | 触发条件 | 节点内部行为 |
 | --- | --- | --- |
 | **mock（默认）** | `USE_REAL_MODEL=false` 或无 `OPENAI_API_KEY` | 全程走确定性启发式（`_heuristic_*`），不调模型，离线可跑、可单测 |
-| **real** | `USE_REAL_MODEL=true` 且配置 `OPENAI_API_KEY` | 规划 / 设计 / 代码节点改为调用 OpenAI 兼容模型（默认 `MODEL_NAME=gpt-5.5`），失败自动回退启发式 |
+| **real** | `USE_REAL_MODEL=true` 且配置 `OPENAI_API_KEY` | 规划 / 设计 / 代码节点改为调用 OpenAI 兼容模型（默认 `MODEL_NAME=gpt-5.6-sol`，可配置），失败自动回退启发式 |
 
-模型层见 [`backend/app/agents/llm.py`](../backend/app/agents/llm.py)：只发 `model + messages`，换 provider / 模型只改 `.env` 的 `OPENAI_BASE_URL` / `MODEL_NAME`。real 模式下另有一个可选增强开关 `CODE_AGENT_ENABLED`：把构建 / 修订的**修复节点**从整体重生成升级为 OpenAI Agents SDK 的内层工具循环（见 §2.4① / §6.12），默认关闭、可灰度、失败自动回落。
+模型层见 [`backend/app/agents/llm.py`](../backend/app/agents/llm.py)：换 provider / 模型只改 `.env` 的 `OPENAI_BASE_URL` / `MODEL_NAME`。real 模式下有两个可选增强开关：`CODE_AGENT_ENABLED` 把构建/修订修复升级为 Agents SDK 工具循环，`CODE_AGENT_AUTHOR_ENABLED` 为新 2D 项目启用有界 Author Team；两者默认关闭、失败自动回落。
 
 ### 1.2 两种维度：2D Phaser/Vite 与 3D WebGL
 
@@ -148,14 +148,14 @@ Plan-and-Execute 只用于局部游戏生成，不控制系统级流程。Planne
 
 ```text
 Action: validate generated files
-Observation: validation error（forbidden API / 缺文件 / 体积超限 / 未引用 game.js）
+Observation: validation error（forbidden API / 缺文件 / 体积超限 / legacy 引用错误 / Vite source project 或 dist 不完整）
 Action: repair_code 修复代码
 Observation: 再次 validate
 ```
 
 上限 `MAX_REPAIR = 2`。修复节点内部有两条实现路径：
 
-* **整体重生成（默认）**：把 `last_error` 塞回提示词，`_generate_code(..., repair_error=…)` 重新产出整套代码。简单、无额外依赖，但每次都重写整份 `game.js`。
+* **整体重生成（默认）**：把 `last_error` 塞回提示词，`_generate_code(..., repair_error=…)` 重新产出整套代码。简单、无额外依赖；2D 会重写 source project，3D/legacy 会重写对应 runtime bundle。
 * **内层工具循环 Agent（`CODE_AGENT_ENABLED=true` 且 real 模式）**：用 OpenAI Agents SDK（[`code_agent.py`](../backend/app/agents/code_agent.py)）让模型在**有界回合**内自主 `read_file → write_file → run_checks`（静态校验 + V8 冒烟），做**最小定点修复**并自测收敛，命中 skill 合同时还能 `read_skill` 按需取参考。这才是真正的 in-node ReAct：模型自己决定读哪个文件、改哪一行、何时收手，而不是被动接收一次错误串。上限 `CODE_AGENT_MAX_TURNS = 8`（模型往返数）。
 
 > **agent-in-the-workflow 边界**：工具循环只活在修复节点*内部*。顶层图拓扑、安全 / 校验 / 发布节点仍是固定的确定性代码——agent 无权跳过它们。agent 的自测通过**不等于**放行：跳出节点后 `build_validation` 仍会独立复检一遍（agent 说修好了不作数）。SDK 未安装、缺 key、网络异常或超回合数不收敛，**一律回落整体重生成**，绝不比默认路径更差；两条路径花掉的 token 都并入同一步骤增量与 `LLMCall` 记账。
@@ -170,7 +170,7 @@ Observation: 再次 validate
 ```text
 Action: gameplay QA（静态冒烟 + V8 运行时冒烟 + 浏览器沙箱）
 Observation: 浏览器报错 this.enemies.children.iterate is not a function
-Action: gameplay_repair → 内层 agent read_file/write_file/run_checks 定点修 game.js → 回 build_validation
+Action: gameplay_repair → 内层 agent read_file/write_file/run_checks 定点修 source/runtime 文件 → 回 build_validation
 Observation: 再次 validate + QA
 
 Observation: 玩法不达标（无输入反馈 / 太难）
@@ -194,7 +194,7 @@ Repair 和 Replan 是两个不同概念：
 `replan_game_design` 会重写 `game_design`、**重置全部修复计数器**（repair / gameplay_repair 归零），然后回到 `balance_plan` 重新落数值、重生成、重校验、重 QA。上限 `MAX_REPLAN = 1`。
 
 降级策略按维度不同：
-* **2D**：`_simplify_design` 退回稳定的启发式设计，并置 `use_template_code=True`——强制 Coder 用确定性模板出码，保证产物一定能过校验。
+* **2D**：`_simplify_design` 退回稳定的启发式设计，并置 `use_template_code=True`——让 Coder 回到稳定的模块化 Phaser/Vite scaffold，保证产物一定能过校验。
 * **3D**：`_simplify_design_3d` 给一个最小可实现的 3D 设计，**仍是 3D，不回退 2D**（无模板可退，继续模型优先）。
 
 Replan **不会**跳过任何安全 / 校验 / 发布步骤，也不会改变对象存储协议或 Play Runtime 协议。
@@ -401,7 +401,7 @@ class GenerationState(TypedDict, total=False):
     generated_files: list      # [{"path": str, "content": str}]
     validation_result: dict
     gameplay_qa_result: dict
-    use_template_code: bool    # 2D replan 兜底：强制回退模板 game.js
+    use_template_code: bool    # 2D replan 兜底：回到稳定的模块化 Phaser/Vite scaffold
 
     repair_attempts: int
     replan_attempts: int
@@ -490,7 +490,7 @@ real 失败回退 `_heuristic_design`。3D 设计完成后调用 `_reconcile_arc
 
 ### 6.7 ContentPlanAgent (`content_plan`)
 
-把设计落成可铺排的关卡内容（确定性，`_content_plan`）：`tutorial, waves[], hazard_names[], reward_names[], powerups[], pacing[], mechanic_label`。结果合并进 `game_design.content_plan`，供 2D 模板配置与日志展示。
+把设计落成可铺排的关卡内容（确定性，`_content_plan`）：`tutorial, waves[], hazard_names[], reward_names[], powerups[], pacing[], mechanic_label`。结果合并进 `game_design.content_plan`，供 2D scaffold 配置与日志展示。
 
 ### 6.8 BalanceAgent (`balance_plan`)
 
@@ -536,7 +536,7 @@ IntegrationAgent（唯一场景组合者）
 
 * legacy bundle 必需文件白名单：`{index.html, style.css, game.js}`；新 2D 项目先校验 `package.json / tsconfig.json / src/**`，构建后再校验 `dist`。
 * forbidden API 扫描（`FORBIDDEN_PATTERNS`）
-* `index.html` 必须引用 `game.js`
+* legacy bundle 的 `index.html` 必须引用 `game.js`；Phaser/Vite 项目由 `package.json`、`tsconfig.json`、`src/**` 先经 source-project 校验，再由 sandbox 构建并检查 `dist/index.html` 的相对引用
 * 单文件 ≤ `MAX_FILE_BYTES = 400_000`
 * 输出每个文件的 `sha256` / `size`
 
@@ -562,23 +562,23 @@ localStorage  |  sessionStorage  |  fetch(  |  XMLHttpRequest  |  WebSocket
 
 `revision_repair`（revision / remix 分支的修复节点）走同一 `run_repair` 入口，额外要求修复结果**至少改动一个文件**（满足 revision/remix “必须有 diff” 的门禁），否则同样回落单次修订重生成。
 
-> **工具面与安全**：`RepairSession`（纯 Python，离线可单测）封装 bundle 快照与编辑集——`write_file` 只接受 `{index.html, style.css, game.js}` 白名单且强制 ≤ 400KB，`read_skill` 拒绝路径穿越。skill 文档放在 [`backend/app/agents/skills/<name>/SKILL.md`](../backend/app/agents/skills/)（现有 `gameweave-runtime` 记录沙箱运行时合同），未来接入 Phaser 等运行时时只需向该目录投放 skill，agent 即可读到，无需改代码。
+> **工具面与安全**：`RepairSession`（纯 Python，离线可单测）封装 bundle/source project 快照与编辑集——legacy 只允许受保护的 `index.html/style.css/game.js`，模块化项目允许安全的 `src/**`、配置和资源扩展名；单文件、总文件数、路径穿越和 source-edit 诊断均在提交前校验，`read_skill` 也拒绝路径穿越。skill 文档放在 [`backend/app/agents/skills/<name>/SKILL.md`](../backend/app/agents/skills/)，Author/Repair 均可按需读取。
 
 ### 6.12 GameplayQAAgent (`gameplay_qa`)
 
-**新增的玩法闸**（`_gameplay_qa`）：纯确定性检查（静态启发式 + V8 加载期冒烟），不调用模型、不模拟任何一帧运行；只硬卡“这不是一个真游戏”，质量缺口降级为 warning（绝不把产物退化成模板）。第一帧之后才出现的运行时错误不在本闸门覆盖范围内。
+**新增的玩法闸**（`_gameplay_qa`）：确定性静态启发式 + V8 加载期冒烟 + sandbox 浏览器运行/输入/视觉 probe，不调用模型；浏览器错误、零帧或输入无反馈等硬问题进入失败路径，其余质量缺口降级为 warning。第一帧之后才出现的运行时错误仍不在本闸门完全覆盖范围内。
 
 硬失败（`issues` → 触发 gameplay_repair / replan）：
 
 * 静态校验未通过
-* `game.js` 过短（< 400 字节）
-* 无游戏循环（无 `requestAnimationFrame` / `setInterval`）
+* 游戏 source 过短（< 400 字节）
+* 无游戏循环（legacy 无 `requestAnimationFrame` / `setInterval`，Phaser 项目无可识别引擎循环）
 * 无输入处理（无 `addEventListener` / `onkey*` / `onpointer*` / …）
-* **运行时冒烟崩溃**：在内嵌 V8（`py_mini_racer`）里把 `game.js` 顶层跑一遍（[`smoke.py`](../backend/app/agents/smoke.py)）——用宽松 Proxy 桩顶替 `document/window/THREE/Audio`，`requestAnimationFrame` 设为 no-op 只测加载期同步代码；游戏自身的真实 bug（读 undefined、use-before-init、语法错误）会抛错判崩。引擎未安装时 degrade-open 放行。
+* **运行时冒烟崩溃**：legacy bundle 在内嵌 V8（`py_mini_racer`）里做加载期预检；Phaser/Vite source project 由 sandbox 构建并用真实浏览器运行/输入/视觉 probe。任一路径发现加载错误、零帧或明显输入无反馈都会进入失败路径。
 
 软警告（`warnings`，不阻断发布）：缺重开入口、3D 缺 Three.js/WebGL 痕迹、`fps_arena` 缺 raycaster / pointer-lock、2D 美术偏平（无渐变 / glow）、shooter 缺弹幕 / boss 等。
 
-输出 `{passed, archetype, issues[], warnings[], metrics{js_bytes, has_input, has_restart, runtime_smoke_ok, uses_three_webgl|uses_gradient_or_glow}}`。
+输出 `{passed, archetype, issues[], warnings[], metrics{js_bytes, has_input, has_restart, runtime_smoke_ok, browser_frames, visual_probe, uses_three_webgl|uses_phaser}}`。
 
 ### 6.13 GameplayRepairAgent (`gameplay_repair`)
 
@@ -591,7 +591,7 @@ QA 硬失败且仍有次数时，调**更安全的数值**（`_repair_balance`�
 * real：用 `REPLAN_SYSTEM_PROMPT(_3D)` 让模型产出更稳健、但**保持同类型核心乐趣**的设计；失败回退 `_simplify_design(_3d)`。
 * mock：直接 `_simplify_design(_3d)`。
 
-重置 `repair_attempts / gameplay_repair_attempts = 0`，`replan_attempts += 1`，清空产物 / 校验 / QA 结果，回 `balance_plan`。2D 额外置 `use_template_code=True`（强制模板兜底）；3D 保持模型优先。上限 `MAX_REPLAN = 1`。
+重置 `repair_attempts / gameplay_repair_attempts = 0`，`replan_attempts += 1`，清空产物 / 校验 / QA 结果，回 `balance_plan`。2D 额外置 `use_template_code=True`（回到模块化 scaffold 兜底）；3D 保持模型优先。上限 `MAX_REPLAN = 1`。
 
 ### 6.15 PublishArtifactAgent (`publish_artifact`)
 
@@ -908,7 +908,7 @@ failed & 全部用尽                                → failed
 | --- | --- | --- |
 | **build repair** | JS 语法错误、forbidden API、缺文件 / 未引用、体积超限 | 按错误重生成代码 |
 | **gameplay repair** | 太难 / 太快 / 阈值不达标 | 调安全数值并重生成 |
-| **replan** | 设计在当前运行时不可实现、反复无法过校验 / QA | 降级重写设计（2D 退模板 / 3D 简化）→ 回 balance |
+| **replan** | 设计在当前运行时不可实现、反复无法过校验 / QA | 降级重写设计（2D 回模块化 scaffold / 3D 简化）→ 回 balance |
 
 ---
 

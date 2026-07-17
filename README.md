@@ -14,7 +14,7 @@
 | 前端 | Next.js 15 + React 19 + TypeScript · Tailwind v4 + shadcn/ui |
 | 后端 | Python · FastAPI |
 | 异步任务 | Celery + Redis |
-| Agent | LangGraph（`USE_REAL_MODEL=true` 时接 GPT-5.5；默认 mock 流水线离线可跑） |
+| Agent | LangGraph 固定工作流 + OpenAI-compatible Model（默认模型由 `MODEL_NAME` 配置；mock/real 可切换） |
 | 数据库 | PostgreSQL 16 + SQLAlchemy |
 | 对象存储 | MinIO（S3 兼容，boto3） |
 | 部署 | Docker Compose |
@@ -39,7 +39,7 @@ docker compose up --build
 首次启动 `api` 会自动建表并写入 **3 个旗舰示例游戏**，bundle 上传 MinIO（3D 游戏的 `three.min.js` 随包同前缀上传）：
 
 - 2D《Prism Break》（霓虹打砖块）、3D《Warp Spire》（自托管 Three.js 隧道飞行）—— 手工打造（`source=seed`）。
-- 3D《火线突围》（霓虹街区枪战）—— **由真实 Create 流水线（GPT-5.5）生成**，产物固化随 seed 发布并标 `source=create`，首页显示「✨ AI」角标、详情页显示生成 prompt。
+- 3D《火线突围》（霓虹街区枪战）—— **由真实 Create 流水线生成**，产物固化随 seed 发布并标 `source=create`，首页显示「✨ AI」角标、详情页显示生成 prompt。
 
 因此**开箱即满足「≥3 个示例游戏、≥1 个来自 Create」的验收**，无需手动操作。此外，用户通过 Create 流程实时生成并发布的游戏（如《Neon Arena: Dronefall》）也会出现在首页。
 
@@ -50,9 +50,9 @@ docker compose up --build
 ## 核心链路（端到端）
 
 ```
-注册/登录 → Create 输入创意 → 5-Agent 流水线生成（实时日志）
-→ 产物 bundle + manifest 上传 MinIO → 发布 → 首页可见
-→ Play 从 MinIO 远端加载 bundle，在沙箱 iframe 中运行
+注册/登录 → Create 输入创意 → LangGraph 节点流水线生成（实时 SSE 日志）
+→ sandbox 构建/QA → 产物 bundle + manifest 上传私有 MinIO → 发布 → 首页可见
+→ Play 从 API token 文件代理加载 bundle，在沙箱 iframe 中运行
 ```
 
 ### 可选的生成素材与 Phaser/Vite 构建
@@ -124,10 +124,10 @@ GameWeave 已接入面向生成与修改流程的长期记忆系统：
 - **鉴权**：邮箱登录与 OAuth 统一签发 HttpOnly/SameSite JWT Cookie（不向 JS 暴露 token），受保护写请求校验 `Origin` 防 CSRF；注册/登录/me/改密码/改资料/删号均校验 `is_active`。**真实 Google/GitHub OAuth 授权码流程**配好 client id/secret 即启用；demo 仅本地显式开启。
 - **迁移**：已接入 **Alembic**（`backend/migrations`，单一固化基线 `0001_baseline`，空库可直接 `alembic upgrade head`，测试守护迁移 schema ≡ ORM schema）；开发以 `create_all` 兜底（`AUTO_CREATE_ALL`），生产 compose 关闭兜底、只走迁移。squash 之前建的库先执行 `alembic stamp 0001_baseline --purge`，再执行 `alembic upgrade head`。
 - **测试 / CI**：`backend/tests` pytest 套件（SQLite 内存库，覆盖 auth / games / tasks / uploads / 限流）+ GitHub Actions（`.github/workflows/ci.yml`：后端 pytest；前端依赖审计、OpenAPI 生成物漂移检查、ESLint、TypeScript 和 `next build`）。前端请求通过 `openapi-fetch` 消费生成的 `paths`，后端契约变化需执行 `cd frontend && npm run openapi:generate` 并提交 `lib/api-types.ts`。
-- **加固**：Redis IP 限流、安全响应头、上传大小/类型校验、播放计数防刷（预览不计数、原子自增）、发布时向 bundle 注入 CSP（`connect-src 'none'`，浏览器层强制 manifest 的 `network:false`）、未发布游戏的评论/排行/manifest 与详情页同一可见性规则、`/health/ready` 就绪检查（DB/Redis/S3）。
-- **生成**：默认 `USE_REAL_MODEL=false` 走 mock 流水线（保留 5-Agent 步骤与日志，从模板产出真实可玩 bundle 并上传 OSS）；置 `true` 走 **LangGraph 真实链路**（planner→designer→coder→sandbox QA，QA 不过自动回 coder 重试），调用 GPT-5.5 生成全新游戏代码、校验后上传 OSS。两条路径共用同一套步骤/日志流式展示。
+- **加固**：Redis IP 限流、安全响应头、上传 MIME 嗅探/图片重编码/EXIF 清理/ZIP 约束、播放计数防刷、发布时向 bundle 注入 CSP（`connect-src 'self'`，浏览器层强制同前缀资源）、API token 文件代理、未发布游戏的评论/排行/manifest 与详情页同一可见性规则、`/health/ready` 就绪检查（DB/Redis/S3）。
+- **生成**：默认 `USE_REAL_MODEL=false` 走离线启发式流水线；置 `true` 走 **LangGraph 真实链路**（含 Memory、规划、素材、Phaser/Vite 构建、sandbox QA、repair/replan、revision/remix），模型由 `MODEL_NAME` 配置。`CODE_AGENT_ENABLED` / `CODE_AGENT_AUTHOR_ENABLED` 可分别启用 Repair Agent 和 2D 有界 Author Team。
 - **记忆**：已实现原始证据、Profile 汇总、版本历史、混合检索和自动冲突处理；candidate 记忆后台积累并自动晋升（game 级按重复证据、user 级按跨游戏证据），不要求用户确认；自然表达的全局偏好通过「影子 candidate + 跨游戏晋升」通道自动形成，无需特定措辞。
-- **沙箱**：Sandbox QA 的 gVisor 执行在 MVP 为 mock（返回冒烟结果），接口边界已预留。
+- **沙箱**：Compose 默认使用独立 Playwright/Chromium `sandbox` 服务；生产可选 `SANDBOX_RUNTIME=runsc` 启用 gVisor，裸 pytest 才允许 V8 mock 降级。
 - **前端样式**：已迁移到 **Tailwind v4 + shadcn/ui**（设计令牌按品牌调色，组件在 `frontend/components/ui`），核心页优先；早期从设计稿移植的 `pf-*` 内联/CSS 仍共存，逐页替换中。
 
 完整的「已完成 / Mock / 未完成 + 再给 1 周怎么迭代」清单见 **[完成度说明](docs/完成度说明.md)**；安全相关已知问题另见 `docs/安全与可观测性.md`。
