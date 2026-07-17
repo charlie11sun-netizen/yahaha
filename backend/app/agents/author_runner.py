@@ -1331,6 +1331,11 @@ def _execute_agent(
     )
 
 
+def execute_agent(*args, **kwargs) -> RepairOutcome | None:
+    """Public adapter for orchestration modules that need an agent runner."""
+    return _execute_agent(*args, **kwargs)
+
+
 def run_repair(
     files: list[dict],
     *,
@@ -1386,7 +1391,7 @@ def run_author(
     if project_mode:
         # Keep the fixed outer LangGraph node and its checkpoint/log lifecycle.
         # The bounded team owns only the implementation inside GameCodeAgent.
-        from app.agents.author_team import run_project_author_team
+        from app.agents.author_orchestration import run_project_author_team
 
         return run_project_author_team(
             files,
@@ -1398,6 +1403,8 @@ def run_author(
             max_turns=max_turns or settings.CODE_AGENT_AUTHOR_MAX_TURNS,
             live_step_id=tracing.current_step_id(),
             deadline_at=deadline_at,
+            _execute_agent_fn=execute_agent,
+            _tracing=tracing,
         )
 
     session = RepairSession.from_files(files, live_step_id=tracing.current_step_id())

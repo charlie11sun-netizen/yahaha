@@ -46,7 +46,7 @@ def _theme_cover(theme) -> str:
     return _THEME_COVER.get(_detect_theme(text), _THEME_COVER["retro"])
 
 
-def _structured_text(value: object, *, limit: int, preferred_keys: tuple[str, ...] = ()) -> str:
+def structured_text(value: object, *, limit: int, preferred_keys: tuple[str, ...] = ()) -> str:
     """Turn model-authored structured prose into readable prompt text, never Python repr."""
     if value is None:
         return ""
@@ -58,13 +58,13 @@ def _structured_text(value: object, *, limit: int, preferred_keys: tuple[str, ..
             keys = list(value)[:8]
         parts = []
         for key in keys:
-            text = _structured_text(value.get(key), limit=max(40, limit // 2))
+            text = structured_text(value.get(key), limit=max(40, limit // 2))
             if text:
                 parts.append(f"{key}: {text}")
         return "; ".join(parts)[:limit]
     if isinstance(value, (list, tuple, set)):
         parts = [
-            _structured_text(item, limit=max(40, limit // 3))
+            structured_text(item, limit=max(40, limit // 3))
             for item in list(value)[:10]
         ]
         return "; ".join(item for item in parts if item)[:limit]
@@ -72,6 +72,11 @@ def _structured_text(value: object, *, limit: int, preferred_keys: tuple[str, ..
         return " ".join(str(value).split())[:limit]
     except Exception:  # noqa: BLE001 - model normalization is fail-open
         return json.dumps(value, ensure_ascii=False, default=str)[:limit]
+
+
+# Compatibility for callers that used the helper before it became a public
+# cross-module utility.  New modules should import structured_text instead.
+_structured_text = structured_text
 
 
 def _heuristic_spec(prompt: str) -> dict:
@@ -122,7 +127,7 @@ def _coerce_spec(data: dict, prompt: str) -> dict:
         }
         for key, (limit, preferred_keys) in text_fields.items():
             if data.get(key) is not None:
-                normalized = _structured_text(
+                normalized = structured_text(
                     data[key],
                     limit=limit,
                     preferred_keys=preferred_keys,
@@ -271,6 +276,7 @@ def _simplify_design_3d(design: dict) -> dict:
 
 
 __all__ = [
+    "structured_text",
     "_detect_theme",
     "_detect_genre",
     "_theme_cover",
