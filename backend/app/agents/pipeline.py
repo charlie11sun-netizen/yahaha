@@ -2,7 +2,7 @@
 
 跑固定 LangGraph 工作流；每个节点由 tracing.logged 包装，开始/结束实时写
 agent_steps / agent_logs（前端可见"正在运行"的那一步）。本函数只负责起止状态收尾。
-mock（默认离线）与 real（USE_REAL_MODEL=true + GPT-5.5）走同一张图。
+mock（默认离线）与 real（USE_REAL_MODEL=true + gpt-5.6-sol）走同一张图。
 """
 import json
 import logging
@@ -324,6 +324,10 @@ def run_generation(task_id: str, expected_dispatch_generation: int | None = None
             error_code = TaskErrorCode.BUDGET_EXCEEDED.value
         except Exception as exc:  # noqa: BLE001
             err = str(exc)[:500]
+            logger.exception(
+                "generation pipeline failed",
+                extra={"generation_task_id": task_id},
+            )
 
         # 3) Finalize application state; retain checkpoints only for failures.
         db = SessionLocal()

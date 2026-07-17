@@ -4,16 +4,20 @@
 每次写库用独立短事务，安全（图内节点串行执行）。
 """
 import json
+import logging
 import time
 
 from app.agents.state import STEP_META
 from app.core.config import settings
 from app.core.telemetry import agent_span, bind_context, get_context
 from app.db.session import SessionLocal
-from app.models import AgentLog, AgentStep, GenerationTask
+from app.models import AgentLog, AgentStep, GenerationTask, LLMCall
 from app.models.common import StepStatus, TaskStatus, now_utc
 from app.services.task_events import publish_task_event
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError, OperationalError
+
+logger = logging.getLogger(__name__)
 
 
 class TaskCancelledError(Exception):
@@ -91,6 +95,34 @@ def begin_step(task_id: str, agent: str, display: str) -> str | None:
         db.flush()
         hint = _START_HINTS.get(display, "running agent node")
         db.add(AgentLog(step_id=step.id, seq=0, line=f"started {display}: {hint}"))
+        if "Repair" in agent or "Repair" in display:
+            max_attempts = int(task.max_repair_attempts or 0)
+            repair_kind = (
+                "gameplay"
+                if "Gameplay" in agent or "Gameplay" in display
+                else "revision"
+                if "Revision" in agent or "Revision" in display
+                else "build"
+            )
+            db.add(
+                AgentLog(
+                    step_id=step.id,
+                    seq=1,
+                    line=f"repair attempt {attempt}/{max_attempts or '?'} started",
+                    payload_json=_payload_json(
+                        {
+                            "type": "repair_attempt_started",
+                            "agent": agent,
+                            "operation": "repairing",
+                            "repair_kind": repair_kind,
+                            "attempt": attempt,
+                            "max_attempts": max_attempts or None,
+                            "caused_by_step_id": caused_by_step_id,
+                            "status": "running",
+                        }
+                    ),
+                )
+            )
         task.current_step = seq
         task.current_agent = agent
         db.commit()
@@ -124,34 +156,62 @@ def record_step_log(
     target_step_id = step_id or current_step_id()
     if not target_step_id:
         return False
-    db = SessionLocal()
-    try:
-        step = db.get(AgentStep, target_step_id)
-        if not step:
-            return False
-        seq = (
-            db.query(func.count(AgentLog.id))
-            .filter(AgentLog.step_id == target_step_id)
-            .scalar()
-            or 0
-        )
-        db.add(
-            AgentLog(
-                step_id=target_step_id,
-                seq=int(seq),
-                line=str(line),
-                level=level,
-                payload_json=_payload_json(payload),
+    last_error: Exception | None = None
+    for attempt in range(3):
+        db = SessionLocal()
+        committed_task_id: str | None = None
+        try:
+            # PostgreSQL serializes writers on the parent step row. SQLite
+            # ignores FOR UPDATE, so the unique constraint plus bounded retry is
+            # its concurrency fallback.
+            step = (
+                db.query(AgentStep)
+                .filter(AgentStep.id == target_step_id)
+                .with_for_update()
+                .one_or_none()
             )
-        )
-        db.commit()
-        publish_task_event(step.task_id, "log_appended")
-        return True
-    except Exception:  # noqa: BLE001
-        db.rollback()
-        return False
-    finally:
-        db.close()
+            if not step:
+                return False
+            latest_seq = (
+                db.query(func.max(AgentLog.seq))
+                .filter(AgentLog.step_id == target_step_id)
+                .scalar()
+            )
+            seq = int(latest_seq) + 1 if latest_seq is not None else 0
+            db.add(
+                AgentLog(
+                    step_id=target_step_id,
+                    seq=int(seq),
+                    line=str(line),
+                    level=level,
+                    payload_json=_payload_json(payload),
+                )
+            )
+            db.commit()
+            committed_task_id = step.task_id
+        except IntegrityError as exc:
+            db.rollback()
+            last_error = exc
+        except OperationalError as exc:
+            db.rollback()
+            if "locked" not in str(exc).lower():
+                logger.exception("agent log write failed")
+                return False
+            last_error = exc
+        except Exception:  # noqa: BLE001
+            db.rollback()
+            logger.exception("agent log write failed")
+            return False
+        finally:
+            db.close()
+        if committed_task_id:
+            publish_task_event(committed_task_id, "log_appended")
+            return True
+        if attempt < 2:
+            time.sleep(0.01 * (attempt + 1))
+    if last_error is not None:
+        logger.warning("agent log write exhausted retries: %s", last_error)
+    return False
 
 
 def finish_step(task_id, step_id, logs, tokens=0, repair=None, replan=None, failed=False,
@@ -159,13 +219,35 @@ def finish_step(task_id, step_id, logs, tokens=0, repair=None, replan=None, fail
     db = SessionLocal()
     try:
         if step_id:
-            step = db.get(AgentStep, step_id)
+            step = (
+                db.query(AgentStep)
+                .filter(AgentStep.id == step_id)
+                .with_for_update()
+                .one_or_none()
+            )
             if step:
                 step.status = StepStatus.FAILED if failed else StepStatus.DONE
-                step.tokens = (step.tokens or 0) + int(tokens or 0)
+                llm_call_count, llm_token_total = (
+                    db.query(func.count(LLMCall.id), func.coalesce(func.sum(LLMCall.total_tokens), 0))
+                    .filter(LLMCall.step_id == step_id)
+                    .one()
+                )
+                # LLM calls update step/task counters when they are persisted.  At
+                # the terminal boundary, reconcile from that durable ledger rather
+                # than adding the node's aggregate `_tokens_delta` a second time.
+                step.tokens = (
+                    int(llm_token_total or 0)
+                    if int(llm_call_count or 0) > 0
+                    else int(tokens or 0)
+                )
                 step.finished_at = now_utc()
                 existing_lines = {log.line for log in (step.logs or [])}
-                next_seq = len(step.logs or [])
+                latest_seq = (
+                    db.query(func.max(AgentLog.seq))
+                    .filter(AgentLog.step_id == step_id)
+                    .scalar()
+                )
+                next_seq = int(latest_seq) + 1 if latest_seq is not None else 0
                 for line in logs or []:
                     text = str(line)
                     if text in existing_lines:
@@ -175,7 +257,13 @@ def finish_step(task_id, step_id, logs, tokens=0, repair=None, replan=None, fail
                     next_seq += 1
         task = db.get(GenerationTask, task_id)
         if task:
-            task.tokens_used = (task.tokens_used or 0) + int(tokens or 0)
+            db.flush()
+            task.tokens_used = int(
+                db.query(func.coalesce(func.sum(AgentStep.tokens), 0))
+                .filter(AgentStep.task_id == task_id)
+                .scalar()
+                or 0
+            )
             if repair is not None:
                 task.repair_attempts = repair
             if replan is not None:

@@ -25,6 +25,7 @@ import { coverBackgroundValue } from "@/lib/cover";
 import type { Game, GameManifest } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ActivityFeed, RuntimeList } from "./PlayPanels";
+import { handleGameStorageRequest } from "./game-storage";
 import { INITIAL_RUNTIME, type Phase, type RuntimeKey, type RuntimeStatus } from "../_lib/play-runtime";
 
 export function PlayExperience({
@@ -143,14 +144,20 @@ export function PlayExperience({
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
-      if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
+      const frameWindow = frameRef.current?.contentWindow;
+      // Sandboxed games have an opaque origin ("null"), so the live iframe
+      // WindowProxy is the security boundary. Stale/replaced frames cannot act.
+      if (!frameWindow || event.source !== frameWindow) return;
       const data = event.data;
       if (data && typeof data === "object" && data.type === "gameweave:score" && typeof data.points === "number") {
         api
           .submitScore(id, Math.max(0, Math.floor(data.points)), typeof data.name === "string" ? data.name : undefined)
           .then(() => qc.invalidateQueries({ queryKey: ["leaderboard", id] }))
           .catch(() => {});
+        return;
       }
+      const storageResponse = handleGameStorageRequest(window.localStorage, id, data);
+      if (storageResponse) frameWindow.postMessage(storageResponse, "*");
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);

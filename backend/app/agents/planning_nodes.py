@@ -13,6 +13,7 @@ from app.agents.nodes_common import (
     _real_model_fallback_or_raise,
     llm,
     prompts,
+    settings,
 )
 from app.agents.planning_brief import (
     _coerce_brief,
@@ -50,16 +51,27 @@ def intent_spec_node(state: dict) -> dict:
     prompt = state.get("normalized_prompt") or state.get("prompt", "")
     if state.get("use_real"):
         try:
-            raw, tokens = llm.chat(
+            result = llm.chat(
                 prompts.INTENT_SPEC_SYSTEM_PROMPT,
                 prompts.build_intent_spec_prompt(
                     prompt,
                     len(state.get("asset_ids") or []),
                     state.get("memory_context") or "",
                 ),
+                timeout=max(30, int(settings.OPENAI_PLANNING_STREAM_IDLE_TIMEOUT or 180)),
+                recover_partial_json=True,
+                cache_namespace=prompts.PLANNING_PROMPT_CACHE_NAMESPACE,
+                cache_prefix=prompts.PLANNING_SHARED_CACHE_PREFIX,
+                cache_task_scoped=False,
             )
+            raw, tokens = result
             spec = _coerce_spec(_parse_json(raw), prompt)
-            return {"game_spec": spec, "_agent": "IntentSpecAgent", "_tokens_delta": tokens, "_logs": _spec_log_lines(spec, "model GameSpec JSON")}
+            source = (
+                "recovered complete model GameSpec JSON after interrupted stream"
+                if getattr(result, "partial", False)
+                else "model GameSpec JSON"
+            )
+            return {"game_spec": spec, "_agent": "IntentSpecAgent", "_tokens_delta": tokens, "_logs": _spec_log_lines(spec, source)}
         except Exception as exc:  # noqa: BLE001
             _real_model_fallback_or_raise("IntentSpecAgent", exc, exc)
             spec = _heuristic_spec(prompt)
@@ -73,22 +85,25 @@ def gameplay_planning_node(state: dict) -> dict:
     spec = state.get("game_spec") or {}
     if state.get("use_real"):
         try:
-            raw, tokens = llm.chat(
-                (
-                    "You are GameplayPlanningAgent. Expand the player's GameSpec into one coherent, bounded plan "
-                    "for a small Phaser game. Preserve the requested genre and fantasy. Choose one proven core "
-                    "loop plus exactly one implementable signature twist. Do not add unsafe APIs."
-                ),
+            result = llm.chat(
+                prompts.GAMEPLAY_PLANNING_SYSTEM_PROMPT,
                 (
                     "Return JSON with exactly two top-level objects. expanded_brief keys: player_fantasy, "
                     "objective, core_verbs, mechanic_requirements, reward_loop, difficulty_beats, feedback, "
-                    "keywords, minimum_content. mechanic_plan keys: archetype_hint, primary_action, "
+                    "keywords, minimum_content. mechanic_plan keys: primary_action, "
                     "secondary_action, signature_twist, risk_model, reward_model, enemy_behaviors, reward_items, "
                     "powerups, feedback, skill_tests. Make mechanic_plan realize expanded_brief without "
-                    "contradicting the GameSpec. "
+                    "contradicting the GameSpec. Do not choose or force a template/archetype; preserve the "
+                    "GameSpec genre and describe its actual mechanics directly. "
                     f"Prompt: {prompt}\nSpec: {json.dumps(spec, ensure_ascii=False)}"
                 ),
+                timeout=max(30, int(settings.OPENAI_PLANNING_STREAM_IDLE_TIMEOUT or 180)),
+                recover_partial_json=True,
+                cache_namespace=prompts.PLANNING_PROMPT_CACHE_NAMESPACE,
+                cache_prefix=prompts.PLANNING_SHARED_CACHE_PREFIX,
+                cache_task_scoped=False,
             )
+            raw, tokens = result
             parsed = _parse_json(raw)
             brief = _coerce_brief(parsed.get("expanded_brief") or {}, prompt, spec)
             plan = _coerce_mechanic_plan(parsed.get("mechanic_plan") or {}, spec, brief, prompt)
@@ -97,8 +112,18 @@ def gameplay_planning_node(state: dict) -> dict:
                 "mechanic_plan": plan,
                 "_agent": "GameplayPlanningAgent",
                 "_tokens_delta": tokens,
-                "_logs": _brief_log_lines(brief, "model combined gameplay plan")
-                + _mechanic_log_lines(plan, "model combined gameplay plan"),
+                "_logs": _brief_log_lines(
+                    brief,
+                    "recovered complete model gameplay plan after interrupted stream"
+                    if getattr(result, "partial", False)
+                    else "model combined gameplay plan",
+                )
+                + _mechanic_log_lines(
+                    plan,
+                    "recovered complete model gameplay plan after interrupted stream"
+                    if getattr(result, "partial", False)
+                    else "model combined gameplay plan",
+                ),
             }
         except Exception as exc:  # noqa: BLE001
             _real_model_fallback_or_raise("GameplayPlanningAgent", exc, exc)
@@ -152,7 +177,7 @@ def archetype_router_node(state: dict) -> dict:
         "archetype_result": result,
         "_agent": "ArchetypeRouterAgent",
         "_logs": [
-            f"archetype tagged: {result['archetype']} ({result['label']}) — metadata only, design stays free",
+            f"gameplay family tagged: {result['archetype']} ({result['label']}) — metadata only, design stays free",
             f"routing reason: {result['reason']}",
             (
                 f"filled missing spec keys from archetype defaults: {', '.join(filled)}"
@@ -195,18 +220,27 @@ def game_design_node(state: dict) -> dict:
     if state.get("use_real"):
         try:
             sys_prompt = prompts.GAME_DESIGN_SYSTEM_PROMPT_3D if is_3d else prompts.GAME_DESIGN_SYSTEM_PROMPT
-            raw, tokens = llm.chat(sys_prompt, prompts.build_game_design_prompt(
-                spec,
-                state.get("asset_manifest"),
-                expanded_brief=state.get("expanded_brief"),
-                mechanic_plan=state.get("mechanic_plan"),
-                player_idea=state.get("normalized_prompt") or state.get("prompt"),
-                memory_context=state.get("memory_context") or "",
-            ))
+            result = llm.chat(
+                sys_prompt,
+                prompts.build_game_design_prompt(
+                    spec,
+                    state.get("asset_manifest"),
+                    expanded_brief=state.get("expanded_brief"),
+                    mechanic_plan=state.get("mechanic_plan"),
+                    player_idea=state.get("normalized_prompt") or state.get("prompt"),
+                    memory_context=state.get("memory_context") or "",
+                ),
+                timeout=max(30, int(settings.OPENAI_PLANNING_STREAM_IDLE_TIMEOUT or 180)),
+                recover_partial_json=True,
+                cache_namespace=prompts.PLANNING_PROMPT_CACHE_NAMESPACE,
+                cache_prefix=prompts.PLANNING_SHARED_CACHE_PREFIX,
+                cache_task_scoped=False,
+            )
+            raw, tokens = result
             design = _coerce_design(_parse_json(raw), spec)
             fed = [k for k, v in (("brief", state.get("expanded_brief")), ("mechanic_plan", state.get("mechanic_plan")), ("player_idea", state.get("normalized_prompt"))) if v]
             out = {"game_design": design, "_agent": "GameDesignAgent", "_tokens_delta": tokens,
-                   "_logs": [f"source: model GameDesign JSON ({'3D' if is_3d else '2D'})",
+                   "_logs": [f"source: {'recovered complete model GameDesign JSON after interrupted stream' if getattr(result, 'partial', False) else 'model GameDesign JSON'} ({'3D' if is_3d else '2D'})",
                              "design context fed: " + (", ".join(fed) or "spec only")] + _design_log_lines(design)}
             if is_3d:
                 new_arch = _reconcile_archetype_3d(spec, design)
@@ -278,6 +312,7 @@ def feedback_understanding_node(state: dict) -> dict:
                     state.get("game_design") or {},
                     state.get("memory_context") or "",
                 ),
+                timeout=max(30, int(settings.OPENAI_PLANNING_STREAM_IDLE_TIMEOUT or 180)),
             )
         except Exception as exc:  # noqa: BLE001
             _real_model_fallback_or_raise("FeedbackUnderstandingAgent", exc, exc)

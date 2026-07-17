@@ -173,6 +173,8 @@ services:
     build: ./sandbox
     init: true
     read_only: true
+    volumes:
+      - ./sandbox/app:/app/app:ro
     shm_size: 1gb
     tmpfs:
       - /tmp

@@ -42,10 +42,16 @@ export function setAuthenticatedSessionKnown(value: boolean) {
   authenticatedSessionKnown = value;
 }
 
-export async function openTaskEventStream(taskId: string, signal: AbortSignal): Promise<Response> {
+export async function openTaskEventStream(
+  taskId: string,
+  signal: AbortSignal,
+  lastEventId?: string | null,
+): Promise<Response> {
+  const headers: Record<string, string> = { Accept: "text/event-stream", ...gateHeader() };
+  if (lastEventId) headers["Last-Event-ID"] = lastEventId;
   const response = await fetch(`${BASE}/tasks/${encodeURIComponent(taskId)}/events`, {
     credentials: "include",
-    headers: { Accept: "text/event-stream", ...gateHeader() },
+    headers,
     method: "GET",
     signal,
   });

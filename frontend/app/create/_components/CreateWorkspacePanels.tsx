@@ -23,9 +23,7 @@ export function CreateWorkspace({
   onRevision,
   onRetry,
   publishing,
-  revisionFeedback,
   revising,
-  setRevisionFeedback,
   task,
 }: {
   connectionStatus: string;
@@ -37,12 +35,10 @@ export function CreateWorkspace({
   onOpenActivity: () => void;
   onPreview: () => void;
   onPublish: () => void;
-  onRevision: () => void;
+  onRevision: (feedback: string) => Promise<boolean>;
   onRetry: () => void;
   publishing: boolean;
-  revisionFeedback: string;
   revising: boolean;
-  setRevisionFeedback: (value: string) => void;
   task?: Task;
 }) {
   const brief = getBrief(task, files, generatedAssets.length);
@@ -86,9 +82,7 @@ export function CreateWorkspace({
           onRevision={onRevision}
           onRetry={onRetry}
           publishing={publishing}
-          revisionFeedback={revisionFeedback}
           revising={revising}
-          setRevisionFeedback={setRevisionFeedback}
           task={task}
         />
       </aside>

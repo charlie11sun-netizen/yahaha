@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import base64
+import time
 from dataclasses import dataclass, field
 
 import httpx
 
 from app.core.config import settings
 from app.services.artifacts import artifact_bytes
+
+# A transiently unreachable sandbox (restart, cold browser launch, host load
+# spike) must not kill a multi-minute generation at its final gate. Retry the
+# whole run request a bounded number of times before declaring unavailability.
+_RUN_CONNECT_RETRIES = 2
+_RUN_RETRY_DELAY_SECONDS = 8.0
 
 
 class SandboxUnavailableError(RuntimeError):
@@ -26,6 +33,20 @@ class SandboxResult:
     timed_out: bool = False
     skipped: bool = False
     detail: str = ""
+    screenshot_b64: str | None = None
+    input_attempted: bool = False
+    inputs_sent: list[str] = field(default_factory=list)
+    start_attempts: list[str] = field(default_factory=list)
+    input_errors: list[str] = field(default_factory=list)
+    visual_probe: str = ""
+    visual_before_sha256: str | None = None
+    visual_after_sha256: str | None = None
+    visual_changed: bool | None = None
+    visual_change_ratio: float | None = None
+    visual_probe_error: str = ""
+    # Runtime behavior counters reported by the game scaffold's Probe system,
+    # e.g. {"probe:ready": 1, "scene:start|PlayScene": 1, "anims:play|run": 40}.
+    probes: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -41,7 +62,13 @@ class ViteBuildResult:
     detail: str = ""
 
 
-def _payload(files: list[dict], entry: str, timeout_ms: int, simulate_input: bool) -> dict:
+def _payload(
+    files: list[dict],
+    entry: str,
+    timeout_ms: int,
+    simulate_input: bool,
+    screenshot_always: bool = False,
+) -> dict:
     encoded = []
     for item in files:
         path = str(item.get("path") or "").lstrip("/")
@@ -57,6 +84,7 @@ def _payload(files: list[dict], entry: str, timeout_ms: int, simulate_input: boo
         "entry": entry,
         "timeout_ms": timeout_ms,
         "simulate_input": simulate_input,
+        "screenshot_always": screenshot_always,
     }
 
 
@@ -94,24 +122,36 @@ def run_bundle(
     entry: str = "index.html",
     timeout_ms: int | None = None,
     simulate_input: bool = True,
+    screenshot_always: bool = False,
 ) -> SandboxResult:
     url = settings.SANDBOX_URL.strip().rstrip("/")
     if not url:
         return _unavailable("sandbox disabled (SANDBOX_URL is empty)")
 
     timeout = int(timeout_ms or settings.SANDBOX_TIMEOUT_MS)
-    try:
-        response = httpx.post(
-            f"{url}/run",
-            json=_payload(files, entry, timeout, simulate_input),
-            timeout=_request_timeout_seconds(timeout),
-        )
-        response.raise_for_status()
-        data = response.json()
-    except httpx.HTTPStatusError as exc:
-        return _unavailable(f"sandbox unavailable: {_http_error_detail(exc)}")
-    except (httpx.RequestError, ValueError) as exc:
-        return _unavailable(f"sandbox unavailable: {exc}")
+    payload = _payload(files, entry, timeout, simulate_input, screenshot_always)
+    data = None
+    last_error: str | None = None
+    for attempt in range(_RUN_CONNECT_RETRIES + 1):
+        if attempt:
+            time.sleep(_RUN_RETRY_DELAY_SECONDS * attempt)
+        try:
+            response = httpx.post(
+                f"{url}/run",
+                json=payload,
+                timeout=_request_timeout_seconds(timeout),
+            )
+            response.raise_for_status()
+            data = response.json()
+            break
+        except httpx.HTTPStatusError as exc:
+            last_error = f"sandbox unavailable: {_http_error_detail(exc)}"
+            if exc.response.status_code < 500:
+                break
+        except (httpx.RequestError, ValueError) as exc:
+            last_error = f"sandbox unavailable: {exc}"
+    if data is None:
+        return _unavailable(last_error or "sandbox unavailable")
 
     return SandboxResult(
         ok=bool(data.get("ok")),
@@ -123,7 +163,35 @@ def run_bundle(
         intervals_observed=int(data.get("intervals_observed") or 0),
         load_ms=int(data.get("load_ms") or 0),
         timed_out=bool(data.get("timed_out")),
+        screenshot_b64=data.get("screenshot_b64"),
+        input_attempted=bool(data.get("input_attempted")),
+        inputs_sent=[str(item) for item in (data.get("inputs_sent") or [])],
+        start_attempts=[str(item) for item in (data.get("start_attempts") or [])],
+        input_errors=[str(item) for item in (data.get("input_errors") or [])],
+        visual_probe=str(data.get("visual_probe") or ""),
+        visual_before_sha256=data.get("visual_before_sha256"),
+        visual_after_sha256=data.get("visual_after_sha256"),
+        visual_changed=data.get("visual_changed"),
+        visual_change_ratio=(
+            float(data["visual_change_ratio"])
+            if data.get("visual_change_ratio") is not None
+            else None
+        ),
+        visual_probe_error=str(data.get("visual_probe_error") or ""),
+        probes=_parse_probes(data.get("probes")),
     )
+
+
+def _parse_probes(raw: object) -> dict[str, int]:
+    if not isinstance(raw, dict):
+        return {}
+    probes: dict[str, int] = {}
+    for key, value in list(raw.items())[:300]:
+        try:
+            probes[str(key)[:120]] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return probes
 
 
 def build_vite_project(files: list[dict], *, timeout_ms: int | None = None) -> ViteBuildResult:

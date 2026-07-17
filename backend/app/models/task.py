@@ -131,6 +131,10 @@ class AgentStep(PkMixin, TimestampMixin, Base):
 
 class AgentLog(Base):
     __tablename__ = "agent_logs"
+    __table_args__ = (
+        UniqueConstraint("step_id", "seq", name="uq_agent_logs_step_seq"),
+        {"sqlite_autoincrement": True},
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     step_id: Mapped[str] = mapped_column(ForeignKey("agent_steps.id", ondelete="CASCADE"), index=True)
@@ -171,6 +175,10 @@ class AgentTraceEvent(PkMixin, TimestampMixin, Base):
 
 class LLMCall(PkMixin, TimestampMixin, Base):
     __tablename__ = "llm_calls"
+    __table_args__ = (
+        UniqueConstraint("provider_response_id", name="uq_llm_calls_provider_response_id"),
+        UniqueConstraint("run_id", "request_index", name="uq_llm_calls_run_request"),
+    )
 
     task_id: Mapped[str | None] = mapped_column(
         ForeignKey("generation_tasks.id", ondelete="SET NULL"), nullable=True, index=True
@@ -178,12 +186,25 @@ class LLMCall(PkMixin, TimestampMixin, Base):
     step_id: Mapped[str | None] = mapped_column(
         ForeignKey("agent_steps.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # SDK team calls are persisted per provider response.  These identifiers make
+    # stream replay/reconnect idempotent and keep MaxTurns runs fully accountable.
+    run_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    agent: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    workflow_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    provider_response_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    request_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(24), default="completed", server_default="completed")
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     model: Mapped[str] = mapped_column(String(120))
     prompt_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
     completion_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
     total_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
     # prompt_tokens 中命中 prompt cache 的部分（provider 侧折价读取）。
     cached_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    # provider 本次写入 prompt cache 的 token 数。
+    cache_write_tokens: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default="0", nullable=False
+    )
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     retried: Mapped[bool] = mapped_column(Boolean, default=False)
     cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 6), nullable=True)

@@ -54,8 +54,8 @@ Create 链路是本系统的核心。它不能只是普通 CRUD，也不能只�
 
 | 维度 | 运行时 | 代码生成策略 |
 | --- | --- | --- |
-| `2d` | Phaser 3.90 + TypeScript + Vite；沙箱执行 `tsc --noEmit` 与固定 Vite 构建 | 模块化工程骨架 + 可选 Project Author Agent；稳定回退仍为模块化 TypeScript 工程 |
-| `3d` | iframe-html + WebGL（自托管 Three.js，全局 `THREE`） | **完全模型产出**，无模板兜底（失败交给 repair / replan） |
+| `2d` | Phaser 3.90 + TypeScript + Vite；沙箱执行 `tsc --noEmit` 与固定 Vite 构建 | 模块化工程骨架 + 可选有界作者团队；稳定回退仍为模块化 TypeScript 工程 |
+| `3d` | iframe-sandbox + WebGL（自托管 Three.js，全局 `THREE`） | **完全模型产出**，无模板兜底（失败交给 repair / replan） |
 
 历史 `legacy-bundle/v1` 仍可读取、运行和修订，但不再作为新游戏生成或失败回退目标。新 2D 项目源码私有保存，公开发布的只有 Vite `dist`。
 
@@ -93,7 +93,7 @@ ReAct 的典型模式是 `Thought → Action → Observation → …`，适合�
 
 ### 2.2 顶层采用固定 LangGraph Workflow
 
-顶层主干固定为（22 个功能节点 + failed/done，含 revision 分支与 memory 节点，见 [`graph.py`](../backend/app/agents/graph.py)）：
+顶层主干固定为（24 个功能节点 + `failed`/`done`，含 generation / revision / remix 分支与 memory 节点，见 [`graph.py`](../backend/app/agents/graph.py)）：
 
 ```text
 safety_intake
@@ -102,10 +102,12 @@ safety_intake
 → gameplay_planning
 → archetype_router
 → asset_processing
+→ asset_generation
 → game_design
 → content_plan
 → balance_plan
 → code_generation
+→ project_build
 → build_validation
 → gameplay_qa
 → publish_artifact
@@ -113,7 +115,7 @@ safety_intake
 → done
 ```
 
-外加三个分支 / 修复节点：`repair_code`、`gameplay_repair`、`replan_game_design`，以及终态 `failed` / `done`。
+外加 `feedback_understanding`、`code_revision`、`revision_repair`、`publish_revision`、`publish_remix`、`memory_update` 和三个修复/重规划节点；终态为 `failed` / `done`。
 
 固定主干保证：生成稳定可复现；安全检查、构建校验、玩法 QA、对象存储上传不会被跳过；每一步都写 `AgentStep` + `AgentLog`；前端可展示步骤流；失败后可定位具体节点；最终产物符合 Play Runtime 协议。
 
@@ -128,7 +130,7 @@ ArchetypeRouterAgent = Plan  —— 锁定受支持的玩法原型（2D/3D 不�
 GameDesignAgent      = Plan  —— 原型 → 具体可执行设计（实体 / 规则 / 波次 / boss）
 ContentPlanAgent     = Plan  —— 设计 → 关卡内容（教学 / 波次 / 道具铺排）
 BalanceAgent         = Plan  —— 设计 → 数值（时长 / 目标分 / 生命 / 刷新 / QA 阈值）
-GameCodeAgent        = Execute —— 产出 index.html / style.css / game.js
+GameCodeAgent        = Execute —— 2D 内部有界作者团队产出模块化 Phaser/Vite/TypeScript 工程；3D 产出自托管 Three.js bundle
 PublishArtifactAgent = Execute —— 上传产物 + 写库（确定性，不调模型）
 MemoryRetrievalAgent = Context —— 先读取 active Memory Profiles，再通过 BM25 + embedding + RRF 检索原始证据（embedding 不可用时退化为 BM25）
 MemoryUpdateAgent    = Context —— Preview / Revision 成功后写入原始证据；真实模型启用时建议结构化 claim，确定性状态机完成 candidate/active/supersede 和效用反馈
@@ -222,10 +224,10 @@ checkpoint thread，失败时保留以供 Retry。注意 `TASK_TOKEN_BUDGET` 按
 
 与早期“模板优先”不同，当前 Coder 是**模型优先**（见 [`nodes.py` `_generate_code`](../backend/app/agents/nodes.py)）：
 
-* **2D**：先渲染确定性模板作为基线；若 `use_real` 且未被 replan 置为 `use_template_code`，则让模型直接产出完整三件套（`index.html / style.css / game.js`）。模型输出过短（`game.js < 400` 字节）或调用失败 → 回退模板。
-* **3D**：没有模板。`use_real=false` 直接判失败（离线 mock 无法创作 3D）；`use_real=true` 时模型产出整套 bundle，组装时确保 `three.min.js` 在 `game.js` 之前加载。过短 / 失败 → 返回不合规 bundle，交给 repair / replan。
+* **2D**：先创建确定性的 Phaser 3.90 + TypeScript + Vite 工程骨架；Author Team 开关打开时，三个 owner Coder 从同一快照产出隔离候选，再由 IntegrationAgent 合并。模型不可用或 replan 要求降级时回到稳定 scaffold，不再生成旧的单文件三件套。
+* **3D**：无同等模板；`use_real=true` 时模型产出自托管 Three.js bundle，组装时确保 `three.min.js` 同源加载。过短 / 失败 → 交给 repair / replan。
 
-模型只产出受沙箱约束的三件套，永远经过 `build_validation` + `gameplay_qa` 两道闸，不会绕过安全边界。
+模型只产出受工具白名单和 sandbox 约束的源码/静态产物，永远经过 `project_build`、`build_validation` + `gameplay_qa` 三道闸，不会绕过安全边界。
 
 ---
 
@@ -283,16 +285,23 @@ flowchart TD
 | `gameplay_planning`  | GameplayPlanningAgent       | 一次生成可玩简报与具体机制           |
 | `archetype_router`   | ArchetypeRouterAgent        | 锁定受支持的玩法原型（2D/3D）       |
 | `asset_processing`   | AssetAgent                  | 处理上传素材，生成 AssetManifest |
+| `asset_generation`   | AssetGenerationAgent        | 按开关生成图片/音频/视频/tileset 素材 |
 | `game_design`        | GameDesignAgent             | 原型 → 具体游戏设计（2D/3D 提示词不同）|
 | `content_plan`       | ContentPlanAgent            | 设计 → 关卡内容（教学 / 波次 / 道具）  |
 | `balance_plan`       | BalanceAgent                | 设计 → 数值与 QA 阈值          |
-| `code_generation`    | GameCodeAgent               | 生成可运行三件套（模型优先）          |
-| `build_validation`   | BuildValidateAgent          | 静态安全 / 完整性 / 体积校验       |
+| `code_generation`    | GameCodeAgent               | 生成 2D Phaser/Vite/TS 源工程或 3D bundle |
+| `project_build`      | ProjectBuildAgent           | 在 sandbox 中执行 TypeScript/Vite 构建并打包 dist |
+| `build_validation`   | BuildValidateAgent          | 静态安全 / 完整性 / 体积 / manifest 校验 |
 | `repair_code`        | GameCodeAgentRepair         | 按校验错误重生成代码（≤2）          |
 | `replan_game_design` | GameDesignAgentReplan       | 设计不可实现时降级重规划（≤1）        |
 | `gameplay_qa`        | GameplayQAAgent             | 玩法冒烟 + V8 运行时冒烟         |
 | `gameplay_repair`    | GameplayRepairAgent         | 运行时报错先内层 agent 定点 patch，玩法指标调安全数值重生成（≤2） |
 | `publish_artifact`   | PublishArtifactAgent        | 上传产物，生成 manifest，写库     |
+| `feedback_understanding` | FeedbackUnderstandingAgent | 解析 revision 反馈 |
+| `code_revision`      | CodeRevisionAgent           | 基于 base version 修改源码 |
+| `revision_repair`    | CodeRevisionRepairAgent     | 修复 revision 的构建/QA 失败 |
+| `publish_revision`   | PublishRevisionAgent        | 写入原游戏的新版本 |
+| `publish_remix`      | PublishRemixAgent           | 写入带来源溯源的新 Game v1 |
 | `memory_update`      | MemoryUpdateAgent           | 保存原始证据，验证 LLM claim，自动强化/晋升/取代 Profile，记录构建与玩法效用并写历史 |
 | `failed` / `done`    | FailureHandler / DoneHandler | 记录失败原因 / 标记成功           |
 
@@ -491,21 +500,41 @@ real 失败回退 `_heuristic_design`。3D 设计完成后调用 `_reconcile_arc
 
 ### 6.9 GameCodeAgent (`code_generation`)
 
-Execute 阶段，模型优先（详见 §2.6）。`_generate_code` 返回 `(files, tokens, mode)`，`mode` 记录本次出码来源（`model (full bundle)` / `template` / `template (model output too short)` / `model 3D failed: …` 等），写入日志便于排查。`_assemble_bundle` 统一成三件套，3D 时确保 `three.min.js` 先于 `game.js`。
+Execute 阶段，模型优先（详见 §2.6）。所有新 2D 游戏先创建中性的 Phaser 3.90 + Vite + TypeScript 工程；开启 `CODE_AGENT_AUTHOR_ENABLED=true` 后，顶层仍只有一个 `GameCodeAgent` 节点，但节点内部运行固定的有界作者团队：
+
+```text
+DesignContractAgent（只读，冻结状态 / 事件 / 模块 / 验收契约）
+        ↓ contract_hash + base_revision
+RulesAndSimulationCoder          src/systems/**, src/domain/**
+WorldAndContentCoder             src/entities/**, src/content/**, src/levels/**
+PresentationAndInteractionCoder  src/ui/**, src/presentation/**, src/input/**, src/audio/**
+        ↓ 隔离候选 + 工具级所有权复检
+IntegrationAgent（唯一场景组合者）
+        ↓ run_checks: source validation + TypeScript + Vite build
+外层 build_validation → gameplay_qa → repair/replan
+```
+
+三个实现 Coder 都从同一个骨架快照开始，不共享不断增长的模型对话，也不直接修改 `PlayScene`。路径所有权由 [`agent_tools.py`](../backend/app/agents/agent_tools.py) 的 `AgentToolPolicy` 强制执行，而不是只写在 prompt 中；合并前还会独立核对实际 diff、Agent 声明的 changed paths、静态安全和跨角色冲突。模型输出的契约不能放宽这些权限。
+
+[`author_team.py`](../backend/app/agents/author_team.py) 负责项目自有编排：契约不合法时生成确定性保底契约；某个角色不可用或越权时拒绝该候选；`IntegrationAgent` 读取所有已接受模块，创建共享 TypeScript 接口、替换 `GW_PLACEHOLDER_GAMEPLAY`、连接场景并执行完整检查。集成没有真正修改组合层或仍保留占位标记时，即使构建通过也会标记为未完成，继续交给外层门禁和修复链。
+
+角色按稳定领域而不是动作游戏名词划分，因此同一流程可映射到不同类型：实时动作的规则层负责战斗/碰撞，卡牌和策略负责回合/效果/经济，解谜负责合法性/撤销，节奏负责判定时钟，模拟经营负责时间和生产链；内容层对应敌人/关卡、卡牌/遭遇、谜题、谱面或建筑；表现层只展示规则结果，不决定动作是否合法。
 
 固定产物结构与运行时：
 
 ```text
-files: index.html / style.css / game.js
-2D runtime: iframe-html + canvas-2d, external_dependencies = none
-3D runtime: iframe-html + webgl(Three.js, 全局 THREE, 自托管), 仅相对引用 three.min.js
+2D source: package.json / index.html / tsconfig.json / src/**
+2D runtime: Phaser 3.90 + TypeScript + Vite，固定依赖，隔离构建
+3D runtime: iframe-sandbox + webgl(Three.js, 全局 THREE, 自托管), 仅相对引用 three.min.js
 ```
+
+该内部团队不增加顶层 LangGraph 节点，不改变 checkpoint、节点恢复、`agent_logs`、`llm_calls` 或 `agent_trace_events` 的持久化方式。各角色名称作为现有 `GameCodeAgent` step 内的日志/trace agent 字段出现；token 与 turns 汇总回原 `code_generation` 节点。
 
 ### 6.10 BuildValidateAgent (`build_validation`)
 
 确定性静态校验（[`validation.py`](../backend/app/agents/validation.py)），也是构建 repair loop 的 Observation 来源：
 
-* 必需文件白名单：`{index.html, style.css, game.js}`
+* legacy bundle 必需文件白名单：`{index.html, style.css, game.js}`；新 2D 项目先校验 `package.json / tsconfig.json / src/**`，构建后再校验 `dist`。
 * forbidden API 扫描（`FORBIDDEN_PATTERNS`）
 * `index.html` 必须引用 `game.js`
 * 单文件 ≤ `MAX_FILE_BYTES = 400_000`
@@ -569,8 +598,8 @@ QA 硬失败且仍有次数时，调**更安全的数值**（`_repair_balance`�
 确定性上传 + 写库（不调模型，[`services/packaging.py` `publish_generated`](../backend/app/services/packaging.py)）：
 
 1. 创建 `Game`（`status=PREVIEW`，`source=CREATE`，`current_version="v1"`，标题 / genre / summary / cover / tags 来自 spec；3D 追加 `3D` 标签）。
-2. 上传 `index.html / style.css / game.js` 到 `games/{game_id}/v1/`；**3D 额外上传自托管 `three.min.js`** 到同前缀（相对引用，绕过外链校验、保持 `network=false`）。
-3. 创建 `GameVersion`（`manifest_key / bundle_key / entry / runtime="iframe-html" / sha256 / size_bytes / source_task_id`）。
+2. 将 2D 的 `package.json / index.html / tsconfig.json / src/**` 经过 sandbox 构建后的 `dist`，或 3D bundle，上传到 `games/{game_id}/v1/`；**3D 额外上传自托管 `three.min.js`** 到同前缀。
+3. 创建 `GameVersion`（`manifest_key / bundle_key / entry / runtime="iframe-sandbox" / sha256 / size_bytes / source_task_id`）。
 4. 生成并上传 `manifest.json`（`game-manifest/v1`）。
 5. 返回 `(game_id, version_id, manifest_url)`，节点写 `status=succeeded` + `preview_url=/play/{game_id}`。
 
@@ -580,8 +609,8 @@ QA 硬失败且仍有次数时，调**更安全的数值**（`_repair_balance`�
 {
   "schema_version": "game-manifest/v1",
   "game_id": "…", "version_id": "…", "title": "…",
-  "runtime": "iframe-html", "entry": "index.html",
-  "entry_url": "http://localhost:9000/gameweave/games/…/v1/index.html",
+  "runtime": "iframe-sandbox", "entry": "index.html",
+  "entry_url": "http://localhost:8000/games/…/files/{token}/v1/index.html",
   "files": [{ "path": "index.html", "url": "…", "sha256": "…" }, …],
   "assets": [],
   "permissions": { "network": false, "storage": false, "cookies": false }
@@ -805,7 +834,7 @@ games(id, author_id, title, summary, genre, cover, source(create|…),
       status(preview|published|draft), current_version, prompt,
       plays_count, likes_count, published_at, tags(多对多), …)
 game_versions(id, game_id, version, manifest_key, bundle_key, entry,
-      runtime("iframe-html"), sha256, size_bytes, source_task_id, …)
+      runtime("iframe-sandbox"), sha256, size_bytes, source_task_id, …)
 ```
 
 发布生成游戏时 `status=preview`；作者点发布 `POST /games/:id/publish` 后变 `published`（写 `published_at`），Home 可见。
@@ -891,11 +920,11 @@ failed & 全部用尽                                → failed
 
 ### 15.2 代码生成边界
 
-Coder 只允许产出 `index.html / style.css / game.js`（3D 另由发布阶段注入自托管 `three.min.js`）。不允许生成 `server.*` / `.env` / `Dockerfile` / shell / 安装脚本。`build_validation` 用文件白名单兜底。
+Coder 只能在 `AgentToolPolicy` 授权的源码目录内读写；2D owner 分别受 `src/systems|domain`、`src/entities|content|levels`、`src/ui|presentation|input|audio` 白名单约束，IntegrationAgent 才能修改组合层。不得生成 `server.*` / `.env` / `Dockerfile` / shell / 安装脚本；`build_validation` 和 sandbox 再做文件白名单与静态安全兜底。
 
 ### 15.3 运行时隔离
 
-iframe sandbox（仅 `allow-scripts`，3D 加 `allow-pointer-lock`），`network/storage/cookies` 全关。
+iframe sandbox（`allow-scripts allow-pointer-lock`，无 `allow-same-origin`）+ API token 文件代理 + 发布 CSP；manifest 的 `storage/cookies` 权限关闭，网络只允许同前缀资源，不能绕过 API 访问私有对象。
 
 ### 15.4 构建 + 运行时校验
 
@@ -920,7 +949,7 @@ iframe sandbox（仅 `allow-scripts`，3D 加 `allow-pointer-lock`），`network
 ```text
 backend/app/
   agents/
-    graph.py            # 固定 LangGraph 图（22 功能节点 + failed/done）
+    graph.py            # 固定 LangGraph 图（24 功能节点 + failed/done）
     state.py            # GenerationState + STEP_META + 上限常量
     nodes.py            # 全部节点 + 条件边 + 启发式/3D 路由/QA
     prompts.py          # real 模式系统提示词（2D + 3D）
@@ -945,13 +974,13 @@ backend/app/
 本系统的 Multi-Agent 设计基于 Python + LangGraph，整体是一个工程化 Hybrid Workflow：
 
 ```text
-固定 LangGraph 主干（22 功能节点）
+固定 LangGraph 主干（24 功能节点）
 + 多段局部 Plan-and-Execute（intent→brief→mechanic→archetype→design→content→balance→code）
 + 两个 bounded ReAct repair loop（build repair ≤2 / gameplay repair ≤2）
 + 一次 constrained replan（≤1，回 balance_plan）
-+ 模型优先出码（2D 模板兜底 / 3D 纯模型）
++ 模型优先出码（2D Phaser/Vite/TS Author Team 或 scaffold 兜底 / 3D 纯模型）
 ```
 
-顶层由 LangGraph 编排，保证流程稳定、安全、可观测；规划层把创意逐步细化为可执行设计与数值；执行层产出受沙箱约束的三件套，经**静态校验 + 运行时玩法 QA** 两道闸后，以 `game-manifest/v1` 远端产物协议发布到 MinIO / S3，`manifest_url` 与 `GameVersion` 写入数据库。Play 页面通过后端从对象存储读取 manifest 与 `entry_url`，在 iframe sandbox 中运行游戏。
+顶层由 LangGraph 编排，保证流程稳定、安全、可观测；规划层把创意逐步细化为可执行设计与数值；执行层产出受工具白名单和 sandbox 约束的源码/静态产物，经**项目构建 + 静态校验 + 运行时玩法 QA** 三道闸后，以 `game-manifest/v1` 远端产物协议发布到私有 MinIO / S3，`manifest_url` 与 `GameVersion` 写入数据库。Play 页面通过后端读取 manifest 并生成带时效 token 的 `entry_url`，在 iframe sandbox 中运行游戏。
 
 该设计证明 Create 链路是真实的端到端 AI Agent 生成流程，而不是普通 CRUD、静态页面或本地写死组件。

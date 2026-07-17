@@ -52,6 +52,150 @@ def test_create_task_dimension_defaults_2d(client):
     assert t["dimension"] == "2d"
 
 
+def test_task_details_only_emit_summaries_for_steps_that_ran(client, db_session_factory):
+    from app.models import AgentStep
+    from app.models.common import StepStatus, now_utc
+
+    headers = auth_headers(client, email="step-summary@test.com", display_name="SS")
+    task_id = client.post("/tasks", json={"idea": "a strategy game", "asset_ids": []}, headers=headers).json()["task_id"]
+    db = db_session_factory()
+    finished_at = now_utc()
+    db.add_all(
+        [
+            AgentStep(
+                task_id=task_id,
+                seq=1,
+                agent="IntentSpecAgent",
+                name="Intent Spec",
+                status=StepStatus.DONE,
+                tokens=10,
+                attempt=1,
+                started_at=finished_at,
+                finished_at=finished_at,
+            ),
+            AgentStep(
+                task_id=task_id,
+                seq=2,
+                agent="GameplayPlanningAgent",
+                name="Gameplay Planning",
+                status=StepStatus.DONE,
+                tokens=20,
+                attempt=1,
+                started_at=finished_at,
+                finished_at=finished_at,
+            ),
+            AgentStep(
+                task_id=task_id,
+                seq=3,
+                agent="ArchetypeRouterAgent",
+                name="Archetype Router",
+                status=StepStatus.DONE,
+                tokens=0,
+                attempt=1,
+                started_at=finished_at,
+                finished_at=finished_at,
+            ),
+        ]
+    )
+    db.commit()
+    db.close()
+
+    response = client.get(f"/tasks/{task_id}", headers=headers)
+    assert response.status_code == 200
+    summaries = {summary["step"]: summary["status"] for summary in response.json()["step_summaries"]}
+    assert summaries == {
+        "intent_spec": "completed",
+        "gameplay_planning": "completed",
+        "archetype_router": "completed",
+    }
+
+
+def test_task_details_accept_author_team_activity_events(client, db_session_factory):
+    import json
+
+    from app.models import AgentLog, AgentStep
+    from app.models.common import StepStatus, now_utc
+
+    headers = auth_headers(client, email="author-team-event@test.com", display_name="ATE")
+    task_id = client.post("/tasks", json={"idea": "a puzzle game", "asset_ids": []}, headers=headers).json()["task_id"]
+    db = db_session_factory()
+    step = AgentStep(
+        task_id=task_id,
+        seq=1,
+        agent="GameCodeAgent",
+        name="Code Generation",
+        status=StepStatus.RUNNING,
+        tokens=0,
+        attempt=1,
+        started_at=now_utc(),
+    )
+    db.add(step)
+    db.flush()
+    db.add_all(
+        [AgentLog(
+            step_id=step.id,
+            seq=0,
+            line="author team started from frozen base abc123",
+            payload_json=json.dumps(
+                {
+                    "type": "author_team",
+                    "phase": "start",
+                    "base_revision": "abc123",
+                }
+            ),
+        ),
+        AgentLog(
+            step_id=step.id,
+            seq=1,
+            line="role budget reached",
+            payload_json=json.dumps(
+                {
+                    "type": "role_budget_exhausted",
+                    "agent": "RulesAndSimulationCoder",
+                    "operation": "authoring",
+                    "reason": "max_turns",
+                    "turns_limit": 6,
+                    "status": "partial",
+                }
+            ),
+        ),
+        AgentLog(
+            step_id=step.id,
+            seq=2,
+            line="repair attempt started",
+            payload_json=json.dumps(
+                {
+                    "type": "repair_attempt_started",
+                    "agent": "GameCodeAgentRepair",
+                    "operation": "repairing",
+                    "repair_kind": "build",
+                    "attempt": 1,
+                    "max_attempts": 2,
+                    "status": "running",
+                }
+            ),
+        )]
+    )
+    db.commit()
+    db.close()
+
+    response = client.get(f"/tasks/{task_id}", headers=headers)
+    assert response.status_code == 200
+    log = response.json()["logs"][-1]
+    assert log["step_id"] == step.id
+    assert [entry["cursor"] for entry in log["entries"]] == sorted(
+        entry["cursor"] for entry in log["entries"]
+    )
+    events = [entry["event"] for entry in log["entries"]]
+    assert events[0]["type"] == "author_team"
+    assert events[0]["phase"] == "start"
+    assert events[0]["base_revision"] == "abc123"
+    assert events[1]["type"] == "role_budget_exhausted"
+    assert events[1]["status"] == "partial"
+    assert events[2]["type"] == "repair_attempt_started"
+    assert events[2]["attempt"] == 1
+
+
 def test_create_task_dimension_invalid_rejected(client):
     h = auth_headers(client, email="t@t.com", display_name="T")
     r = client.post("/tasks", json={"idea": "x", "asset_ids": [], "dimension": "4d"}, headers=h)

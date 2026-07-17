@@ -1,6 +1,7 @@
 """Build validation and gameplay QA nodes for the GameWeave LangGraph pipeline."""
 # ruff: noqa: F401,F403,F405
 from app.agents.nodes_common import *
+from app.services.vite_projects import phaser_input_binding_errors
 
 
 # 脚手架自带的品质库文件：判定"游戏是否用了反馈特效/边界处理/素材"时要剔除,
@@ -11,8 +12,89 @@ _STOCK_KIT_FILES = {
     "src/systems/Sfx.ts",
     "src/systems/Bounds.ts",
     "src/systems/Backdrop.ts",
+    "src/systems/Probe.ts",
+    "src/systems/GameWeaveBridge.ts",
 }
-_NON_GAMEPLAY_FILES = _STOCK_KIT_FILES | {"src/config/gameConfig.ts"}
+_NON_GAMEPLAY_FILES = _STOCK_KIT_FILES | {
+    "src/config/gameConfig.ts",
+    # The frozen team contract repeats every requested capability verbatim.  It
+    # is evidence of planning, not implementation; including it makes token
+    # checks such as obstacle/save/settings appear wired when no runtime module
+    # imports them.
+    "src/contracts/AuthorContract.ts",
+}
+
+# Definitions and boot-time preload calls do not make settings, bindings, or
+# persistence reachable from gameplay.  Capability checks use the remaining
+# consumers so a discarded ``new SettingsService().load()`` cannot satisfy QA.
+_CAPABILITY_DECLARATION_FILES = _NON_GAMEPLAY_FILES | {
+    "src/adapters/SceneInputAdapter.ts",
+    "src/input/InputBindingService.ts",
+    "src/presentation/SettingsService.ts",
+    "src/scenes/BootScene.ts",
+    "src/ui/MenuControllers.ts",
+}
+
+# Scene keys that do not count as "gameplay reached" when reconciling runtime
+# probes (boot/menu/result shells around the actual play scene).
+_MENU_SCENE_KEYS = {
+    "boot", "bootscene", "preload", "preloadscene", "loading", "loadingscene",
+    "title", "titlescene", "menu", "menuscene", "mainmenu", "mainmenuscene",
+    "gameover", "gameoverscene", "result", "resultscene", "victory",
+    "victoryscene", "pause", "pausescene", "settings", "settingsscene",
+    "credits", "creditsscene",
+}
+
+_RUNTIME_EXPORT_RE = re.compile(
+    r"\bexport\s+(?:abstract\s+)?(?:class|function|const|enum|let|var)\s+([A-Za-z_$][\w$]*)"
+)
+
+
+def _usage_positions(source: str) -> str:
+    """Strip comments/strings/imports/re-exports/bare `void X` references so an
+    identifier match indicates real consumption (mirrors author_team's evidence
+    counting — `import X` plus `void X;` must not read as usage)."""
+    stripped = re.sub(r"/\*.*?\*/", " ", source, flags=re.DOTALL)
+    stripped = re.sub(r"//[^\r\n]*", " ", stripped)
+    stripped = re.sub(r'"(?:\\.|[^"\\])*"', " ", stripped)
+    stripped = re.sub(r"'(?:\\.|[^'\\])*'", " ", stripped)
+    stripped = re.sub(r"`(?:\\.|[^`\\])*`", " ", stripped, flags=re.DOTALL)
+    stripped = re.sub(r"\bimport\b[^;]*?;", " ", stripped)
+    stripped = re.sub(
+        r"\bexport\s+(?:\{[^}]*\}|\*(?:\s+as\s+[A-Za-z_$][\w$]*)?)\s*(?:from[^;]*)?;",
+        " ",
+        stripped,
+    )
+    return re.sub(r"\bvoid\s+[A-Za-z_$][\w$]*\s*(?=[;,)\]\r\n])", " ", stripped)
+
+
+def _dead_runtime_exports(source_files: list[dict]) -> list[tuple[str, str]]:
+    """Runtime-valued exports (class/const/function/enum) never referenced in a
+    usage position outside their defining file — systems and content the player
+    never experiences. e7ee0742 shipped 65/138 exports dead, including its
+    entire domain combat system, while every gate stayed green."""
+    modules: list[tuple[str, str, str]] = []
+    for item in source_files:
+        path = str(item.get("path") or "").replace("\\", "/")
+        if not path.startswith("src/") or not path.endswith((".ts", ".tsx")):
+            continue
+        if item.get("content_b64") is not None:
+            continue
+        content = str(item.get("content") or "")
+        modules.append((path, content, _usage_positions(content)))
+    dead: list[tuple[str, str]] = []
+    for path, content, _ in modules:
+        if path in _NON_GAMEPLAY_FILES or path.startswith("src/contracts/"):
+            continue
+        for symbol in _RUNTIME_EXPORT_RE.findall(content):
+            used = any(
+                other_path != path
+                and re.search(rf"\b{re.escape(symbol)}\b", other_usage) is not None
+                for other_path, _, other_usage in modules
+            )
+            if not used:
+                dead.append((symbol, path))
+    return dead
 
 
 def _sandbox_files_for_qa(files: list[dict], dimension: str | None = None) -> list[dict]:
@@ -40,6 +122,31 @@ def _sandbox_files_for_qa(files: list[dict], dimension: str | None = None) -> li
         if engine:
             payload.append({"path": "phaser.min.js", "content": engine.decode("utf-8")})
     return payload
+
+
+def _primary_play_source(source_files: list[dict]) -> str:
+    """Return the fixed scaffold's reachable gameplay scene, not menu prose."""
+
+    return "\n".join(
+        str(item.get("content") or "")
+        for item in source_files
+        if str(item.get("path") or "").replace("\\", "/")
+        == "src/scenes/PlayScene.ts"
+        and item.get("content_b64") is None
+    )
+
+
+def _literal_gameplay_font_sizes(source: str) -> list[int]:
+    """Collect literal Phaser text sizes that survive the embedded-canvas scale."""
+
+    sizes: list[int] = []
+    patterns = (
+        r"\b(?:textStyle|setFontSize)\s*\(\s*(\d{1,3})\b",
+        r"\bfontSize\s*:\s*[\"'](\d{1,3})px[\"']",
+    )
+    for pattern in patterns:
+        sizes.extend(int(value) for value in re.findall(pattern, source, re.IGNORECASE))
+    return sizes
 
 
 def _js_braced_body(source: str, body_start: int) -> str | None:
@@ -92,7 +199,10 @@ def _js_braced_body(source: str, body_start: int) -> str | None:
 
 
 def _js_method(source: str, name: str) -> tuple[list[str], str] | None:
-    match = re.search(rf"\b{re.escape(name)}\s*\(([^)]*)\)\s*{{", source)
+    match = re.search(
+        rf"\b{re.escape(name)}\s*\(([^)]*)\)\s*(?::\s*[^{{;=]+)?\s*{{",
+        source,
+    )
     if not match:
         return None
     params = [
@@ -208,6 +318,169 @@ def _phaser_destroyed_body_issues(js: str) -> list[str]:
     return issues
 
 
+def _js_update_top_level_code(body: str) -> str:
+    """Keep an update body's top-level code and mask nested blocks/comments/strings."""
+
+    out: list[str] = []
+    depth = 0
+    state = "code"
+    quote = ""
+    escaped = False
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        nxt = body[i + 1] if i + 1 < len(body) else ""
+        replacement = "\n" if ch == "\n" else " "
+        if state == "line_comment":
+            out.append(replacement)
+            if ch == "\n":
+                state = "code"
+        elif state == "block_comment":
+            out.append(replacement)
+            if ch == "*" and nxt == "/":
+                out.append(" ")
+                state = "code"
+                i += 1
+        elif state in {"string", "template"}:
+            out.append(replacement)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif state == "string" and ch == quote:
+                state = "code"
+            elif state == "template" and ch == "`":
+                state = "code"
+        elif ch == "/" and nxt == "/":
+            out.extend((" ", " "))
+            state = "line_comment"
+            i += 1
+        elif ch == "/" and nxt == "*":
+            out.extend((" ", " "))
+            state = "block_comment"
+            i += 1
+        elif ch in {"'", '"'}:
+            out.append(" ")
+            state = "string"
+            quote = ch
+            escaped = False
+        elif ch == "`":
+            out.append(" ")
+            state = "template"
+            escaped = False
+        elif ch == "{":
+            if depth == 0:
+                out.append(";")
+            else:
+                out.append(" ")
+            depth += 1
+        elif ch == "}":
+            depth = max(0, depth - 1)
+            out.append(";" if depth == 0 else " ")
+        else:
+            out.append(ch if depth == 0 else replacement)
+        i += 1
+    return "".join(out)
+
+
+def _topdown_uncontrolled_facing_issues(js: str) -> list[str]:
+    """Hard-fail only high-confidence, unconditional per-frame avatar spinning."""
+
+    actor = r"(?:(?:this)\s*\.\s*)?(?:playerSprite|player|hero|avatar)\b(?:\s*[!?])?"
+    timing = re.compile(r"(?:^|[^\w])_?(?:time|delta|elapsed|frame|tick)\w*\b|\b(?:performance|date)\s*\.\s*now", re.I)
+    stateful = re.compile(
+        r"\b(?:input|key|cursor|pointer|stick|aim|axis|direction|velocity|movement|move|"
+        r"state|mode|active|enabled|attack|dash|spin|turn|left|right)\w*\b",
+        re.I,
+    )
+
+    def high_confidence(code: str, match: re.Match, rhs: str) -> bool:
+        start = code.rfind(";", 0, match.start()) + 1
+        end = code.find(";", match.end())
+        segment = code[start : len(code) if end < 0 else end]
+        prefix = code[start : match.start()]
+        if re.search(r"\b(?:if|else|for|while|switch|case|catch)\b", prefix, re.I):
+            return False
+        if "=>" in prefix or "&&" in segment or "||" in segment or "?" in segment:
+            return False
+        if stateful.search(segment):
+            return False
+        compact = rhs.strip()
+        numeric_expression = bool(re.search(r"\d", compact)) and not re.search(r"[A-Za-z_$]", compact)
+        return bool(timing.search(compact) or numeric_expression)
+
+    patterns = [
+        re.compile(rf"{actor}\s*\.\s*(?:rotation|angle)\s*(?:\+=|-=)\s*(?P<rhs>[^;\n]+)", re.I),
+        re.compile(
+            rf"{actor}\s*\.\s*(?P<prop>rotation|angle)\s*=\s*{actor}\s*\.\s*(?P=prop)\s*[+-]\s*(?P<rhs>[^;\n]+)",
+            re.I,
+        ),
+        re.compile(rf"{actor}\s*\.\s*(?:rotation|angle)\s*=\s*(?P<rhs>[^;\n]+)", re.I),
+        re.compile(rf"{actor}\s*\.\s*set(?:Rotation|Angle)\s*\(\s*(?P<rhs>[^;\n]+)", re.I),
+    ]
+    update_re = re.compile(r"\bupdate\s*(?:\([^)]*\)[^{;=]*|=\s*\([^)]*\)\s*(?::[^=]+)?=>)\s*\{", re.I)
+    for update_match in update_re.finditer(js):
+        body = _js_braced_body(js, update_match.end())
+        if body is None:
+            continue
+        code = _js_update_top_level_code(body)
+        for pattern in patterns:
+            for match in pattern.finditer(code):
+                if high_confidence(code, match, match.group("rhs")):
+                    return [
+                        "top-down player rotation changes continuously every frame; derive facing from the latest "
+                        "non-zero movement/aim vector and keep it stable while idle"
+                    ]
+    return []
+
+
+def _topdown_generated_avatar_rotation_issues(js: str) -> list[str]:
+    """Reject rotating pose-sheet humanoids as if they were ship sprites.
+
+    Generated dungeon characters use upright pose frames.  Rotating the whole
+    body toward movement/aim makes those frames roll and turn upside down; the
+    weapon, reticle, telegraph, or projectile is the directional object instead.
+    """
+
+    direction = r"(?:direction|move(?:ment)?|velocity|aim|lastAim|facing)"
+    angle_value = rf"(?:{direction}\s*\.\s*angle\s*\(|Phaser\s*\.\s*Math\s*\.\s*Angle\s*\.\s*Between\s*\()"
+    explicit_player = r"(?:(?:this)\s*\.\s*)?(?:playerSprite|player|hero|avatar)\b"
+    direct_patterns = (
+        rf"{explicit_player}\s*\.\s*set(?:Rotation|Angle)\s*\([^;\n]*{angle_value}",
+        rf"{explicit_player}\s*\.\s*(?:rotation|angle)\s*=\s*[^;\n]*{angle_value}",
+    )
+    if any(re.search(pattern, js, re.I) for pattern in direct_patterns):
+        return [
+            "generated top-down avatar body rotates toward movement/aim; keep the humanoid pose-sheet "
+            "sprite at rotation 0, use pose frames/flipX for facing, and rotate only the weapon, reticle, "
+            "telegraphs, or projectiles"
+        ]
+
+    # Also catch a Player class rotating bare `this`, and the common generic
+    # faceDirection helper when the player is one of its callers.
+    for class_match in re.finditer(r"\bclass\s+\w*(?:Player|Hero|Avatar)\w*[^\{]*\{", js, re.I):
+        body = _js_braced_body(js, class_match.end()) or ""
+        if re.search(rf"\bthis\s*\.\s*(?:set(?:Rotation|Angle)\s*\(|(?:rotation|angle)\s*=)[^;\n]*{angle_value}", body, re.I):
+            return [
+                "generated top-down avatar body rotates toward movement/aim; keep the humanoid pose-sheet "
+                "sprite at rotation 0, use pose frames/flipX for facing, and rotate only the weapon, reticle, "
+                "telegraphs, or projectiles"
+            ]
+    helper_rotates = re.search(
+        rf"\bfaceDirection\s*\([^)]*\)\s*(?::[^\{{]+)?\{{[^\}}]*set(?:Rotation|Angle)\s*\([^;\n]*{angle_value}",
+        js,
+        re.I | re.S,
+    )
+    player_calls_helper = re.search(rf"{explicit_player}\s*\.\s*faceDirection\s*\(", js, re.I)
+    if helper_rotates and player_calls_helper:
+        return [
+            "generated top-down avatar body rotates toward movement/aim; keep the humanoid pose-sheet "
+            "sprite at rotation 0, use pose frames/flipX for facing, and rotate only the weapon, reticle, "
+            "telegraphs, or projectiles"
+        ]
+    return []
+
+
 def _gameplay_qa(state: dict) -> dict:
     """Model-first smoke QA: prove the artifact is a real, runnable game without
     second-guessing how the model wrote it. Hard-fail only on "this isn't a game";
@@ -249,6 +522,8 @@ def _gameplay_qa(state: dict) -> dict:
     ])
     if not has_input:
         issues.append("no input handling found")
+    authored_code = state.get("code_source") in {"author", "revision"}
+    issues.extend(phaser_input_binding_errors(source_files))
     if uses_phaser:
         issues.extend(_phaser_player_overlap_issues(js))
         # The modular Vite runtime is pinned to Phaser 3.90, where setTintFill
@@ -256,6 +531,34 @@ def _gameplay_qa(state: dict) -> dict:
         if not uses_vite:
             issues.extend(_phaser_removed_api_issues(js))
         issues.extend(_phaser_destroyed_body_issues(js))
+        topdown_hint = " ".join(
+            str(value or "").lower()
+            for value in (archetype, spec.get("genre"), spec.get("theme"))
+        )
+        if authored_code and any(
+            token in topdown_hint
+            for token in (
+                "topdown", "top-down", "top_down", "top down", "dungeon", "roguelike", "rogue-like",
+                "roguelite", "rogue-lite", "俯视", "俯視", "地牢", "地下城", "肉鸽", "肉鴿",
+            )
+        ):
+            issues.extend(_topdown_uncontrolled_facing_issues(js))
+            generated_assets = (state.get("asset_manifest") or {}).get("assets") or []
+            has_generated_sheet = any(
+                isinstance(asset, dict)
+                and str(asset.get("kind")) == "spritesheet"
+                and asset.get("frames")
+                for asset in generated_assets
+            )
+            humanoid_dungeon_hint = any(
+                token in topdown_hint
+                for token in (
+                    "dungeon", "roguelike", "rogue-like", "roguelite", "rogue-lite",
+                    "俯视", "俯視", "地牢", "地下城", "肉鸽", "肉鴿",
+                )
+            )
+            if has_generated_sheet and humanoid_dungeon_hint:
+                issues.extend(_topdown_generated_avatar_rotation_issues(js))
     has_restart = any(tok in low for tok in [
         "restart", "reset(", "replay", "again", "location.reload", '"rs"', "'rs'",
     ])
@@ -274,6 +577,7 @@ def _gameplay_qa(state: dict) -> dict:
 
     browser_result = None
     sandbox_error_code = None
+    visual_verdict = None
     if smoke_ok and validation_result.get("valid") and files:
         try:
             browser_result = sandbox_client.run_bundle(
@@ -281,7 +585,29 @@ def _gameplay_qa(state: dict) -> dict:
                 entry="index.html",
                 timeout_ms=settings.SANDBOX_TIMEOUT_MS,
                 simulate_input=True,
+                screenshot_always=settings.VISUAL_REVIEW_ENABLED,
             )
+            if (
+                not browser_result.skipped
+                and browser_result.timed_out
+                and browser_result.frames_observed == 0
+            ):
+                # 一次重试：宿主负载抖动/冷启动的 Chromium 会错过加载窗口，而
+                # "零帧超时"会被归类为 design 级失败触发整包重做——代价极不对称。
+                retry_result = sandbox_client.run_bundle(
+                    _sandbox_files_for_qa(files, state.get("dimension")),
+                    entry="index.html",
+                    timeout_ms=settings.SANDBOX_TIMEOUT_MS,
+                    simulate_input=True,
+                    screenshot_always=settings.VISUAL_REVIEW_ENABLED,
+                )
+                if not retry_result.skipped and (
+                    not retry_result.timed_out or retry_result.frames_observed > 0
+                ):
+                    warnings.append(
+                        "browser sandbox timed out once with zero frames; retry attempt succeeded"
+                    )
+                    browser_result = retry_result
         except sandbox_client.SandboxUnavailableError as exc:
             sandbox_error_code = TaskErrorCode.SANDBOX_UNAVAILABLE.value
             issues.append(f"browser sandbox unavailable — {_clip(exc, 180)}")
@@ -297,12 +623,55 @@ def _gameplay_qa(state: dict) -> dict:
                     issues.append(f"browser console error: {browser_result.console_errors[0]}")
                 if browser_result.requests_aborted:
                     issues.append(f"browser sandbox blocked request: {browser_result.requests_aborted[0]}")
+                if getattr(browser_result, "input_errors", None):
+                    warnings.append(
+                        "browser input probe errors: "
+                        + "; ".join(str(item) for item in browser_result.input_errors[:2])
+                    )
+                if (
+                    getattr(browser_result, "input_attempted", False)
+                    and getattr(browser_result, "visual_changed", None) is False
+                ):
+                    warnings.append(
+                        "browser input probe produced no visible page change; the start flow or advertised controls "
+                        "may be inert even though animation frames are running"
+                    )
+                if getattr(browser_result, "visual_probe_error", ""):
+                    warnings.append(
+                        "browser visual probe incomplete: "
+                        + _clip(browser_result.visual_probe_error, 180)
+                    )
                 has_interval_loop = "setinterval" in low
                 loop_observed = browser_result.frames_observed > 0 or browser_result.intervals_observed > 0
                 if not loop_observed and has_interval_loop:
                     warnings.append("browser sandbox observed zero animation frames; setInterval loop detected")
                 elif not loop_observed:
                     issues.append("browser sandbox observed no game-loop activity")
+
+                # 截图质量层：确定性空白屏探针 + VLM 软门禁。只在页面真的跑起来
+                # 且拿到截图时评审；评审自身故障一律降级为 warning（fail-open）。
+                screenshot_b64 = getattr(browser_result, "screenshot_b64", None)
+                if screenshot_b64 and loop_observed and not browser_result.timed_out:
+                    blank_reason = visual_review.blank_screen_reason(screenshot_b64)
+                    if blank_reason:
+                        issues.append(
+                            "browser screenshot shows an essentially blank play screen "
+                            f"while the loop is running — {blank_reason}"
+                        )
+                    elif state.get("use_real") and settings.VISUAL_REVIEW_ENABLED:
+                        visual_verdict = visual_review.review_screenshot(
+                            screenshot_b64,
+                            state.get("game_spec") or {},
+                            state.get("game_design") or {},
+                        )
+                        if visual_verdict is None:
+                            warnings.append("visual review unavailable; screenshot not judged")
+                        else:
+                            visual_issues, visual_warnings = visual_review.verdict_findings(
+                                visual_verdict
+                            )
+                            issues.extend(visual_issues)
+                            warnings.extend(visual_warnings)
 
     is_3d = state.get("dimension") == "3d"
     if is_3d:
@@ -328,8 +697,205 @@ def _gameplay_qa(state: dict) -> dict:
                 for f in source_files
                 if str(f.get("path") or "").endswith((".ts", ".tsx", ".js", ".mjs"))
                 and f.get("content_b64") is None
-                and str(f.get("path") or "") not in _NON_GAMEPLAY_FILES
+                and str(f.get("path") or "").replace("\\", "/") not in _NON_GAMEPLAY_FILES
             ).lower()
+            primary_play_source = _primary_play_source(source_files)
+            primary_play_low = primary_play_source.lower()
+
+            # 运行时行为对账（Probe）：脚手架探针报告"实际发生了什么"。探针缺失
+            # (旧包/模板回退)或模拟输入没到 gameplay 场景时一律不硬失败——QA 误报
+            # 在作者模式下是百万 token 级重生成死循环(2026-07-13 教训)。
+            probe_counts: dict[str, int] = {}
+            if browser_result is not None and not getattr(browser_result, "skipped", True):
+                probe_counts = dict(getattr(browser_result, "probes", {}) or {})
+            probe_ready = probe_counts.get("probe:ready", 0) > 0
+
+            def _probe_total(prefix: str) -> int:
+                return sum(
+                    count
+                    for key, count in probe_counts.items()
+                    if key == prefix or key.startswith(prefix + "|")
+                )
+
+            def _probe_details(prefix: str) -> list[str]:
+                return sorted(
+                    key.split("|", 1)[1]
+                    for key in probe_counts
+                    if key.startswith(prefix + "|")
+                )
+
+            scene_starts = _probe_details("scene:start")
+            gameplay_scenes_reached = [
+                key for key in scene_starts if key.strip().lower() not in _MENU_SCENE_KEYS
+            ]
+            if probe_ready and scene_starts and not gameplay_scenes_reached:
+                warnings.append(
+                    "simulated input never reached a gameplay scene (scenes started: "
+                    + ", ".join(scene_starts[:6])
+                    + ") — the start flow may need a clearer advertised input"
+                )
+            capability_sources = [
+                (
+                    str(f.get("path") or "").replace("\\", "/"),
+                    str(f.get("content") or "").lower(),
+                )
+                for f in source_files
+                if str(f.get("path") or "").endswith((".ts", ".tsx", ".js", ".mjs"))
+                and f.get("content_b64") is None
+                and str(f.get("path") or "").replace("\\", "/") not in _CAPABILITY_DECLARATION_FILES
+                # Barrel exports prove only that a type is available, not that
+                # a scene/controller constructs or calls it.
+                and not str(f.get("path") or "").replace("\\", "/").endswith("/index.ts")
+            ]
+            capability_low = "\n".join(content for _, content in capability_sources)
+            settings_service_low = next(
+                (
+                    str(f.get("content") or "").lower()
+                    for f in source_files
+                    if str(f.get("path") or "").replace("\\", "/")
+                    == "src/presentation/SettingsService.ts"
+                ),
+                "",
+            )
+            request_low = str(
+                state.get("normalized_prompt") or state.get("prompt") or ""
+            ).lower()
+            persistence_requested = any(
+                token in request_low
+                for token in (
+                    "存档", "存檔", "保存进度", "保存進度", "save game", "save progress",
+                    "persistent save", "persistence",
+                )
+            )
+            bridge_load_reachable = any(
+                re.search(
+                    r"\bgameweavebridge\s*\.\s*load(?:\s*<[^>]+>)?\s*\(",
+                    content,
+                )
+                is not None
+                for _, content in capability_sources
+            )
+            bridge_save_reachable = any(
+                re.search(r"\bgameweavebridge\s*\.\s*save\s*\(", content) is not None
+                for _, content in capability_sources
+            )
+            if authored_code and persistence_requested and not (
+                bridge_load_reachable and bridge_save_reachable
+            ):
+                issues.append(
+                    "the request requires save persistence, but reachable gameplay never loads and saves through "
+                    "the scaffold's GameWeaveBridge; a bridge wrapper or discarded BootScene load is not enough — "
+                    "wire a versioned run/settings snapshot through GameWeaveBridge.load()/save()"
+                )
+            settings_requested = any(
+                token in request_low
+                for token in (
+                    "设置", "設定", "settings", "options menu", "setting menu",
+                )
+            )
+            bindings_requested = any(
+                token in request_low
+                for token in (
+                    "按键修改", "按鍵修改", "按键设置", "按鍵設定", "键位", "鍵位",
+                    "key rebinding", "keybinding", "key binding", "remap controls", "rebind controls",
+                )
+            )
+            volume_requested = any(
+                token in request_low
+                for token in (
+                    "音量", "volume control", "volume settings", "master volume", "audio settings",
+                )
+            )
+            settings_service_reachable = any(
+                re.search(
+                    r"\b(?:new\s+settingsservice\s*\(|settingsservice\s*\.\s*(?:getinstance|instance|load)\b)",
+                    content,
+                )
+                is not None
+                for _, content in capability_sources
+            )
+            if authored_code and settings_requested and not settings_service_reachable:
+                issues.append(
+                    "the request requires functional settings, but SettingsService is never consumed by a gameplay/menu "
+                    "module; a discarded BootScene load or decorative pause-menu label is not reachable UI"
+                )
+            if authored_code and bindings_requested and ".requestrebind(" not in capability_low:
+                issues.append(
+                    "the request requires key rebinding, but no reachable menu/controller calls "
+                    "InputBindingService.requestRebind() and applies the resulting bindings to gameplay input"
+                )
+            volume_reachable = any(
+                token in capability_low for token in (".setmastervolume(", ".seteffectsgain(")
+            ) or (
+                settings_service_reachable
+                and ".setmastervolume(" in settings_service_low
+                and ".update(" in capability_low
+            )
+            if authored_code and volume_requested and not volume_reachable:
+                issues.append(
+                    "the request requires volume controls, but no reachable settings/menu path applies volume through "
+                    "Sfx.setMasterVolume() or the gameplay AudioService"
+                )
+
+            random_dungeon_requested = (
+                any(
+                    token in request_low
+                    for token in (
+                        "随机生成房间", "隨機生成房間", "随机地牢", "隨機地牢",
+                        "random dungeon", "randomly generated room", "procedural dungeon",
+                        "procedurally generated room",
+                    )
+                )
+                and any(
+                    token in request_low
+                    for token in ("地牢", "地下城", "dungeon", "房间", "房間", "room")
+                )
+            )
+            if authored_code and random_dungeon_requested:
+                generation_bodies = [
+                    method[1]
+                    for name in ("generateRooms", "generateDungeon", "buildRooms", "buildDungeon")
+                    if (method := _js_method(js, name)) is not None
+                ]
+                if generation_bodies and not any(
+                    re.search(r"\b(?:random|rng|shuffle|seeded|pick|sample)\b", body, re.I)
+                    for body in generation_bodies
+                ):
+                    issues.append(
+                        "the request requires a newly randomized dungeon each run, but the room-generation method returns "
+                        "a fixed room sequence; use the seeded RNG to vary the reachable room graph while preserving "
+                        "required chest, shop, trap, and Boss rooms"
+                    )
+            corridors_requested = any(
+                token in request_low
+                for token in (
+                    "走廊", "通道", "corridor", "hallway", "connected rooms", "room graph",
+                )
+            )
+            graph_connection_tokens = (
+                "connections", "neighbors", "neighbours", "exits", "nextroomids",
+                "adjacentids", "roomedges", "graph.edges",
+            )
+            has_room_graph = any(token in gameplay_low for token in graph_connection_tokens)
+            linear_room_progression = any(
+                re.search(pattern, gameplay_low) is not None
+                for pattern in (
+                    r"roomindex\s*\+=\s*1",
+                    r"roomindex\s*=\s*roomindex\s*\+\s*1",
+                    r"roomindex\s*\+\s*1",
+                )
+            )
+            if (
+                authored_code
+                and random_dungeon_requested
+                and corridors_requested
+                and (not has_room_graph or linear_room_progression)
+            ):
+                issues.append(
+                    "the request requires a connected random room-and-corridor graph, but gameplay still advances a "
+                    "linear roomIndex + 1 route (or stores no room connections); generate explicit reachable edges, "
+                    "offer branch choices at exits, and draw corridor lines between connected rooms on the map"
+                )
             fx_tokens = ["juice.", "tweens.add", "particles", ".shake(", "settintfill", "floattext(", ".flash("]
             feedback_fx = any(tok in gameplay_low for tok in fx_tokens)
             if not feedback_fx:
@@ -339,11 +905,32 @@ def _gameplay_qa(state: dict) -> dict:
                 )
             if "sfx." not in gameplay_low and "audiocontext" not in gameplay_low:
                 warnings.append("no audio usage detected (Sfx presets are available at src/systems/Sfx.ts)")
-            if state.get("code_source") == "author" and "gw_placeholder_gameplay" in gameplay_low:
+            if (authored_code or state.get("use_real")) and "gw_placeholder_gameplay" in gameplay_low:
                 issues.append(
                     "authored project still contains the GW_PLACEHOLDER_GAMEPLAY placeholder; "
                     "replace it with the designed gameplay"
                 )
+
+            presentation_source = "\n".join(
+                str(f.get("content") or "")
+                for f in source_files
+                if str(f.get("path") or "").replace("\\", "/").startswith(
+                    ("src/scenes/", "src/ui/", "src/presentation/")
+                )
+                and f.get("content_b64") is None
+            )
+            literal_font_sizes = _literal_gameplay_font_sizes(presentation_source)
+            small_font_sizes = [size for size in literal_font_sizes if size < 16]
+            if len(small_font_sizes) >= 3:
+                readability_msg = (
+                    "gameplay UI uses multiple source fonts below 16px; the 1280x720 canvas is commonly embedded "
+                    "near 840px wide, shrinking essential HUD and instruction text below readable size. Keep primary "
+                    "gameplay text at least 18px and secondary text at least 16px"
+                )
+                if authored_code:
+                    issues.append(readability_msg)
+                else:
+                    warnings.append(readability_msg)
             # 出界防线：用了物理速度/追踪移动却没有任何世界边界处理 —— 敌人会
             # 漂出场外滞留。作者产物走修复回环,模板/修订只提示。
             moves = any(tok in gameplay_low for tok in ["setvelocity", "movetoobject", "moveto("])
@@ -356,7 +943,7 @@ def _gameplay_qa(state: dict) -> dict:
                     "moving physics bodies but no world-edge handling found: use the scaffold's Bounds system "
                     "(collideWorld/clamp/wrap/despawnOutside) so actors cannot drift out of the arena"
                 )
-                if state.get("code_source") == "author":
+                if authored_code:
                     issues.append(bounds_msg)
                 else:
                     warnings.append(bounds_msg)
@@ -382,16 +969,98 @@ def _gameplay_qa(state: dict) -> dict:
                     "generated sprite sheet is preloaded but never used: build sprites and animations "
                     "from gameConfig.sheet frames instead of procedural shapes"
                 )
-                if state.get("code_source") == "author":
+                if authored_code:
                     issues.append(sheet_msg)
                 else:
                     warnings.append(sheet_msg)
-            if has_bg_asset and not any(
-                tok in gameplay_low
-                for tok in ["backdrop.", "assetkeys.background", "'background'", '"background"']
+            if has_bg_asset:
+                # 事实优先级：沙箱重放的 backdrop:draw 探针 > 源码 token。探针证明
+                # gameplay 场景真的画了背景时，token 检查直接跳过（防止自定义封装
+                # 被 token 检查误伤）；探针证明没画时，即使 token 在（死分支）也算。
+                backdrop_gameplay_draws = [
+                    key
+                    for key in _probe_details("backdrop:draw")
+                    if key.strip().lower() not in _MENU_SCENE_KEYS
+                ]
+                background_tokens = (
+                    "backdrop.draw",
+                    "backdrop.swap",
+                    "assetkeys.backgrounds",
+                    "assetkeys.background",
+                )
+                background_anywhere = any(tok in gameplay_low for tok in background_tokens)
+                background_in_play = any(tok in primary_play_low for tok in background_tokens)
+                background_msg = None
+                if backdrop_gameplay_draws:
+                    background_msg = None  # runtime proof: backdrop rendered in gameplay
+                elif probe_ready and gameplay_scenes_reached:
+                    drawn_in = _probe_details("backdrop:draw")
+                    background_msg = (
+                        "generated backdrop never rendered in the reachable gameplay scene during the sandbox replay "
+                        + (f"(Backdrop.draw only ran in: {', '.join(drawn_in[:4])})" if drawn_in else "(Backdrop.draw never ran)")
+                        + "; call Backdrop.draw() from the primary gameplay scene's create() and keep large arena "
+                        "panels translucent enough for the art to remain visible"
+                    )
+                elif not background_anywhere:
+                    background_msg = (
+                        "generated background image is preloaded but never displayed; call Backdrop.draw() from the "
+                        "primary gameplay scene and keep large arena panels translucent enough for the art to remain visible"
+                    )
+                elif primary_play_source and not background_in_play:
+                    background_msg = (
+                        "generated background is used only outside PlayScene (for example on the title screen); render it "
+                        "in reachable gameplay with Backdrop.draw()/swap() and preserve contrast with translucent play surfaces"
+                    )
+                if background_msg:
+                    if authored_code:
+                        issues.append(background_msg)
+                    else:
+                        warnings.append(background_msg)
+
+            # 生成的动画帧组必须真的播放过：帧组是花钱生成的核心视觉资产，
+            # anims:play 探针为零意味着演员全程单帧(读作半成品)。软告警进修复
+            # 简报——手动 setTexture 轮换是少数合法路径，不硬失败。
+            has_sheet_animations = any(
+                isinstance(a, dict)
+                and str(a.get("kind")) == "spritesheet"
+                and isinstance(a.get("animations"), dict)
+                and a.get("animations")
+                for a in manifest_assets
+            )
+            if (
+                probe_ready
+                and gameplay_scenes_reached
+                and has_sheet_animations
+                and _probe_total("anims:play") == 0
             ):
                 warnings.append(
-                    "generated background image is preloaded but never displayed (Backdrop.draw keeps it visible)"
+                    "generated animation groups never played during the sandbox replay (no anims:play probes): "
+                    "wire the sheet animation groups through anims.create()/play() — actors that never change "
+                    "frame read as unfinished"
+                )
+
+            # 设计敌人名册 vs 运行时 spawn 探针：声明了 >=2 种敌人却零 spawn 上报,
+            # 要么开局数秒无战斗、要么 spawn 点没接 Probe.spawn —— 两者都值得修,
+            # 但都不该硬失败(沙箱窗口短)。
+            design_entities = (state.get("game_design") or {}).get("entities") or []
+            enemy_roster = [
+                str(entity.get("name") or entity.get("id") or "").strip()
+                for entity in design_entities
+                if isinstance(entity, dict)
+                and str(entity.get("role") or "").strip().lower().startswith(("enemy", "boss"))
+            ]
+            if (
+                probe_ready
+                and gameplay_scenes_reached
+                and len(enemy_roster) >= 2
+                and _probe_total("spawn:enemy") == 0
+                and _probe_total("spawn:boss") == 0
+            ):
+                warnings.append(
+                    f"declared enemy roster never spawned during the sandbox replay: the design lists "
+                    f"{len(enemy_roster)} enemy/boss archetypes but no spawn:enemy/spawn:boss probes fired — "
+                    "either combat never starts in the first seconds or actor spawn points are missing "
+                    'Probe.spawn("enemy", id) instrumentation'
                 )
             # 阻挡类实体防线:设计声明了 obstacle 桶实体(掩体/墙/平台/砖块...),
             # 玩法代码却毫无对应痕迹 —— 枪战没掩体就退化成空场对枪(2026-07-12
@@ -408,10 +1077,24 @@ def _gameplay_qa(state: dict) -> dict:
                     "spawn them as static or destructible physics bodies (their sheet frames are generated; "
                     "resolve via sheetFrame()) that actually block movement and projectiles"
                 )
-                if state.get("code_source") == "author":
+                if authored_code:
                     issues.append(obstacle_msg)
                 else:
                     warnings.append(obstacle_msg)
+            # 死导出报告：角色层建好却没人接线的系统/内容(玩家永远体验不到)。
+            # 只作 warning + 修复简报素材,绝不硬失败——存在合法的少量未用导出。
+            if authored_code:
+                dead_exports = _dead_runtime_exports(source_files)
+                if len(dead_exports) >= 3:
+                    preview = ", ".join(
+                        f"{symbol} ({path})" for symbol, path in dead_exports[:12]
+                    )
+                    warnings.append(
+                        f"dead runtime exports: {len(dead_exports)} exported classes/consts/functions are never "
+                        f"used outside their defining file — content the player never experiences: {preview}"
+                        + (" …" if len(dead_exports) > 12 else "")
+                        + ". Wire them into reachable gameplay or delete them"
+                    )
         if archetype == "vertical_shooter":
             if not _has_any(low, ["bullet", "shoot", "fire", "projectile", "laser"]):
                 warnings.append("shooter has no obvious projectile logic")
@@ -434,6 +1117,24 @@ def _gameplay_qa(state: dict) -> dict:
             "sandbox_frames": None if browser_result is None else browser_result.frames_observed,
             "sandbox_intervals": None if browser_result is None else browser_result.intervals_observed,
             "sandbox_load_ms": None if browser_result is None else browser_result.load_ms,
+            "sandbox_input_attempted": None
+            if browser_result is None
+            else getattr(browser_result, "input_attempted", False),
+            "sandbox_inputs_sent": []
+            if browser_result is None
+            else list(getattr(browser_result, "inputs_sent", []) or []),
+            "sandbox_visual_changed": None
+            if browser_result is None
+            else getattr(browser_result, "visual_changed", None),
+            "sandbox_visual_change_ratio": None
+            if browser_result is None
+            else getattr(browser_result, "visual_change_ratio", None),
+            "sandbox_probes": None
+            if browser_result is None
+            else dict(
+                sorted((getattr(browser_result, "probes", {}) or {}).items())[:60]
+            ),
+            "visual_review": visual_verdict,
             ("uses_three_webgl" if is_3d else "uses_gradient_or_glow"): depth_metric,
         },
         "error_code": sandbox_error_code,
@@ -464,6 +1165,40 @@ def _gameplay_qa_log_lines(result: dict) -> list[str]:
                 f"frames={m.get('sandbox_frames')}, intervals={m.get('sandbox_intervals')}, "
                 f"load_ms={m.get('sandbox_load_ms')}"
             )
+            if m.get("sandbox_input_attempted"):
+                lines.append(
+                    "browser input/visual probe: "
+                    f"inputs={len(m.get('sandbox_inputs_sent') or [])}, "
+                    f"visual_changed={m.get('sandbox_visual_changed')}, "
+                    f"change_ratio={m.get('sandbox_visual_change_ratio')}"
+                )
+            probes = m.get("sandbox_probes") or {}
+            if probes:
+                def _total(prefix: str) -> int:
+                    return sum(
+                        count for key, count in probes.items()
+                        if key == prefix or key.startswith(prefix + "|")
+                    )
+                scenes = sorted(
+                    key.split("|", 1)[1]
+                    for key in probes
+                    if key.startswith("scene:start|")
+                )
+                lines.append(
+                    "runtime probes: "
+                    f"ready={probes.get('probe:ready', 0)}, scenes={','.join(scenes) or '-'}, "
+                    f"backdrop_draws={_total('backdrop:draw')}, anims_plays={_total('anims:play')}, "
+                    f"enemy_spawns={_total('spawn:enemy') + _total('spawn:boss')}, "
+                    f"projectiles={_total('projectile:spawn')}"
+                )
+    review = m.get("visual_review")
+    if review:
+        strengths = "; ".join(review.get("strengths") or [])
+        lines.append(
+            f"visual review: aesthetics {review.get('aesthetic_score')}/5, "
+            f"readability {review.get('readability_score')}/5"
+            + (f"; strengths: {strengths}" if strengths else "")
+        )
     if result.get("warnings"):
         lines.append("quality warnings: " + "; ".join(result["warnings"][:4]))
     if result.get("issues"):
@@ -563,6 +1298,8 @@ __all__ = [
     '_phaser_player_overlap_issues',
     '_phaser_removed_api_issues',
     '_phaser_destroyed_body_issues',
+    '_topdown_uncontrolled_facing_issues',
+    '_topdown_generated_avatar_rotation_issues',
     '_gameplay_qa',
     '_gameplay_qa_log_lines',
     'build_validation_node',

@@ -1,13 +1,50 @@
-"""Archetype routing and balance planning helpers."""
+"""Gameplay-family routing and advisory balance planning helpers."""
+
+import re
 
 from app.agents.nodes_common import _ARCHETYPES, _ARCHETYPES_3D, _has_any
 
 
+_LEGACY_GENRE_TO_ARCHETYPE = {
+    "shooter": "vertical_shooter",
+    "puzzle": "logic_grid",
+    "runner": "lane_runner",
+    "collector": "topdown_collect",
+}
+
+
+def _native_archetype(genre: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", genre.lower()).strip("_")
+    return slug or "custom_2d"
+
+
 def _route_archetype(spec: dict, prompt: str, brief: dict | None = None, mechanics: dict | None = None) -> dict:
+    genre = str(spec.get("genre") or "").strip().lower()
+    explicit_family = _LEGACY_GENRE_TO_ARCHETYPE.get(genre)
+    if explicit_family:
+        meta = _ARCHETYPES[explicit_family]
+        return {
+            "archetype": explicit_family,
+            "genre": genre,
+            "label": meta["label"],
+            "core_loop": spec.get("core_loop") or meta["loop"],
+            "reason": f"model genre: {genre}",
+            "legacy_family": True,
+        }
+    if genre and genre != "arcade":
+        archetype = _native_archetype(genre)
+        return {
+            "archetype": archetype,
+            "genre": genre,
+            "label": f"model-authored {genre.replace('_', ' ')}",
+            "core_loop": spec.get("core_loop") or "implement the model-authored core loop",
+            "reason": "model genre preserved; no legacy template coercion",
+            "legacy_family": False,
+        }
     if mechanics and mechanics.get("archetype_hint") in _ARCHETYPES:
         archetype = mechanics["archetype_hint"]
         meta = _ARCHETYPES[archetype]
-        return {"archetype": archetype, "genre": meta["genre"], "label": meta["label"], "core_loop": meta["loop"], "reason": "mechanic planner hint"}
+        return {"archetype": archetype, "genre": meta["genre"], "label": meta["label"], "core_loop": meta["loop"], "reason": "mechanic planner hint for generic arcade genre", "legacy_family": True}
     text = " ".join(
         str(value)
         for value in [
@@ -36,11 +73,10 @@ def _route_archetype(spec: dict, prompt: str, brief: dict | None = None, mechani
         archetype = "topdown_collect"
         reason = "collection/exploration keywords"
     else:
-        genre = str(spec.get("genre") or "").lower()
-        archetype = "vertical_shooter" if genre == "shooter" else "logic_grid" if genre == "puzzle" else "lane_runner" if genre == "runner" else "topdown_collect"
-        reason = f"genre fallback: {genre or 'arcade'}"
+        archetype = "topdown_collect"
+        reason = f"generic arcade fallback: {genre or 'unspecified'}"
     meta = _ARCHETYPES[archetype]
-    return {"archetype": archetype, "genre": meta["genre"], "label": meta["label"], "core_loop": meta["loop"], "reason": reason}
+    return {"archetype": archetype, "genre": meta["genre"], "label": meta["label"], "core_loop": meta["loop"], "reason": reason, "legacy_family": True}
 
 
 def _route_archetype_3d(spec: dict, prompt: str, brief: dict | None = None, mechanics: dict | None = None) -> dict:
@@ -76,21 +112,45 @@ def _difficulty_factor(prompt: str) -> float:
     return 1.0
 
 
+def _decision_timing_model(spec: dict, prompt: str) -> str:
+    text = " ".join(
+        str(value)
+        for value in (spec.get("genre"), spec.get("core_loop"), prompt)
+        if value
+    ).lower()
+    if _has_any(text, ["turn-based", "turn based", "turn_based", "per turn", "回合"]):
+        return "turn_based"
+    if _has_any(text, ["puzzle", "logic", "card", "board", "strategy", "解谜", "策略", "棋", "牌"]):
+        return "discrete"
+    return "model_authored"
+
+
 def _balance_plan(archetype: str, spec: dict, prompt: str) -> dict:
     factor = _difficulty_factor(prompt)
+    if archetype not in _ARCHETYPES:
+        return {
+            "mode": "design_driven",
+            "genre": str(spec.get("genre") or archetype),
+            "timing_model": _decision_timing_model(spec, prompt),
+            "decision_model": "model_authored",
+            "qa": {
+                "requires_genre_fidelity": True,
+                "requires_reachable_win_loss": True,
+                "requires_readable_feedback": True,
+            },
+        }
     if archetype == "logic_grid":
         return {
-            "round_seconds": int(72 / max(0.92, min(1.12, factor))),
-            "target_score": 360,
-            "lives": 3,
-            "player_speed": 260,
-            "hazard_speed": 120,
-            "hazard_spawn_ms": 1400,
-            "collectible_speed": 120,
-            "collectible_spawn_ms": 900,
-            "max_hazards": 4,
-            "lanes": 3,
-            "qa": {"min_round_seconds": 45, "requires_solution_path": True},
+            "mode": "decision_driven",
+            "timing_model": "discrete",
+            "decision_model": "move_efficiency",
+            "decision_window_seconds": int(72 / max(0.92, min(1.12, factor))),
+            "hint_delay_seconds": 18,
+            "qa": {
+                "min_decision_window_seconds": 45,
+                "requires_solution_path": True,
+                "requires_readable_board_state": True,
+            },
         }
     if archetype == "lane_runner":
         return {
@@ -131,7 +191,8 @@ def _merge_balance_into_design(design: dict, archetype: str, balance: dict) -> d
     merged = dict(design or {})
     merged["archetype"] = archetype
     rules = dict(merged.get("rules") if isinstance(merged.get("rules"), dict) else {})
-    rules.setdefault("survive_seconds", balance.get("round_seconds", 55))
+    if balance.get("round_seconds") is not None:
+        rules.setdefault("survive_seconds", balance["round_seconds"])
     merged["rules"] = rules
     merged["balance"] = balance
     return merged

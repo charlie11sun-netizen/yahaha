@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from app.agents import llm, tracing, validation
-from app.agents.agent_tools import _make_tools
+from app.agents.agent_tools import AgentToolPolicy, _make_tools
 from app.agents.author_runner import (
     _3D_NOTE,
     _AUTHOR_INSTRUCTIONS,
@@ -21,6 +21,7 @@ from app.agents.author_runner import (
     enabled,
     run_author,
     run_repair,
+    run_revision,
 )
 from app.agents.patch_execution import (
     AppliedPatchDelta,
@@ -46,6 +47,7 @@ from app.agents.repair_session import (
 from app.core.config import settings
 
 __all__ = [
+    "AgentToolPolicy",
     "AppliedPatchDelta",
     "PatchFileChange",
     "PatchOperationKind",
@@ -57,5 +59,6 @@ __all__ = [
     "enabled",
     "run_author",
     "run_repair",
+    "run_revision",
     "verify_patch_operation",
 ]

@@ -40,8 +40,8 @@ from app.services.provider_router import (
     MediaRequest,
     ProviderConfigurationError,
     ProviderGenerationError,
-    ProviderStreamProtocolError,
     ProviderRouter,
+    ProviderStreamProtocolError,
 )
 from app.services.tilemaps import (
     TILE_SIZE,
@@ -586,6 +586,54 @@ def _dilate_rgb_into_transparent(data: list, width: int, height: int, passes: in
     return data
 
 
+_COMPRESS_MIN_BYTES = 262_144
+_COMPRESS_KEEP_RATIO = 0.85
+
+
+def _compress_image_asset(
+    content: bytes, content_type: str, extension: str, *, keep_alpha: bool
+) -> tuple[bytes, str, str]:
+    """Re-encode large raster assets as WebP.
+
+    Provider PNGs run 1.5-2.7MB each; a bundle of sheets and background
+    variants pushed total payloads past 14MB and browser load times past 20s.
+    Sprite sheets keep alpha (lossless vs q95, whichever is smaller); plain
+    backgrounds go lossy q85. The original is kept when WebP does not win by
+    a meaningful margin, so this can never make a bundle worse.
+    """
+    lowered = (content_type or "").lower()
+    if len(content) < _COMPRESS_MIN_BYTES or ("png" not in lowered and "jpeg" not in lowered):
+        return content, content_type, extension
+    try:
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(content))
+        candidates: list[bytes] = []
+        if keep_alpha:
+            rgba = img.convert("RGBA")
+            for kwargs in (
+                {"lossless": True, "method": 4},
+                {"quality": 95, "method": 5},
+            ):
+                out = io.BytesIO()
+                rgba.save(out, format="WEBP", **kwargs)
+                candidates.append(out.getvalue())
+        else:
+            out = io.BytesIO()
+            img.convert("RGB").save(out, format="WEBP", quality=85, method=5)
+            candidates.append(out.getvalue())
+        best = min(candidates, key=len)
+        if len(best) <= len(content) * _COMPRESS_KEEP_RATIO:
+            return best, "image/webp", ".webp"
+    except Exception:  # noqa: BLE001 - compression is best-effort
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "image asset compression failed; keeping original"
+        )
+    return content, content_type, extension
+
+
 def _postprocess_spritesheet(raw: bytes, content_type: str) -> bytes:
     """Normalize a generated sheet: exact size + real alpha transparency."""
     if "svg" in (content_type or "").lower():
@@ -726,19 +774,27 @@ def _screen_size(design: dict) -> tuple[int, int]:
 
 
 def _generate_with_retry(router: ProviderRouter, request: MediaRequest, logs: list[str], key: str):
-    """One retry on generation errors: TLS to gateways is observably flaky
-    (2026-07-13: sheet call died with SSL EOF while the very next background
-    call on the same adapter succeeded). Configuration errors don't heal, so
-    they are not retried."""
-    try:
-        return router.generate(request)
-    except ProviderStreamProtocolError:
-        # A completed image may have been created upstream even when a broken
-        # gateway closes its SSE body. Retrying could double-charge the user.
-        raise
-    except ProviderGenerationError as exc:
-        logs.append(f"{key}: attempt 1 failed ({_clip_text(exc, 140)}); retrying once")
-        return router.generate(request)
+    """Retry ordinary generation errors before requiring manual retry.
+
+    Configuration failures do not heal. An invalid/empty final streaming event
+    is also not retried because the provider may already have generated and
+    billed the image; repeating it can duplicate both output and cost.
+    """
+    retries = max(0, min(4, int(settings.ASSET_PROVIDER_MAX_RETRIES)))
+    attempts = retries + 1
+    for attempt in range(1, attempts + 1):
+        try:
+            return router.generate(request)
+        except ProviderStreamProtocolError:
+            raise
+        except ProviderGenerationError as exc:
+            if attempt >= attempts:
+                raise
+            logs.append(
+                f"{key}: attempt {attempt} failed ({_clip_text(exc, 140)}); "
+                f"retrying attempt {attempt + 1}/{attempts}"
+            )
+    raise AssertionError("asset generation retry loop exited unexpectedly")
 
 
 def _produce_media(router: ProviderRouter, item: PlannedAsset) -> tuple:
@@ -818,10 +874,13 @@ def generate_game_assets(state: dict, router: ProviderRouter | None = None) -> d
                 if isinstance(error, ProviderConfigurationError):
                     detail = "could not start because the image provider is not configured correctly"
                 else:
-                    detail = "failed after the automatic retry"
+                    detail = (
+                        f"failed after {max(0, int(settings.ASSET_PROVIDER_MAX_RETRIES))} "
+                        "automatic retries"
+                    )
                 raise AssetGenerationRetryRequired(
                     f"Image asset '{item.key}' {detail}: {_clip_text(error, 220)}. "
-                    "Generation is paused; retry the failed step manually."
+                    "Generation is paused; waiting for manual retry."
                 ) from error
             if not settings.ASSET_GENERATION_FAIL_OPEN:
                 raise error
@@ -843,8 +902,21 @@ def generate_game_assets(state: dict, router: ProviderRouter | None = None) -> d
                     f"({SHEET_GRID}x{SHEET_GRID} grid, {len(item.sheet_cells)} named frames, "
                     f"{len(item.sheet_groups)} animated actor(s))"
                 )
-            except Exception as exc:  # noqa: BLE001 —— 后处理失败回退为整图
-                logs.append(f"{item.key}: spritesheet postprocess failed ({exc}); shipping as plain image")
+            except Exception as exc:  # noqa: BLE001 —— invalid generated image requires manual retry
+                raise AssetGenerationRetryRequired(
+                    f"Image asset '{item.key}' was generated but could not be normalized as a spritesheet: "
+                    f"{_clip_text(exc, 220)}. Generation is paused; waiting for manual retry."
+                ) from exc
+        if kind in {"image", "spritesheet"}:
+            original_bytes = len(content)
+            content, content_type, extension = _compress_image_asset(
+                content, content_type, extension, keep_alpha=(kind == "spritesheet")
+            )
+            if extension == ".webp" and original_bytes != len(content):
+                logs.append(
+                    f"{item.key}: recompressed to WebP "
+                    f"({original_bytes // 1024}KB -> {len(content) // 1024}KB)"
+                )
         runtime_path = f"assets/{item.key}{extension}"
         artifacts.append(binary_artifact(f"public/{runtime_path}", content, content_type))
         manifest_entries.append(
@@ -870,7 +942,19 @@ def generate_game_assets(state: dict, router: ProviderRouter | None = None) -> d
             media, error, tileset_logs = tileset_result
             logs.extend(tileset_logs)
             if error is not None:
-                logs.append(f"tileset: generation failed ({_clip_text(error, 140)}); using palette fallback tileset")
+                if not isinstance(error, (ProviderConfigurationError, ProviderGenerationError)):
+                    raise error
+                if isinstance(error, ProviderConfigurationError):
+                    detail = "could not start because the image provider is not configured correctly"
+                else:
+                    detail = (
+                        f"failed after {max(0, int(settings.ASSET_PROVIDER_MAX_RETRIES))} "
+                        "automatic retries"
+                    )
+                raise AssetGenerationRetryRequired(
+                    f"Image asset 'tileset' {detail}: {_clip_text(error, 220)}. "
+                    "Generation is paused; waiting for manual retry."
+                ) from error
             else:
                 try:
                     tileset_png = _postprocess_tileset(media.content, media.content_type)
@@ -879,8 +963,11 @@ def generate_game_assets(state: dict, router: ProviderRouter | None = None) -> d
                         f"tileset: generated via {media.provider}/{media.model}, "
                         f"normalized to {TILESET_IMAGE_SIZE}px tile grid"
                     )
-                except Exception as exc:  # noqa: BLE001 —— 装饰性资产,回退程序化
-                    logs.append(f"tileset: generation failed ({_clip_text(exc, 140)}); using palette fallback tileset")
+                except Exception as exc:  # noqa: BLE001 —— invalid generated image requires manual retry
+                    raise AssetGenerationRetryRequired(
+                        "Image asset 'tileset' was generated but could not be normalized: "
+                        f"{_clip_text(exc, 220)}. Generation is paused; waiting for manual retry."
+                    ) from exc
         screen_width, screen_height = _screen_size(design)
         seed = str(state.get("task_id") or state.get("prompt") or archetype)
         tilemap = generate_tilemap_artifacts(

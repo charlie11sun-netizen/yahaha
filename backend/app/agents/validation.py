@@ -216,6 +216,115 @@ def _js_completeness_error(source: str) -> str | None:
     return None
 
 
+def _source_position(source: str, offset: int) -> tuple[int, int]:
+    """Return a stable one-based line/column for an offset in generated source."""
+
+    prefix = source[: max(0, offset)]
+    line = prefix.count("\n") + 1
+    last_newline = prefix.rfind("\n")
+    column = len(prefix) + 1 if last_newline < 0 else len(prefix) - last_newline
+    return line, column
+
+
+def _source_diagnostic(
+    *,
+    code: str,
+    path: str,
+    message: str,
+    rule: str,
+    line: int | None = None,
+    column: int | None = None,
+) -> dict:
+    return {
+        "code": code,
+        "path": path,
+        "line": line,
+        "column": column,
+        "rule": rule,
+        "message": message,
+    }
+
+
+def validate_source_edit(
+    path: str,
+    content: str,
+    *,
+    max_bytes: int = MAX_FILE_BYTES,
+) -> list[dict]:
+    """Fast, file-local guard used before an agent edit is committed.
+
+    This deliberately does not typecheck imports or require a complete bundle. Those
+    checks remain in ``run_checks`` and the outer build node. The guard only rejects
+    defects attributable to the proposed file itself, so a repair agent can still
+    fix one failing file at a time.
+    """
+
+    raw_path = str(path or "")
+    try:
+        normalized = normalize_artifact_path(raw_path)
+    except ArtifactError as exc:
+        return [
+            _source_diagnostic(
+                code="invalid_path",
+                path=raw_path,
+                rule="artifact_path",
+                message=str(exc),
+            )
+        ]
+    if any(not _BUNDLE_SEGMENT_RE.match(part) for part in normalized.split("/")):
+        return [
+            _source_diagnostic(
+                code="invalid_path",
+                path=normalized,
+                rule="artifact_path",
+                message=f"invalid file path {normalized!r}",
+            )
+        ]
+
+    source = str(content or "")
+    diagnostics: list[dict] = []
+    size = len(source.encode("utf-8"))
+    if size > max_bytes:
+        diagnostics.append(
+            _source_diagnostic(
+                code="file_too_large",
+                path=normalized,
+                rule="max_file_bytes",
+                message=f"{normalized} would be {size}B, over the {max_bytes // 1000}KB limit",
+            )
+        )
+
+    if normalized.endswith((".html", ".js", ".mjs", ".ts", ".tsx")):
+        for pattern, label in FORBIDDEN_PATTERNS:
+            for match in re.finditer(pattern, source, re.IGNORECASE):
+                line, column = _source_position(source, match.start())
+                diagnostics.append(
+                    _source_diagnostic(
+                        code="forbidden_api",
+                        path=normalized,
+                        line=line,
+                        column=column,
+                        rule=label,
+                        message=f"forbidden API in {normalized}: {label}",
+                    )
+                )
+
+    if normalized.endswith((".js", ".mjs", ".ts", ".tsx")):
+        incomplete = _js_completeness_error(source)
+        if incomplete:
+            line_match = re.search(r"line (\d+)", incomplete)
+            diagnostics.append(
+                _source_diagnostic(
+                    code="incomplete_source",
+                    path=normalized,
+                    line=int(line_match.group(1)) if line_match else None,
+                    rule="delimiter_balance",
+                    message=f"{normalized} appears incomplete: {incomplete}",
+                )
+            )
+    return diagnostics
+
+
 def validate_files(files: list[dict], bundle_type: str = "legacy-bundle/v1") -> dict:
     normalized_files: list[tuple[str, dict]] = []
     errors: list[str] = []

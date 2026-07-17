@@ -1,9 +1,11 @@
 """In-memory repair workspace and pure tool implementations for code agents."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher, unified_diff
 from fnmatch import fnmatch
@@ -33,6 +35,7 @@ _MAX_SEARCH_MATCHES = 24
 _MAX_DIFF_CHARS = 12000
 _MAX_PATCH_OPERATIONS = 16
 _MAX_READ_PATHS = 16
+_MAX_SOURCE_DIAGNOSTICS_SHOWN = 12
 
 
 def _line_count(text: str) -> int:
@@ -141,6 +144,12 @@ class RepairOutcome:
     note: str
     checks_ok: bool
     turns: int = 0
+    # Backward-compatible terminal metadata.  Existing callers that only care
+    # about files/tokens keep their old construction shape, while orchestrators
+    # no longer have to infer MaxTurns or deadline stops from display text.
+    stop_reason: str = "completed"
+    quality_state: str = "unknown"
+    raw_output: object | None = None
 
 
 @dataclass
@@ -347,6 +356,109 @@ class RepairSession:
             return f"no matches for {needle!r}"
         return "\n".join(f"{m['path']}:{m['line']}: {m['text']}" for m in matches)
 
+    @staticmethod
+    def _diagnostic_key(item: dict) -> tuple[str, str]:
+        return str(item.get("code") or ""), str(item.get("rule") or "")
+
+    def _introduced_source_diagnostics(
+        self,
+        path: str,
+        old_content: str | None,
+        new_content: str,
+    ) -> list[dict]:
+        """Return defects introduced by an edit, allowing incremental repair.
+
+        A repair session may start from source that already fails a gate. Comparing
+        counts by stable rule lets an agent remove those defects over several edits
+        without permitting a clean author candidate to introduce a new one.
+        """
+
+        proposed = validation.validate_source_edit(
+            path,
+            new_content,
+            max_bytes=validation.MAX_FILE_BYTES,
+        )
+        if old_content is None or not proposed:
+            return proposed
+        previous = Counter(
+            self._diagnostic_key(item)
+            for item in validation.validate_source_edit(
+                path,
+                old_content,
+                max_bytes=validation.MAX_FILE_BYTES,
+            )
+        )
+        introduced: list[dict] = []
+        for item in proposed:
+            key = self._diagnostic_key(item)
+            if previous[key] > 0:
+                previous[key] -= 1
+            else:
+                introduced.append(item)
+        return introduced
+
+    @staticmethod
+    def _patch_error_diagnostic(path: str, message: str) -> dict:
+        lower = message.lower()
+        if "over the" in lower or "exceeds" in lower:
+            code, rule = "file_too_large", "max_file_bytes"
+        elif "files (max" in lower or "file" in lower and "max" in lower:
+            code, rule = "too_many_files", "max_bundle_files"
+        elif any(
+            marker in lower
+            for marker in (
+                "invalid new file path",
+                "path escapes",
+                "cannot move",
+                "cannot delete",
+                "does not exist",
+                "not found",
+            )
+        ):
+            code, rule = "invalid_path", "patch_path"
+        else:
+            code, rule = "invalid_patch", "patch_operation"
+        return {
+            "code": code,
+            "path": str(path or ""),
+            "line": None,
+            "column": None,
+            "rule": rule,
+            "message": message,
+        }
+
+    def _validation_rejection(
+        self,
+        *,
+        tool: str,
+        message: str,
+        diagnostics: list[dict],
+        operation: int | None = None,
+    ) -> str:
+        shown = diagnostics[:_MAX_SOURCE_DIAGNOSTICS_SHOWN]
+        payload = {
+            "code": "candidate_source_validation",
+            "diagnostics": shown,
+            "diagnostics_omitted": max(0, len(diagnostics) - len(shown)),
+        }
+        path = str((shown[0] if shown else {}).get("path") or "")
+        self._log(
+            f"agent rejected {tool} edit"
+            + (f" for {path}" if path else "")
+            + f": {message}",
+            event=self._event(
+                "validation_rejection",
+                tool=tool,
+                path=path or None,
+                diagnostics=shown,
+                diagnostics_omitted=payload["diagnostics_omitted"],
+                status="failed",
+            ),
+        )
+        prefix = f"operation {operation}: " if operation is not None else ""
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        return f"error: {prefix}{message}; validation={encoded}"
+
     def write_file(self, path: str, content: str) -> str:
         name = str(path or "").strip().strip('"').replace("\\", "/")
         if name.startswith("./"):
@@ -354,17 +466,76 @@ class RepairSession:
         project_mode = "src/main.ts" in self.contents or "src/main.js" in self.contents
         allowed = _PROJECT_NEW_PATH_RE if project_mode else _NEW_PATH_RE
         if name not in self.contents and not allowed.match(name):
-            return f"error: invalid new file path {path!r}; use a safe path supported by this workspace"
+            message = f"invalid new file path {path!r}; use a safe path supported by this workspace"
+            return self._validation_rejection(
+                tool="write_file",
+                message=message,
+                diagnostics=[
+                    {
+                        "code": "invalid_path",
+                        "path": name,
+                        "line": None,
+                        "column": None,
+                        "rule": "workspace_path",
+                        "message": message,
+                    }
+                ],
+            )
         body = str(content or "")
         size = len(body.encode("utf-8"))
         if size > validation.MAX_FILE_BYTES:
-            return f"error: {name} would be {size}B, over the {validation.MAX_FILE_BYTES // 1000}KB limit"
+            message = (
+                f"{name} would be {size}B, over the "
+                f"{validation.MAX_FILE_BYTES // 1000}KB limit"
+            )
+            return self._validation_rejection(
+                tool="write_file",
+                message=message,
+                diagnostics=[
+                    {
+                        "code": "file_too_large",
+                        "path": name,
+                        "line": None,
+                        "column": None,
+                        "rule": "max_file_bytes",
+                        "message": message,
+                    }
+                ],
+            )
         created = name not in self.contents
         if created and len(self.contents) >= validation.MAX_BUNDLE_FILES:
-            return f"error: bundle already has {len(self.contents)} files (max {validation.MAX_BUNDLE_FILES})"
+            message = (
+                f"bundle already has {len(self.contents)} files "
+                f"(max {validation.MAX_BUNDLE_FILES})"
+            )
+            return self._validation_rejection(
+                tool="write_file",
+                message=message,
+                diagnostics=[
+                    {
+                        "code": "too_many_files",
+                        "path": name,
+                        "line": None,
+                        "column": None,
+                        "rule": "max_bundle_files",
+                        "message": message,
+                    }
+                ],
+            )
         if not created and body == self.contents[name]:
             return f"error: {name} already has exactly this content"
         old_body = self.contents.get(name, "")
+        introduced = self._introduced_source_diagnostics(
+            name,
+            None if created else old_body,
+            body,
+        )
+        if introduced:
+            return self._validation_rejection(
+                tool="write_file",
+                message="candidate source validation failed before commit",
+                diagnostics=introduced,
+            )
         added_lines, deleted_lines = _line_delta(old_body, body)
         diff, diff_format = _compact_diff(name, old_body, body)
         self.contents[name] = body
@@ -400,7 +571,10 @@ class RepairSession:
             if created and name.endswith(".js")
             else ""
         )
-        return f"wrote {name} ({size}B).{wiring} Then run_checks."
+        return (
+            f"wrote {name} ({size}B).{wiring} Source guard passed. "
+            "Call run_checks after the candidate is complete only if that tool is available."
+        )
 
     def plan_patch_operation(
         self,
@@ -514,7 +688,33 @@ class RepairSession:
         )
         return summary
 
-    def _apply_verified_patch(self, plan: VerifiedPatch) -> str:
+    def _apply_verified_patch(
+        self,
+        plan: VerifiedPatch,
+        *,
+        tool: str = "apply_patch",
+    ) -> str:
+        diagnostics: list[dict] = []
+        for change_index, change in enumerate(plan.changes, start=1):
+            if change.new_content is None:
+                continue
+            change_diagnostics = self._introduced_source_diagnostics(
+                change.move_to or change.path,
+                change.old_content,
+                change.new_content,
+            )
+            if tool == "apply_patch_set":
+                change_diagnostics = [
+                    {**item, "operation": change_index}
+                    for item in change_diagnostics
+                ]
+            diagnostics.extend(change_diagnostics)
+        if diagnostics:
+            return self._validation_rejection(
+                tool=tool,
+                message="candidate source validation failed before commit",
+                diagnostics=diagnostics,
+            )
         delta = self._commit_patch_plan(plan)
         self.last_patch_delta = delta
         self.patch_deltas.append(delta)
@@ -522,7 +722,10 @@ class RepairSession:
         if plan.fuzz:
             self._log(f"agent patch matched with fuzz {plan.fuzz}")
         self.checks_ok = False
-        return f"patched {', '.join(summaries)}. Now call run_checks to verify."
+        return (
+            f"patched {', '.join(summaries)}. Source guard passed. "
+            "Call run_checks after the candidate is complete only if that tool is available."
+        )
 
     def apply_patch_operation(
         self,
@@ -544,7 +747,15 @@ class RepairSession:
             )
             return self._apply_verified_patch(plan)
         except _PatchError as exc:
-            return f"error: {exc}"
+            message = str(exc)
+            diagnostic_path = move_to if move_to and move_to in message else path
+            return self._validation_rejection(
+                tool="apply_patch",
+                message=message,
+                diagnostics=[
+                    self._patch_error_diagnostic(diagnostic_path, message)
+                ],
+            )
 
     def apply_patch_operations(self, operations: list[dict]) -> str:
         """Validate and commit a coordinated multi-file patch atomically."""
@@ -588,9 +799,39 @@ class RepairSession:
                 changes.extend(plan.changes)
                 fuzz += plan.fuzz
         except _PatchError as exc:
-            return f"error: operation {operation_index}: {exc}"
+            message = str(exc)
+            failed_operation = operation if "operation" in locals() else {}
+            failed_path = str(failed_operation.get("path") or "")
+            failed_move = str(failed_operation.get("move_to") or "")
+            diagnostic_path = (
+                failed_move if failed_move and failed_move in message else failed_path
+            )
+            return self._validation_rejection(
+                tool="apply_patch_set",
+                message=message,
+                diagnostics=[
+                    self._patch_error_diagnostic(
+                        diagnostic_path,
+                        message,
+                    )
+                ],
+                operation=operation_index,
+            )
 
-        return self._apply_verified_patch(VerifiedPatch(changes=tuple(changes), fuzz=fuzz))
+        try:
+            return self._apply_verified_patch(
+                VerifiedPatch(changes=tuple(changes), fuzz=fuzz),
+                tool="apply_patch_set",
+            )
+        except _PatchError as exc:
+            message = str(exc)
+            return self._validation_rejection(
+                tool="apply_patch_set",
+                message=message,
+                diagnostics=[
+                    self._patch_error_diagnostic("", message)
+                ],
+            )
 
     def run_checks(self) -> str:
         from app.services.vite_projects import is_vite_project, validate_vite_project

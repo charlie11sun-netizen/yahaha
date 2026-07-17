@@ -118,6 +118,12 @@ def _content_log_lines(plan: dict) -> list[str]:
 
 def _balance_log_lines(archetype: str, balance: dict) -> list[str]:
     qa = balance.get("qa") if isinstance(balance.get("qa"), dict) else {}
+    if balance.get("mode") == "design_driven":
+        return [
+            f"selected model-authored gameplay family: {archetype}",
+            "balance source: GameDesign values (legacy score/spawn defaults withheld)",
+            "QA thresholds: " + (", ".join(f"{key}={value}" for key, value in qa.items()) or "default"),
+        ]
     return [
         f"selected playable archetype: {archetype}",
         f"round target: {balance.get('target_score')} points in {balance.get('round_seconds')}s",

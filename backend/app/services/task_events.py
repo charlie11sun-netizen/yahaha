@@ -85,6 +85,10 @@ async def subscribe_task_events(task_id: str) -> AsyncIterator[str | None]:
     pubsub = client.pubsub()
     try:
         await pubsub.subscribe(task_event_channel(task_id))
+        # Let the SSE handler reconcile its durable database cursor immediately
+        # after the Redis subscription is active. This closes the otherwise
+        # lossy window between taking the initial snapshot and subscribing.
+        yield "subscribed"
         while True:
             message = await pubsub.get_message(
                 ignore_subscribe_messages=True,

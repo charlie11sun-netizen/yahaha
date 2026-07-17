@@ -1,5 +1,6 @@
 import type { StepSummary, Task, UploadedAsset } from "@/lib/types";
 import { cleanStreamLine, isStreamTokenLine, visibleAgentLogs } from "./agent-activity";
+import { activityMessageFromEvent, logEntries, repairAttemptFromEvent } from "./agent-events";
 import { formatRelative } from "./create-time";
 
 export const GAMEPLAY_STEP_KEYS = ["gameplay_qa", "gameplay_repair"] as const;
@@ -184,11 +185,15 @@ export function getCurrentIssue(task: Task | undefined, activeStep?: StepRow) {
       message: "This task was stopped before preview generation completed.",
     };
   }
-  if (task.repair_attempts && activeStep?.key === "build_validation") {
+  const repairAttempt = latestRunningRepairAttempt(task);
+  if (repairAttempt) {
+    const count = repairAttempt.maxAttempts
+      ? `${repairAttempt.attempt} of ${repairAttempt.maxAttempts}`
+      : String(repairAttempt.attempt || "").trim();
     return {
       level: "warning" as const,
       title: "Issue found - Auto-repairing",
-      message: `Repair attempt ${task.repair_attempts} of ${task.max_repair_attempts || 2} - ${latestReadableLog(task) || "Fixing a runtime validation issue."}`,
+      message: `Repair attempt${count ? ` ${count}` : ""} - ${latestReadableLog(task) || "Fixing a runtime validation issue."}`,
     };
   }
   if (task.replan_attempts && activeStep?.key === "build_validation") {
@@ -215,11 +220,28 @@ export function getCurrentIssue(task: Task | undefined, activeStep?: StepRow) {
   return null;
 }
 
+function latestRunningRepairAttempt(task?: Task) {
+  const running = (task?.logs ?? []).filter((log) => log.status === "running");
+  for (let logIndex = running.length - 1; logIndex >= 0; logIndex -= 1) {
+    const entries = logEntries(running[logIndex]);
+    for (let entryIndex = entries.length - 1; entryIndex >= 0; entryIndex -= 1) {
+      const event = repairAttemptFromEvent(entries[entryIndex].event);
+      if (event) return event;
+    }
+  }
+  return null;
+}
+
 function latestReadableLog(task?: Task) {
   const logs = visibleAgentLogs(task);
   for (let index = logs.length - 1; index >= 0; index -= 1) {
-    const line = logs[index].message || logs[index].lines.at(-1);
-    if (line) return friendlyMessage(line);
+    const entries = logEntries(logs[index]);
+    for (let entryIndex = entries.length - 1; entryIndex >= 0; entryIndex -= 1) {
+      const message = activityMessageFromEvent(entries[entryIndex].event);
+      if (message) return message;
+      const line = entries[entryIndex].line;
+      if (line) return friendlyMessage(line);
+    }
   }
   return "";
 }
@@ -227,13 +249,20 @@ function latestReadableLog(task?: Task) {
 export function getRecentUpdates(task: Task | undefined, now: number) {
   const logs = visibleAgentLogs(task);
   const updates = logs
-    .filter((log) => log.message || log.lines.length)
+    .flatMap((log) =>
+      logEntries(log).map((entry) => ({
+        createdAt: "created_at" in entry ? entry.created_at : undefined,
+        level: log.status === "failed" ? ("error" as const) : log.status === "completed" ? ("success" as const) : ("info" as const),
+        message: activityMessageFromEvent(entry.event) || friendlyMessage(entry.line),
+      })),
+    )
+    .filter((update) => update.message)
     .slice(-3)
     .reverse()
-    .map((log) => ({
-      level: log.status === "failed" ? ("error" as const) : log.status === "completed" ? ("success" as const) : ("info" as const),
-      message: friendlyMessage(log.message || log.lines.at(-1) || "Task updated"),
-      time: formatRelative(log.created_at || task?.updated_at || task?.created_at, now) || "just now",
+    .map((update) => ({
+      level: update.level,
+      message: update.message,
+      time: formatRelative(update.createdAt || task?.updated_at || task?.created_at, now) || "just now",
     }));
 
   if (updates.length > 0) return updates;
@@ -257,12 +286,17 @@ export function friendlyMessage(message: string) {
   const compact = message.replace(/\s+/g, " ").trim();
   if (isStreamTokenLine(compact)) return "";
   const lower = compact.toLowerCase();
+  if (lower.includes("designcontractagent") || lower.includes("design contract")) return "Defining the game implementation contract";
+  if (lower.includes("rulesandsimulationcoder") || lower.includes("rules & simulation")) return "Implementing game rules and simulation";
+  if (lower.includes("worldandcontentcoder") || lower.includes("world & content")) return "Building the game world and playable content";
+  if (lower.includes("presentationandinteractioncoder") || lower.includes("presentation & input")) return "Implementing controls, HUD, and game feedback";
+  if (lower.includes("integrationagent") || lower.includes("implementation team complete")) return "Integrating game modules and running project checks";
+  if (lower.includes("author team") || lower.includes("implementation team")) return "Game implementation team updated";
   if (lower.includes("gameplay planning") || lower.includes("brief expansion") || lower.includes("intent spec")) return "Turning your idea into a playable game brief";
   if (lower.startsWith("tags:")) return "Core gameplay and themes identified";
   if (lower.startsWith("runtime:")) return "Browser runtime selected";
   if (lower.includes("retrieval strategy: none")) return "Using your brief without external references";
   if (lower.includes("normalized prompt")) return "Game brief normalized for generation";
-  if (lower.includes("repair")) return "Repair attempt started";
   if (lower.includes("playtest") || lower.includes("gameplay") || lower.includes("qa")) return "Gameplay playtest updated";
   if (lower.includes("difficulty") || lower.includes("balance")) return "Difficulty balance adjusted";
   if (lower.includes("validation") && lower.includes("issue")) return "Validation found an issue";

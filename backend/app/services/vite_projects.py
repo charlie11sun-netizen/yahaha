@@ -26,6 +26,62 @@ _CROSSORIGIN_RE = re.compile(
     re.IGNORECASE,
 )
 _STATIC_MODULE_RE = re.compile(r"(?:^|[;\n])\s*(?:import\s|export(?:\s|\{))")
+_DOM_KEYBOARD_CODE_RE = re.compile(
+    r"(?:Keyboard:)?(?:Key[A-Z0-9]|Digit[0-9]|Arrow(?:Up|Down|Left|Right)|Space|Escape|Tab|Enter)\b",
+    re.IGNORECASE,
+)
+_BINDING_SUFFIX_ASSIGN_RE = re.compile(
+    r"\b(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*(?P<expr>[^;\n]*?\.slice\(\s*9\s*\)[^;\n]*)",
+    re.IGNORECASE,
+)
+
+
+def phaser_input_binding_errors(files: list[dict] | None) -> list[str]:
+    """Reject DOM ``KeyboardEvent.code`` names passed raw to Phaser ``addKey``.
+
+    Rebindable controls commonly persist values such as ``KeyW`` and
+    ``ArrowUp``. Phaser 3.90's string API instead indexes ``KeyCodes`` with
+    names such as ``W``, ``UP``, ``SPACE`` and ``ESC``. Passing the DOM value
+    through unchanged silently creates an undefined key, so the bundle builds
+    and animates while every keyboard control remains inert.
+    """
+
+    errors: list[str] = []
+    for item in files or []:
+        path = str(item.get("path") or "").replace("\\", "/")
+        if not path.endswith((".js", ".mjs", ".ts", ".tsx")):
+            continue
+        source = artifact_text(item) or ""
+        if not re.search(r"\.\s*addKey\s*\(", source, re.IGNORECASE):
+            continue
+        if not (_DOM_KEYBOARD_CODE_RE.search(source) or re.search(r"\bevent\s*\.\s*code\b", source, re.IGNORECASE)):
+            continue
+
+        unsafe = bool(
+            re.search(
+                r"\.\s*addKey\s*\(\s*(?:[^,;\n]*?\.slice\(\s*9\s*\)|event\s*\.\s*code)",
+                source,
+                re.IGNORECASE,
+            )
+        )
+        if not unsafe:
+            for match in _BINDING_SUFFIX_ASSIGN_RE.finditer(source):
+                expression = match.group("expr")
+                # A visibly named conversion or inline replacement is enough
+                # to show the DOM code is not being passed through unchanged.
+                if re.search(r"(?:normaliz|toPhaser|keyCodes|\.replace\s*\()", expression, re.IGNORECASE):
+                    continue
+                name = re.escape(match.group("name"))
+                if re.search(rf"\.\s*addKey\s*\(\s*{name}\b", source, re.IGNORECASE):
+                    unsafe = True
+                    break
+        if unsafe:
+            errors.append(
+                "Phaser input adapter passes DOM KeyboardEvent.code values (KeyW/ArrowUp) directly to "
+                f"keyboard.addKey() in {path}; "
+                "normalize them to Phaser names such as W/UP/SPACE/ESC or numeric KeyCodes before registration"
+            )
+    return errors
 
 
 def is_vite_project(files: list[dict] | None) -> bool:
@@ -158,7 +214,18 @@ def validate_vite_project(files: list[dict]) -> list[str]:
             errors.append("custom Vite config is not allowed; the sandbox uses a fixed config")
         text = artifact_text(item)
         if text is not None and path.endswith((".html", ".js", ".mjs", ".ts", ".tsx")):
-            for pattern, label in FORBIDDEN_PATTERNS:
+            patterns = FORBIDDEN_PATTERNS
+            if path == "src/systems/GameWeaveBridge.ts":
+                # This immutable scaffold is the sole capability boundary for
+                # host persistence. It must compare MessageEvent.source with
+                # window.parent before accepting an ACK; generated modules are
+                # still forbidden from reading parent/top themselves.
+                patterns = [
+                    (pattern, label)
+                    for pattern, label in patterns
+                    if label != "parent/top access"
+                ]
+            for pattern, label in patterns:
                 if re.search(pattern, text, re.IGNORECASE):
                     errors.append(f"forbidden API in Vite source {path}: {label}")
     if total > MAX_PROJECT_BYTES:
@@ -186,4 +253,5 @@ def validate_vite_project(files: list[dict]) -> list[str]:
             for name, version in allowed.items():
                 if name in declared and declared[name] != version:
                     errors.append(f"unsupported version for {name}: {declared[name]!r}; expected {version!r}")
+    errors.extend(phaser_input_binding_errors(files))
     return errors

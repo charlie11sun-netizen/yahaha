@@ -54,7 +54,6 @@ function CreatePageInner() {
   const [uploading, setUploading] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [revising, setRevising] = useState(false);
-  const [revisionFeedback, setRevisionFeedback] = useState("");
   const [activityOpen, setActivityOpen] = useState(false);
   const [tasksOpen, setTasksOpen] = useState(false);
 
@@ -217,19 +216,20 @@ function CreatePageInner() {
     }
   };
 
-  const reviseGame = async () => {
-    if (!task?.game || !revisionFeedback.trim() || revising) return;
+  const reviseGame = async (feedback: string) => {
+    if (!task?.game || !feedback.trim() || revising) return false;
     setRevising(true);
     try {
-      const result = await api.reviseTask(task.id, revisionFeedback.trim());
-      setRevisionFeedback("");
+      const result = await api.reviseTask(task.id, feedback.trim());
       setTaskId(result.task_id);
       localStorage.setItem(LAST_TASK_KEY, result.task_id);
       router.replace(`/create?task=${encodeURIComponent(result.task_id)}`);
       await queryClient.invalidateQueries({ queryKey: ["tasks"] });
       flash("Revision task started from the current preview");
+      return true;
     } catch {
       flash("Could not start revision", { error: true });
+      return false;
     } finally {
       setRevising(false);
     }
@@ -279,9 +279,7 @@ function CreatePageInner() {
             onRevision={reviseGame}
             onRetry={retryTask}
             publishing={publishing}
-            revisionFeedback={revisionFeedback}
             revising={revising}
-            setRevisionFeedback={setRevisionFeedback}
             task={task}
           />
         ) : (

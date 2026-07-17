@@ -138,7 +138,7 @@ def _heuristic_mechanic_plan(spec: dict, brief: dict, prompt: str) -> dict:
 def _coerce_mechanic_plan(data: dict, spec: dict, brief: dict, prompt: str) -> dict:
     base = _heuristic_mechanic_plan(spec, brief, prompt)
     if isinstance(data, dict):
-        for key in ("archetype_hint", "primary_action", "secondary_action", "signature_twist", "risk_model", "reward_model"):
+        for key in ("primary_action", "secondary_action", "signature_twist", "risk_model", "reward_model"):
             if data.get(key):
                 base[key] = str(data[key])[:180]
         for key in ("enemy_behaviors", "reward_items", "powerups"):
@@ -146,8 +146,24 @@ def _coerce_mechanic_plan(data: dict, spec: dict, brief: dict, prompt: str) -> d
                 base[key] = [item if isinstance(item, dict) else {"name": str(item), "effect": "gameplay variation"} for item in data[key]][:5]
         if isinstance(data.get("feedback"), list) and data["feedback"]:
             base["feedback"] = [str(item)[:80] for item in data["feedback"]][:6]
-    if base.get("archetype_hint") not in _ARCHETYPES:
-        base["archetype_hint"] = _heuristic_mechanic_plan(spec, brief, prompt)["archetype_hint"]
+    genre = str(spec.get("genre") or "").strip().lower()
+    expected = {
+        "shooter": "vertical_shooter",
+        "puzzle": "logic_grid",
+        "runner": "lane_runner",
+        "collector": "topdown_collect",
+    }.get(genre)
+    candidate = str((data or {}).get("archetype_hint") or "")
+    if genre and genre != "arcade" and expected is None:
+        # Native genres (platformer, roguelite, tactics, rhythm, simulation...)
+        # must never be squeezed into one of the four historical demo templates.
+        base["archetype_hint"] = None
+    elif expected is not None:
+        base["archetype_hint"] = expected
+    elif candidate in _ARCHETYPES:
+        base["archetype_hint"] = candidate
+    elif base.get("archetype_hint") not in _ARCHETYPES:
+        base["archetype_hint"] = None
     return base
 
 
@@ -157,13 +173,23 @@ def _content_plan(archetype: str, spec: dict, brief: dict, mechanics: dict) -> d
     reward_names = [str(item.get("name", "reward"))[:28] for item in mechanics.get("reward_items") or []] or ["reward", "bonus"]
     powerups = [str(item.get("name", "boost"))[:28] for item in mechanics.get("powerups") or []] or ["shield", "slow field"]
     beats = brief.get("difficulty_beats") or ["opening", "pressure", "mastery"]
-    if archetype == "logic_grid":
+    if archetype not in _ARCHETYPES:
+        waves = [
+            {"time": 0, "note": beats[0]},
+            {"time": 1, "note": beats[min(1, len(beats) - 1)]},
+            {"time": 2, "note": beats[-1]},
+        ]
+        verbs = [str(item) for item in (brief.get("core_verbs") or [])[:4]]
+        tutorial = "teach the authored core verbs in a safe opening: " + (", ".join(verbs) or "move, act, and recover")
+        mode = "design_driven"
+    elif archetype == "logic_grid":
         waves = [
             {"time": 0, "pressure": "learn", "note": beats[0]},
             {"time": 18, "pressure": "optimize", "note": beats[min(1, len(beats) - 1)]},
             {"time": 40, "pressure": "rush", "note": beats[-1]},
         ]
         tutorial = "click tiles to rotate the live route from IN to OUT"
+        mode = "legacy_family"
     elif archetype == "lane_runner":
         waves = [
             {"time": 0, "hazards": 1, "reward": 1, "note": beats[0]},
@@ -172,6 +198,7 @@ def _content_plan(archetype: str, spec: dict, brief: dict, mechanics: dict) -> d
             {"time": 45, "hazards": 4, "reward": 2, "note": beats[-1]},
         ]
         tutorial = "tap left or right to switch lanes; chase bonuses, not every gap"
+        mode = "legacy_family"
     else:
         waves = [
             {"time": 0, "hazards": 1, "reward": 2, "note": beats[0]},
@@ -180,7 +207,9 @@ def _content_plan(archetype: str, spec: dict, brief: dict, mechanics: dict) -> d
             {"time": 50, "hazards": 4, "reward": 3, "note": beats[-1]},
         ]
         tutorial = "move smoothly, collect chains, use powerups when the arena tightens"
+        mode = "legacy_family"
     return {
+        "mode": mode,
         "tutorial": tutorial,
         "waves": waves,
         "hazard_names": enemy_names[:4],

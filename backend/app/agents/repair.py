@@ -45,10 +45,21 @@ def _prepared_repair_files(state: dict, repaired: list[dict]) -> dict:
     if state.get("artifact_format") != VITE_PROJECT_FORMAT:
         return {"generated_files": repaired}
     replacements = {str(item.get("path")): dict(item) for item in repaired if item.get("path")}
+    original = state.get("project_files") or state.get("existing_files") or []
+    original_paths = {str(item.get("path")) for item in original if item.get("path")}
     project = [
         replacements.get(str(item.get("path")), dict(item))
-        for item in (state.get("project_files") or state.get("existing_files") or [])
+        for item in original
     ]
+    # Repair agents may add a small typed service/module required by QA. The
+    # previous replacement-only merge silently discarded every new path when
+    # returning to LangGraph, making successful persistence/settings repairs
+    # disappear before the isolated build.
+    project.extend(
+        dict(item)
+        for item in repaired
+        if item.get("path") and str(item.get("path")) not in original_paths
+    )
     return {"generated_files": [], "project_files": project, "build_result": {}}
 
 
@@ -70,12 +81,52 @@ _RUNTIME_QA_SYMPTOMS = (
 # 接线问题：包能跑、烟测过。整包重生成一轮 author ≈ 百万 token 且对失因一无所知,
 # 最小 patch 把缺的线接上才收敛（2026-07-13 两任务各烧两轮重生成的教训）。
 _QUALITY_QA_PATCHABLE = (
+    "Phaser overlap callback for ",
+    "Phaser 4 removed setTintFill()",
+    "Phaser code reads ",
+    "Phaser input adapter passes DOM KeyboardEvent.code values",
+    "top-down player rotation changes continuously every frame",
+    "generated top-down avatar body rotates toward movement/aim",
+    "the request requires save persistence, but reachable gameplay never loads and saves through",
+    "the request requires functional settings, but SettingsService is never consumed",
+    "the request requires key rebinding, but no reachable menu/controller calls",
+    "the request requires volume controls, but no reachable settings/menu path applies volume",
+    "the request requires a newly randomized dungeon each run, but the room-generation method returns",
+    "the request requires a connected random room-and-corridor graph, but gameplay still advances",
     "generated sprite sheet is preloaded but never used",
+    "generated background image is preloaded but never displayed",
+    "generated background is used only outside PlayScene",
+    # 运行时对账（Probe）：沙箱重放证明 gameplay 场景没画生成背景 —— 接线级
+    # 缺陷，最小 patch 即可（在 PlayScene.create 调 Backdrop.draw）。
+    "generated backdrop never rendered in the reachable gameplay scene",
+    "gameplay UI uses multiple source fonts below 16px",
     "no gameplay feedback effects found",
     "authored project still contains the GW_PLACEHOLDER_GAMEPLAY placeholder",
     "moving physics bodies but no world-edge handling found",
     "design declares obstacle/blocking entities but gameplay code never creates them",
+    # 截图质量层（visual_review）：呈现问题可以用小 patch 修（接 Juice/调 HUD/
+    # 画背景），不值得整包重生成。
+    "browser screenshot shows an essentially blank play screen",
+    "visual review:",
 )
+
+
+# 软性运行时观察（QA warning 而非 issue）：不构成失败，但修复/重生成时应当看到。
+# 前缀须与 validation_nodes 产出的 warning 文案保持同步。
+_ADVISORY_QA_PREFIXES = (
+    "dead runtime exports:",
+    "generated animation groups never played",
+    "declared enemy roster never spawned",
+    "simulated input never reached a gameplay scene",
+)
+
+
+def _advisory_qa_feedback(qa_result: dict) -> list[str]:
+    return [
+        str(item)
+        for item in (qa_result or {}).get("warnings") or []
+        if str(item).startswith(_ADVISORY_QA_PREFIXES)
+    ]
 
 
 def _classify_gameplay_failure(qa_result: dict) -> tuple[str, list[str]]:
@@ -277,12 +328,26 @@ def gameplay_repair_node(state: dict) -> dict:
             task_note = (
                 "This bundle builds, passes static validation and the headless-browser smoke run; the finding(s) "
                 "above are QUALITY gate failures from inspecting the gameplay modules. run_checks will report ALL "
-                "CHECKS PASSED regardless — that does NOT satisfy the findings. Make the smallest wiring edits that "
-                "resolve each finding: build sprites and animations from the generated sheet frames (gameConfig.sheet "
-                "/ sheetFrame()) instead of procedural shapes, wire hit/score events to the Juice/Sfx helpers, spawn "
-                "declared obstacle entities as blocking physics bodies, or route moving actors through the Bounds "
-                "system — whichever the findings name. Re-read the flagged modules to confirm each finding is "
-                "addressed. Do not redesign gameplay, difficulty or balance."
+                "CHECKS PASSED regardless — that does NOT satisfy the findings. Make the smallest coherent edits that "
+                "resolve every named finding. This may mean keeping a top-down body upright while rotating only its "
+                "weapon, wiring generated sheets through gameConfig.sheet / sheetFrame() and Juice/Sfx, connecting "
+                "GameWeaveBridge-backed settings and bindings "
+                "to an actually reachable menu, converting DOM codes such as KeyW/ArrowUp to Phaser key names before "
+                "addKey(), applying volume changes, making a seeded room generator genuinely vary the room graph, "
+                "rendering generated backdrops inside PlayScene with translucent arena surfaces, raising embedded HUD "
+                "text to readable sizes, spawning declared obstacles, or routing moving actors through Bounds — follow the "
+                "specific findings rather than rewriting unrelated gameplay. Findings prefixed 'visual review:' or "
+                "'browser screenshot' come from an actual gameplay screenshot: fix them by drawing the generated "
+                "Backdrop, building actors from sheet frames instead of bare shapes, adding contrast/spacing to the "
+                "flagged HUD, and wiring Juice feedback — not by tweaking logic. Re-read the flagged modules to confirm each "
+                "finding is addressed. Do not change difficulty or balance unless the finding explicitly requires it."
+            )
+        advisory = _advisory_qa_feedback(qa_result)
+        if advisory:
+            task_note += (
+                " Secondary runtime observations from the same sandbox replay (advisories, not gates — "
+                "address them when your edits already touch the same code, otherwise leave them): "
+                + " | ".join(advisory[:4])
             )
         outcome = code_agent.run_repair(
             _repair_input_files(state),
@@ -311,6 +376,30 @@ def gameplay_repair_node(state: dict) -> dict:
                         "kept design and balance untouched; queued build validation recheck",
                     ],
                 }
+            if (
+                outcome.changed
+                and state.get("artifact_format") == VITE_PROJECT_FORMAT
+            ):
+                # A bounded quality repair may make a final small edit after its
+                # last successful run_checks and then hit the turn limit. Keep
+                # that real modular candidate and let the outer isolated build +
+                # gameplay QA gates decide it; regenerating the whole project
+                # discards verified work and commonly repeats the same defects.
+                return {
+                    **_prepared_repair_files(state, outcome.files),
+                    "validation_result": {},
+                    "gameplay_qa_result": {},
+                    "gameplay_repair_attempts": attempts,
+                    "last_error": None,
+                    "_agent": "GameplayRepairAgent",
+                    "_tokens_delta": agent_tokens,
+                    "_logs": logs
+                    + [
+                        "patched files: " + ", ".join(outcome.changed),
+                        f"agent stopped after edits ({_clip(outcome.note, 120)})",
+                        "preserved modular repair candidate for isolated build and gameplay QA",
+                    ],
+                }
             logs.append(
                 f"agent loop did not converge ({_clip(outcome.note, 120)}); falling back to balance repair + regeneration"
             )
@@ -334,8 +423,9 @@ def gameplay_repair_node(state: dict) -> dict:
         "validation_result": {},
         "gameplay_qa_result": {},
         # 重生成不能对失因失忆：作者跑一轮 ≈ 百万 token，盲跑只会复刻同样的产物。
-        # 把本轮 QA 结论带给下一次 code_generation（作者提示词里必须逐条解决）。
-        "gameplay_qa_feedback": issues,
+        # 把本轮 QA 结论带给下一次 code_generation（作者提示词里必须逐条解决），
+        # 软性运行时观察（死导出/动画未播/名册未 spawn）一并带上。
+        "gameplay_qa_feedback": list(issues) + _advisory_qa_feedback(qa_result),
         "gameplay_repair_attempts": attempts,
         "last_error": None,
         "_agent": "GameplayRepairAgent",
@@ -354,7 +444,19 @@ def replan_game_design_node(state: dict) -> dict:
     if state.get("use_real"):
         try:
             sys_prompt = prompts.REPLAN_SYSTEM_PROMPT_3D if is_3d else prompts.REPLAN_SYSTEM_PROMPT
-            raw, tokens = llm.chat(sys_prompt, prompts.build_replan_prompt(state.get("game_spec"), state.get("game_design"), state.get("last_error")))
+            raw, tokens = llm.chat(
+                sys_prompt,
+                prompts.build_replan_prompt(
+                    state.get("game_spec"),
+                    state.get("game_design"),
+                    state.get("last_error"),
+                ),
+                timeout=max(30, int(settings.OPENAI_PLANNING_STREAM_IDLE_TIMEOUT or 180)),
+                recover_partial_json=True,
+                cache_namespace=prompts.PLANNING_PROMPT_CACHE_NAMESPACE,
+                cache_prefix=prompts.PLANNING_SHARED_CACHE_PREFIX,
+                cache_task_scoped=False,
+            )
             design = _coerce_design(_parse_json(raw), state.get("game_spec"))
             extra = {"_tokens_delta": tokens}
         except Exception as exc:

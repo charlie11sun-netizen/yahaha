@@ -15,11 +15,13 @@ import {
 } from "lucide-react";
 
 import { FileChangeRow } from "./CreateFileChangeRow";
+import { AuthorTeamProgressList } from "./CreateAuthorTeamProgress";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { getLiveAgentActivity, getLiveStreamTokens } from "../_lib/agent-activity";
+import { getLiveAgentActivity, getLiveTokenTotal } from "../_lib/agent-activity";
+import { getAuthorTeamProgress } from "../_lib/author-team";
 import {
   buildStepRows,
   friendlyMessage,
@@ -54,15 +56,21 @@ export function CreateProgressCard({
   const lastUpdated = formatRelative(task?.updated_at || task?.created_at, now) || "Waiting";
   const elapsed = formatElapsed(task?.created_at, now);
   const taskActive = isActiveTask(task?.status);
-  const liveTokens = getLiveStreamTokens(task);
+  const liveTokens = getLiveTokenTotal(task);
   const liveActivity = taskActive ? getLiveAgentActivity(task) : "";
+  const authorTeamProgress = getAuthorTeamProgress(task);
+  const visibleAuthorTeamProgress = activeStep?.key === "code_generation" ? authorTeamProgress : null;
   const liveFileChanges = getLiveFileChanges(task).slice(-2);
   const tokenTotal = liveTokens ?? task?.tokens ?? 0;
-  const currentDetail = issue?.message || friendlyMessage(
-    activeStep?.summary ||
-      liveActivity ||
-      (taskActive ? "Preparing the next playable part of your game." : "This generation step is complete."),
-  );
+  const currentTitle = issue?.title || visibleAuthorTeamProgress?.currentLabel || activeStep?.label || "Preparing task";
+  const currentDetail =
+    issue?.message ||
+    visibleAuthorTeamProgress?.currentDetail ||
+    friendlyMessage(
+      activeStep?.summary ||
+        liveActivity ||
+        (taskActive ? "Preparing the next playable part of your game." : "This generation step is complete."),
+    );
 
   return (
     <Card className="gap-0 overflow-hidden rounded-xl border-slate-200/90 bg-white py-0 shadow-sm">
@@ -163,10 +171,19 @@ export function CreateProgressCard({
               <Check size={18} />
             )}
           </span>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-500">Current action</p>
-            <h3 className="mt-1 text-sm font-semibold text-slate-950">{issue?.title || activeStep?.label || "Preparing task"}</h3>
+            <h3 className="mt-1 text-sm font-semibold text-slate-950">{currentTitle}</h3>
             <p className="mt-1 text-sm leading-5 text-slate-600">{currentDetail}</p>
+            {visibleAuthorTeamProgress ? (
+              <div className="mt-3 border-t border-indigo-100 pt-3">
+                <div className="mb-2 flex items-center justify-between gap-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  <span>Implementation team</span>
+                  <span>{visibleAuthorTeamProgress.completedCount}/{visibleAuthorTeamProgress.roles.length} complete</span>
+                </div>
+                <AuthorTeamProgressList compact progress={visibleAuthorTeamProgress} />
+              </div>
+            ) : null}
           </div>
         </section>
 

@@ -84,6 +84,56 @@ class LocalPlaceholderAdapter:
 
     def generate(self, request: MediaRequest, config: ProviderConfig) -> GeneratedMedia:
         if request.modality == "image":
+            if str((request.extra or {}).get("background") or "").lower() == "transparent":
+                # Sprite sheets and tilesets must be sliceable in offline/test
+                # mode too. A vector label card cannot exercise the real alpha,
+                # grid, and checkpoint pipeline, so emit deterministic RGBA art.
+                from PIL import Image, ImageDraw
+
+                image = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
+                draw = ImageDraw.Draw(image)
+                palette = [
+                    "#22d3ee",
+                    "#a78bfa",
+                    "#f472b6",
+                    "#facc15",
+                    "#34d399",
+                    "#fb7185",
+                ]
+                cell = 256
+                tileset = "tileset" in str(request.prompt or "").lower()
+                for index in range(16):
+                    col, row = index % 4, index // 4
+                    x0, y0 = col * cell, row * cell
+                    color = palette[index % len(palette)]
+                    if tileset and row < 2:
+                        draw.rounded_rectangle(
+                            (x0 + 8, y0 + 8, x0 + cell - 8, y0 + cell - 8),
+                            radius=24,
+                            fill=color,
+                            outline="#0f172a",
+                            width=10,
+                        )
+                    else:
+                        draw.ellipse(
+                            (x0 + 48, y0 + 40, x0 + cell - 48, y0 + cell - 40),
+                            fill=color,
+                            outline="#0f172a",
+                            width=12,
+                        )
+                        draw.rectangle(
+                            (x0 + 94, y0 + 88, x0 + 162, y0 + 176),
+                            fill="#f8fafc",
+                        )
+                output = io.BytesIO()
+                image.save(output, format="PNG")
+                return GeneratedMedia(
+                    output.getvalue(),
+                    "image/png",
+                    ".png",
+                    "local",
+                    "placeholder-rgba-grid",
+                )
             label = _safe_svg_label(request.prompt)
             svg = (
                 '<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">'

@@ -2,7 +2,7 @@
 import json
 import re
 
-from app.agents import bundles, code_agent, llm, prompts, smoke, validation
+from app.agents import bundles, code_agent, llm, prompts, smoke, validation, visual_review
 from app.agents.state import MAX_GAMEPLAY_REPAIR, MAX_REPAIR, MAX_REPLAN, STEP_META
 from app.core.config import settings
 from app.core.errors import TaskErrorCode
@@ -72,10 +72,23 @@ _ARCHETYPES_3D = {
 }
 
 
+def _exception_chain_summary(exc: BaseException, *, limit: int = 300) -> str:
+    parts: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen and len(parts) < 4:
+        seen.add(id(current))
+        message = _clip(current, 180)
+        parts.append(f"{type(current).__name__}: {message}" if message else type(current).__name__)
+        current = current.__cause__ or current.__context__
+    return _clip(" <- ".join(parts), limit)
+
+
 def _real_model_fallback_or_raise(stage: str, detail: object, exc: Exception | None = None) -> None:
     if settings.REAL_MODEL_FALLBACK_ENABLED:
         return
-    message = f"{stage} real model failed; fallback disabled: {_clip(detail, 300)}"
+    diagnostic = _exception_chain_summary(exc) if exc is not None else _clip(detail, 300)
+    message = f"{stage} real model failed; fallback disabled: {diagnostic}"
     if exc is not None:
         raise RuntimeError(message) from exc
     raise RuntimeError(message)
@@ -135,6 +148,7 @@ __all__ = [
     'prompts',
     'smoke',
     'validation',
+    'visual_review',
     'MAX_GAMEPLAY_REPAIR',
     'MAX_REPAIR',
     'MAX_REPLAN',

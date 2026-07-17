@@ -1,64 +1,67 @@
-# Create Generation Record Design QA
+# Activity Command Center Design QA
 
-- Source visual truth: `<repo>\artifacts\product-design\create-record-redesign\02-workbench-above-fold.png`
-- Implementation screenshot: `<repo>\artifacts\product-design\create-record-redesign\11-final-active-1440x1024.png`
-- Full-view comparison evidence: `<repo>\artifacts\product-design\create-record-redesign\12-qa-comparison-final.png`
-- Focused responsive evidence: `<repo>\artifacts\product-design\create-record-redesign\09-mobile-390x844.png` and `<repo>\artifacts\product-design\create-record-redesign\10-tablet-768x1024.png`
-- Viewport: 1440 x 1024 desktop, with additional 390 x 844 mobile and 768 x 1024 tablet checks.
-- State: authenticated `/create?task=...` generation record immediately after generation starts, Step 2 of 9, connected stream, preview pending, zero uploaded assets.
+- Source visual truth path: `<repo>\frontend\design\activity-redesign-selected.png`
+- Implementation screenshot path: `<repo>\frontend\design\activity-implementation.png`
+- Responsive implementation screenshot path: `<repo>\frontend\design\activity-implementation-1024.png`
+- Viewport: 1536 x 1024 desktop, with an additional 1024 x 768 responsive check.
+- State: authenticated `/create?task=a5d9791e-0bf7-4402-91ce-4f2794fd0fd3`, succeeded task, Activity tab selected, All agents selected, first two timeline events expanded.
+- Full-view comparison evidence: the source and final implementation were opened together at original resolution in the same comparison input.
+- Focused region comparison evidence: a separate crop was not needed because the original 1536 x 1024 comparison keeps the header, three column boundaries, timeline typography, task metrics, file rows, and technical-detail rows readable at 1:1 scale.
 
 **Findings**
 
 - No actionable P0, P1, or P2 mismatch remains.
-- Fonts and typography: the implementation keeps the product's Space Grotesk display face and Albert Sans body face. The workspace title, current-stage title, small status copy, metric values, and activity rows preserve the selected mock's hierarchy without clipped desktop text.
-- Spacing and layout rhythm: the selected two-column workbench is preserved. The compact brief sits in the workspace header, all nine stages share one horizontal rail, and the preview remains visible above the fold. Borders and 12px radii do most of the separation; shadows stay low.
-- Colors and visual tokens: white and cool-gray surfaces, slate text, indigo active states, emerald connection/completion states, and rose failure states match the mock and existing GameWeave tokens.
-- Image quality and asset fidelity: the existing high-resolution GameWeave runtime preview raster is used directly and remains sharp at desktop, tablet, and mobile sizes. The live game remains a real sandboxed iframe when available. No CSS art, inline SVG replacement, emoji, or placeholder box substitutes were introduced.
-- Copy and content: raw intent and retrieval messages shown in the primary feed were translated into concise user-facing activity text; technical detail remains available in the Activity drawer. Failed and cancelled preview descriptions now match the actual task state.
-- Icons: the existing Lucide system is retained because it is the installed open-source icon family used throughout GameWeave and matches the selected direction's rounded stroke language.
-- Accessibility: the progress rail is an ordered list with an accessible label, the current action is a named region, buttons retain visible focus states and accessible names, status does not depend on color alone, and the document has no horizontal overflow at 390px.
+- Fonts and typography: the implementation uses the product's existing Space Grotesk display face, Albert Sans body face, and IBM Plex Mono log face. Heading scale, 14px body copy, 11px metadata labels, weights, line height, wrapping, and truncation preserve the selected mock's hierarchy. Long live-agent strings are clamped to keep the timeline scannable.
+- Spacing and layout rhythm: the selected large centered workspace, sticky header, 280px task summary, fluid timeline, and 340px context inspector are preserved at desktop. Dividers and whitespace provide separation; only the outer workspace receives strong elevation. The dialog dimensions, margins, 12–16px radii, column boundaries, and vertical rhythm match the reference closely.
+- Colors and visual tokens: the implementation uses the existing white/slate surface system, deep slate text, indigo-violet active state, emerald completion state, and rose deletion counts. The header mark reuses the existing GameWeave gradient token rather than introducing a new palette.
+- Image quality and asset fidelity: this screen contains no photographic or illustrative raster assets. Icons use the installed Lucide open-source family already used throughout GameWeave; no inline SVG, handcrafted SVG, CSS illustration, emoji, or placeholder asset was introduced.
+- Copy and content: the UI renders real task status, elapsed time, QA result, token use, attempts, manifest/preview links, agent logs, file counts, and design fields. The reference's mock data is intentionally replaced by the selected real task data without changing the visual hierarchy.
+- Icons: the activity mark, status, metrics, files, external links, disclosure controls, preview, and close actions share one consistent rounded-stroke icon family and align to their text baselines.
+- Accessibility: the workspace is a named modal dialog, Escape and Close dismiss it, tabs use Radix keyboard semantics, the timeline is an ordered list, row disclosures are buttons, the agent filter has an accessible name, success is communicated with text as well as color, focus treatment remains visible, and body scrolling is locked while the dialog is open.
+- Responsiveness: at 1024px the three fixed columns no longer squeeze the timeline. The timeline becomes the first full-width section, followed by task summary and context; the outer workspace remains inside the viewport with no clipped primary controls.
 
 **Focused Region Comparison**
 
-- Header and brief: the large standalone brief card was removed. The title, brief summary, asset count, genre, style, runtime, edit action, and leave-page reassurance now form one compact workspace band.
-- Progress and activity: the nine tall rows were replaced with a compact rail. The active stage, current action, token/elapsed metrics, and three recent updates remain visible without scrolling on the desktop target.
-- Preview: the selected mock's preview-first right column is matched with the real GameWeave illustration or live game iframe, runtime checklist, heartbeat, and task actions.
-- Responsive behavior: desktop uses the selected two-column layout. Tablet and mobile stack into one column; the progress rail scrolls inside its own surface while the document itself remains overflow-free.
+- Header: the Activity identity block, vertical divider, underline tabs, success state, Play preview action, and close control follow the selected mock's order and proportions.
+- Task summary: status, elapsed time, gameplay QA, tokens, repair/replan attempts, game dimension, and manifest are presented as one calm label/value rail rather than a grid of cards.
+- Timeline: a vertical status line, state markers, durations, concise summaries, expandable technical details, implementation-team progress, and a functional agent filter match the reference's dominant central reading flow.
+- Context inspector: changed/context files, line counts, additions/deletions, URLs, dimension, type, theme, and record sources use grouped rows and lightweight separators, matching the reference's right-side density.
 
 **Comparison History**
 
-1. Pass 1 findings:
-   - [P2] Progress labels were allowed to occupy more width than each rail column, making adjacent labels visually collide.
-   - [P2] The primary current-action and recent-activity copy exposed raw agent phrases such as brief-expansion and retrieval-strategy logs.
-   - [P2] Failed preview copy still promised automatic preview updates after the task had stopped.
+1. Initial implementation findings:
+   - [P2] Real agent messages and eight visible detail lines made the first expanded events too tall, hiding most of the timeline above the fold.
+   - [P2] The first header pass used pill-style tabs and a tighter header than the selected underline-tab reference.
+   - [P2] Keeping all three columns active at 1024px reduced the timeline to an impractical reading width.
 2. Fixes made:
-   - Reduced each progress label's maximum width and added internal spacing so all nine labels remain distinct.
-   - Added user-facing translations for intent-spec, brief-expansion, tag, runtime, retrieval, and normalized-prompt messages while preserving raw details in the drawer.
-   - Added succeeded, failed, cancelled, and active preview descriptions.
-3. Post-fix evidence:
-   - `<repo>\artifacts\product-design\create-record-redesign\12-qa-comparison-final.png`
-   - Final desktop capture shows the active generation state, all nine stages, current action, metrics, activity, preview, and actions in the intended hierarchy.
-   - Mobile document width matched its client width at 390px. Tablet document width matched its client width at 768px.
+   - Clamped event summaries to two lines and reduced expanded detail previews to five two-line entries.
+   - Added the identity divider, increased header breathing room, matched the 44px brand mark, and switched to underline tabs.
+   - Moved the three-column breakpoint to 1280px and ordered the timeline first below that breakpoint.
+3. Post-fix visual evidence:
+   - Desktop: `<repo>\frontend\design\activity-implementation.png`
+   - Responsive: `<repo>\frontend\design\activity-implementation-1024.png`
+   - The final desktop capture preserves the reference composition while showing four real timeline stages above the fold; the responsive capture keeps the timeline readable without overlapping controls.
 
 **Primary Interactions Tested**
 
-- Started multiple real local generation tasks from the Create flow and verified the task-record route and live generation state.
-- Opened and closed the full Activity drawer from the redesigned progress surface.
-- Verified the failed-state retry action returns the task to an active generation state.
-- Inspected active, failed, and succeeded task states, including the live iframe preview in the succeeded state.
-- Browser console errors checked: none. One pre-existing Next.js smooth-scroll deprecation warning remains.
+- Switched among Overview, Activity, and Files tabs and verified each panel's unique content.
+- Filtered the timeline to `GameCodeAgent` and verified both matching Code Generation events, then restored All agents.
+- Collapsed and re-expanded the first timeline event and verified its detail content visibility changed correctly.
+- Closed the Activity workspace and reopened it from View full activity.
+- Checked browser console errors after the interaction pass: none.
 
 **Implementation Checklist**
 
-- [x] Selected visual direction implemented in the existing task-record route.
-- [x] Existing task creation, SSE updates, activity drawer, retry, cancel, preview, publish, and revision behavior preserved.
-- [x] Desktop, tablet, and mobile layouts visually checked.
-- [x] TypeScript and lint checks passed.
-- [x] Frontend production build passed.
-- [x] Source and implementation compared in one combined visual input.
+- [x] Selected first visual direction implemented in the existing Create task flow.
+- [x] Existing live token total, author-team progress, file diffs, context records, preview link, and technical data preserved.
+- [x] Desktop and 1024px responsive layouts visually checked.
+- [x] Source and implementation compared together at the same desktop viewport.
+- [x] TypeScript check passed.
+- [x] Targeted ESLint check passed.
+- [x] Next.js production build passed.
 
 **Follow-up Polish**
 
-- [P3] The shared top navigation remains dense at tablet widths; a separate app-shell navigation pass could collapse utility actions earlier without changing this task-record screen.
+- [P3] Tasks with dozens of changed files show only the six highest-churn files in the inspector; the Files tab exposes the full set and diffs.
 
 final result: passed

@@ -316,6 +316,8 @@ class AgentTurnStateEventOut(_AgentLogEventBaseOut):
 
 class AgentHeartbeatEventOut(_AgentLogEventBaseOut):
     type: Literal["heartbeat"]
+    agent: str | None = None
+    operation: Literal["authoring", "repairing"] | None = None
     phase: str | None = None
     elapsed_seconds: int | None = None
     idle_seconds: int | None = None
@@ -356,8 +358,19 @@ class AgentUsageEventOut(_AgentLogEventBaseOut):
     output_tokens: int | None = None
     total_tokens: int | None = None
     cached_tokens: int | None = None
+    cache_write_tokens: int | None = None
     requests: int | None = None
     cache_percent: int | None = None
+
+
+class AgentUsageProgressEventOut(_AgentLogEventBaseOut):
+    type: Literal["usage_progress"]
+    agent: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    cached_tokens: int | None = None
+    cache_write_tokens: int | None = None
 
 
 class AgentErrorEventOut(_AgentLogEventBaseOut):
@@ -372,6 +385,78 @@ class AgentNoticeEventOut(_AgentLogEventBaseOut):
     reason: str | None = None
 
 
+class AgentRoleBudgetExhaustedEventOut(_AgentLogEventBaseOut):
+    type: Literal["role_budget_exhausted"]
+    agent: str
+    operation: Literal["authoring", "repairing"]
+    reason: Literal["max_turns"] = "max_turns"
+    message: str | None = None
+    turns_limit: int | None = None
+    changed: list[str] | None = None
+    checks_ok: bool | None = None
+
+
+class AgentRepairAttemptStartedEventOut(_AgentLogEventBaseOut):
+    type: Literal["repair_attempt_started"]
+    agent: str | None = None
+    operation: Literal["repairing"] = "repairing"
+    repair_kind: Literal["build", "revision", "gameplay"] | None = None
+    attempt: int | None = None
+    max_attempts: int | None = None
+    caused_by_step_id: str | None = None
+
+
+class AgentAuthorTeamEventOut(_AgentLogEventBaseOut):
+    type: Literal["author_team"]
+    phase: str | None = None
+    role: str | None = None
+    message: str | None = None
+    base_revision: str | None = None
+    contract_hash: str | None = None
+    contract_source: str | None = None
+
+
+class AgentPatchDiagnosticOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    code: str | None = None
+    path: str | None = None
+    line: int | None = None
+    column: int | None = None
+    rule: str | None = None
+    message: str | None = None
+
+
+class AgentValidationRejectionEventOut(_AgentLogEventBaseOut):
+    type: Literal["validation_rejection"]
+    tool: str | None = None
+    path: str | None = None
+    diagnostics: list[AgentPatchDiagnosticOut] | None = None
+    diagnostics_omitted: int | None = None
+
+
+class AgentRetryEventOut(_AgentLogEventBaseOut):
+    type: Literal["retry"]
+    source: str | None = None
+    attempt: int | None = None
+    next_attempt: int | None = None
+    reason: str | None = None
+    stream_event: str | None = None
+    error_code: str | None = None
+    response_id: str | None = None
+    delay_seconds: float | None = None
+
+
+class AgentRoleStreamFailedPartialEventOut(_AgentLogEventBaseOut):
+    type: Literal["role_stream_failed_partial"]
+    agent: str | None = None
+    operation: Literal["authoring", "repairing"] | None = None
+    reason: str | None = None
+    message: str | None = None
+    changed: list[str] | None = None
+    checks_ok: bool | None = None
+
+
 AgentLogEventOut = Annotated[
     AgentFileChangeEventOut
     | AgentTurnStateEventOut
@@ -379,13 +464,44 @@ AgentLogEventOut = Annotated[
     | AgentCheckEventOut
     | AgentToolEventOut
     | AgentUsageEventOut
+    | AgentUsageProgressEventOut
     | AgentErrorEventOut
-    | AgentNoticeEventOut,
+    | AgentNoticeEventOut
+    | AgentRoleBudgetExhaustedEventOut
+    | AgentRepairAttemptStartedEventOut
+    | AgentAuthorTeamEventOut
+    | AgentValidationRejectionEventOut
+    | AgentRetryEventOut
+    | AgentRoleStreamFailedPartialEventOut,
     Field(discriminator="type"),
 ]
 
+# Single source of truth for serializers: payloads whose type is not listed
+# here must be dropped before response validation, never allowed to 500 the
+# task endpoints when an agent starts emitting a new event type.
+AGENT_LOG_EVENT_TYPES = frozenset(
+    {
+        "file_change",
+        "turn_state",
+        "heartbeat",
+        "check",
+        "tool",
+        "usage",
+        "usage_progress",
+        "error",
+        "notice",
+        "role_budget_exhausted",
+        "repair_attempt_started",
+        "author_team",
+        "validation_rejection",
+        "retry",
+        "role_stream_failed_partial",
+    }
+)
+
 
 class AgentLogEntryOut(BaseModel):
+    cursor: int | None = None
     line: str
     level: str | None = None
     created_at: str | None = None
@@ -393,6 +509,7 @@ class AgentLogEntryOut(BaseModel):
 
 
 class AgentLogItemOut(BaseModel):
+    step_id: str | None = None
     agent_name: str
     step: str
     message: str
@@ -449,6 +566,30 @@ class TaskOut(BaseModel):
     assets: list[TaskAssetOut] | None = None
     logs: list[AgentLogItemOut] | None = None
     steps: list[TaskStepOut] | None = None
+
+
+class TaskLogDeltaOut(BaseModel):
+    cursor: int
+    step_id: str
+    agent_name: str
+    step: str
+    status: str
+    entry: AgentLogEntryOut
+
+
+class TaskStepStatusPatchOut(BaseModel):
+    step_id: str
+    agent_name: str
+    step: str
+    status: str
+    duration: str | None = None
+
+
+class TaskEventDeltaOut(BaseModel):
+    cursor: int
+    task: TaskOut
+    logs: list[TaskLogDeltaOut]
+    steps: list[TaskStepStatusPatchOut]
 
 
 class TaskListOut(BaseModel):

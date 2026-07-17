@@ -33,18 +33,59 @@ class _Chunk:
     ins_lines: list[str] = field(default_factory=list)
 
 
-def _prepare_operation_diff_lines(diff: str | None) -> list[str]:
-    """Normalize one SDK operation diff and reject the removed full-patch protocol."""
+def _normalize_envelope_path(raw: str) -> str:
+    path = raw.strip().strip('"').replace("\\", "/")
+    if path.startswith("./"):
+        path = path[2:]
+    if path.startswith(("a/", "b/")):
+        path = path[2:]
+    return path
+
+
+def _prepare_operation_diff_lines(
+    diff: str | None,
+    *,
+    path: str,
+    operation: str,
+) -> list[str]:
+    """Normalize one SDK operation diff, including a safe matching envelope."""
 
     text = str(diff or "").replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
     if not text:
         return []
     lines = text.split("\n")
-    if any(line.startswith(_FULL_PATCH_PREFIXES) for line in lines):
+    if not any(line.startswith(_FULL_PATCH_PREFIXES) for line in lines):
+        return lines
+
+    expected_header = {
+        "create_file": "*** Add File: ",
+        "update_file": "*** Update File: ",
+    }.get(operation)
+    well_formed = (
+        expected_header is not None
+        and lines[0] == "*** Begin Patch"
+        and lines[-1] == "*** End Patch"
+        and len(lines) >= 4
+    )
+    body = lines[1:-1] if well_formed else []
+    directives = [
+        (index, line)
+        for index, line in enumerate(body)
+        if line.startswith(_FULL_PATCH_PREFIXES)
+    ]
+    if (
+        not well_formed
+        or len(directives) != 1
+        or directives[0][0] != 0
+        or not directives[0][1].startswith(expected_header or "\0")
+        or _normalize_envelope_path(directives[0][1][len(expected_header or "") :])
+        != _normalize_envelope_path(path)
+    ):
         raise _PatchError(
-            "SDK operation diff must contain only V4A content/context lines, not a full patch envelope"
+            "SDK operation diff full patch envelope must contain exactly one matching "
+            f"{operation} header for {path!r}"
         )
-    return lines
+    return body[1:]
 
 
 def _resolve_bundle_path(raw: str, files: dict[str, str]) -> str:
@@ -169,7 +210,7 @@ def _find_context(lines: list[str], context: list[str], start: int, eof: bool) -
 def _parse_create_diff(diff: str | None, path: str) -> str:
     """Parse a create_file operation whose content lines must start with '+'."""
 
-    lines = _prepare_operation_diff_lines(diff)
+    lines = _prepare_operation_diff_lines(diff, path=path, operation="create_file")
     if not lines:
         raise _PatchError(f"create_file for {path!r} has no '+' content lines")
     body: list[str] = []
@@ -197,7 +238,7 @@ def _seek_anchor(file_lines: list[str], index: int, anchor: str) -> tuple[int, i
 def _parse_update_diff(diff: str | None, text: str, path: str) -> tuple[list[_Chunk], int]:
     """Parse one update_file operation directly into chunks and fuzz metadata."""
 
-    patch_lines = _prepare_operation_diff_lines(diff)
+    patch_lines = _prepare_operation_diff_lines(diff, path=path, operation="update_file")
     file_lines = text.split("\n")
     chunks: list[_Chunk] = []
     patch_index = 0

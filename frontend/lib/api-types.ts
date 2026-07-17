@@ -1016,6 +1016,32 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AgentAuthorTeamEventOut */
+        AgentAuthorTeamEventOut: {
+            /** Base Revision */
+            base_revision?: string | null;
+            /** Contract Hash */
+            contract_hash?: string | null;
+            /** Contract Source */
+            contract_source?: string | null;
+            /** Message */
+            message?: string | null;
+            /** Phase */
+            phase?: string | null;
+            /** Role */
+            role?: string | null;
+            /** Seq */
+            seq?: number | null;
+            /** Status */
+            status?: string | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "author_team";
+        } & {
+            [key: string]: unknown;
+        };
         /** AgentBundleFileOut */
         AgentBundleFileOut: {
             /** Bytes */
@@ -1142,6 +1168,8 @@ export interface components {
         };
         /** AgentHeartbeatEventOut */
         AgentHeartbeatEventOut: {
+            /** Agent */
+            agent?: string | null;
             /** Changed Count */
             changed_count?: number | null;
             /** Checks */
@@ -1154,6 +1182,8 @@ export interface components {
             files_in_context?: components["schemas"]["AgentFileContextOut"][] | null;
             /** Idle Seconds */
             idle_seconds?: number | null;
+            /** Operation */
+            operation?: ("authoring" | "repairing") | null;
             /** Phase */
             phase?: string | null;
             /** Seq */
@@ -1172,8 +1202,10 @@ export interface components {
         AgentLogEntryOut: {
             /** Created At */
             created_at?: string | null;
+            /** Cursor */
+            cursor?: number | null;
             /** Event */
-            event?: (components["schemas"]["AgentFileChangeEventOut"] | components["schemas"]["AgentTurnStateEventOut"] | components["schemas"]["AgentHeartbeatEventOut"] | components["schemas"]["AgentCheckEventOut"] | components["schemas"]["AgentToolEventOut"] | components["schemas"]["AgentUsageEventOut"] | components["schemas"]["AgentErrorEventOut"] | components["schemas"]["AgentNoticeEventOut"]) | null;
+            event?: (components["schemas"]["AgentFileChangeEventOut"] | components["schemas"]["AgentTurnStateEventOut"] | components["schemas"]["AgentHeartbeatEventOut"] | components["schemas"]["AgentCheckEventOut"] | components["schemas"]["AgentToolEventOut"] | components["schemas"]["AgentUsageEventOut"] | components["schemas"]["AgentUsageProgressEventOut"] | components["schemas"]["AgentErrorEventOut"] | components["schemas"]["AgentNoticeEventOut"] | components["schemas"]["AgentRoleBudgetExhaustedEventOut"] | components["schemas"]["AgentRepairAttemptStartedEventOut"] | components["schemas"]["AgentAuthorTeamEventOut"]) | null;
             /** Level */
             level?: string | null;
             /** Line */
@@ -1197,6 +1229,8 @@ export interface components {
             status: string;
             /** Step */
             step: string;
+            /** Step Id */
+            step_id?: string | null;
         };
         /** AgentNoticeEventOut */
         AgentNoticeEventOut: {
@@ -1213,6 +1247,71 @@ export interface components {
              * @enum {string}
              */
             type: "notice";
+        } & {
+            [key: string]: unknown;
+        };
+        /** AgentRepairAttemptStartedEventOut */
+        AgentRepairAttemptStartedEventOut: {
+            /** Agent */
+            agent?: string | null;
+            /** Attempt */
+            attempt?: number | null;
+            /** Caused By Step Id */
+            caused_by_step_id?: string | null;
+            /** Max Attempts */
+            max_attempts?: number | null;
+            /**
+             * Operation
+             * @default repairing
+             * @constant
+             */
+            operation: "repairing";
+            /** Repair Kind */
+            repair_kind?: ("build" | "revision" | "gameplay") | null;
+            /** Seq */
+            seq?: number | null;
+            /** Status */
+            status?: string | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "repair_attempt_started";
+        } & {
+            [key: string]: unknown;
+        };
+        /** AgentRoleBudgetExhaustedEventOut */
+        AgentRoleBudgetExhaustedEventOut: {
+            /** Agent */
+            agent: string;
+            /** Changed */
+            changed?: string[] | null;
+            /** Checks Ok */
+            checks_ok?: boolean | null;
+            /** Message */
+            message?: string | null;
+            /**
+             * Operation
+             * @enum {string}
+             */
+            operation: "authoring" | "repairing";
+            /**
+             * Reason
+             * @default max_turns
+             * @constant
+             */
+            reason: "max_turns";
+            /** Seq */
+            seq?: number | null;
+            /** Status */
+            status?: string | null;
+            /** Turns Limit */
+            turns_limit?: number | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "role_budget_exhausted";
         } & {
             [key: string]: unknown;
         };
@@ -1296,6 +1395,8 @@ export interface components {
         AgentUsageEventOut: {
             /** Cache Percent */
             cache_percent?: number | null;
+            /** Cache Write Tokens */
+            cache_write_tokens?: number | null;
             /** Cached Tokens */
             cached_tokens?: number | null;
             /** Input Tokens */
@@ -1315,6 +1416,32 @@ export interface components {
              * @enum {string}
              */
             type: "usage";
+        } & {
+            [key: string]: unknown;
+        };
+        /** AgentUsageProgressEventOut */
+        AgentUsageProgressEventOut: {
+            /** Agent */
+            agent?: string | null;
+            /** Cache Write Tokens */
+            cache_write_tokens?: number | null;
+            /** Cached Tokens */
+            cached_tokens?: number | null;
+            /** Input Tokens */
+            input_tokens?: number | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
+            /** Seq */
+            seq?: number | null;
+            /** Status */
+            status?: string | null;
+            /** Total Tokens */
+            total_tokens?: number | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "usage_progress";
         } & {
             [key: string]: unknown;
         };

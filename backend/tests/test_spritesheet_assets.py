@@ -18,11 +18,12 @@ from app.services.game_assets import (
     SHEET_GRID,
     SHEET_SIZE,
     _postprocess_spritesheet,
+    _generate_with_retry,
     generate_game_assets,
     plan_game_assets,
 )
 from app.services.phaser_projects import create_modular_phaser_project
-from app.services.provider_router import GeneratedMedia
+from app.services.provider_router import GeneratedMedia, MediaRequest
 
 _SHOOTER_STATE = {
     "prompt": "top-down gun battle with soldiers",
@@ -310,6 +311,19 @@ class _AlwaysFailRouter:
         raise ProviderGenerationError("image provider request failed: gateway timeout")
 
 
+class _TilesetFailRouter(_StubRouter):
+    def __init__(self):
+        self.tileset_calls = 0
+
+    def generate(self, request):
+        if "environment tileset" in request.prompt.lower():
+            from app.services.provider_router import ProviderGenerationError
+
+            self.tileset_calls += 1
+            raise ProviderGenerationError("image provider request failed: tileset timeout")
+        return super().generate(request)
+
+
 def test_generate_game_assets_retries_transient_provider_errors(monkeypatch):
     from app.core.config import settings
 
@@ -319,10 +333,71 @@ def test_generate_game_assets_retries_transient_provider_errors(monkeypatch):
     result = generate_game_assets(dict(_SHOOTER_STATE), router=router)
     keys = {entry["key"] for entry in result["manifest_entries"]}
     assert "sheet" in keys and "background" in keys, "重试后两张图都应生成"
-    assert any("retrying once" in log for log in result["logs"])
+    assert any("retrying attempt 2/3" in log for log in result["logs"])
 
 
-def test_required_image_failure_pauses_even_when_fail_open_is_enabled(monkeypatch):
+def test_generate_with_retry_retries_twice_before_succeeding(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ASSET_PROVIDER_MAX_RETRIES", 2)
+
+    class FailTwiceThenSucceed(_StubRouter):
+        def __init__(self):
+            self.calls = 0
+
+        def generate(self, request):
+            self.calls += 1
+            if self.calls <= 2:
+                from app.services.provider_router import ProviderGenerationError
+
+                raise ProviderGenerationError(f"transient-{self.calls}")
+            return super().generate(request)
+
+    router = FailTwiceThenSucceed()
+    logs = []
+    media = _generate_with_retry(
+        router,
+        MediaRequest(modality="image", prompt="test"),
+        logs,
+        "sheet",
+    )
+
+    assert media.content_type == "image/png"
+    assert router.calls == 3
+    assert ["retrying attempt 2/3" in logs[0], "retrying attempt 3/3" in logs[1]] == [True, True]
+
+
+def test_generate_with_retry_does_not_duplicate_stream_protocol_requests(monkeypatch):
+    from app.core.config import settings
+    from app.services.provider_router import ProviderStreamProtocolError
+
+    monkeypatch.setattr(settings, "ASSET_PROVIDER_MAX_RETRIES", 2)
+
+    class BrokenStreamThenSuccess(_StubRouter):
+        def __init__(self):
+            self.calls = 0
+
+        def generate(self, request):
+            self.calls += 1
+            if self.calls <= 2:
+                raise ProviderStreamProtocolError("image provider returned no final event")
+            return super().generate(request)
+
+    router = BrokenStreamThenSuccess()
+    logs = []
+    with pytest.raises(ProviderStreamProtocolError, match="no final event"):
+        _generate_with_retry(
+            router,
+            MediaRequest(modality="image", prompt="test"),
+            logs,
+            "sheet",
+        )
+
+    assert router.calls == 1
+    assert logs == []
+
+
+def test_required_image_failure_pauses_for_manual_retry_even_when_fail_open_is_enabled(monkeypatch):
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "ASSET_GENERATION_ENABLED", True)
@@ -330,12 +405,40 @@ def test_required_image_failure_pauses_even_when_fail_open_is_enabled(monkeypatc
     monkeypatch.setattr(settings, "TILEMAP_GENERATION_ENABLED", False)
     router = _AlwaysFailRouter()
 
-    with pytest.raises(AssetGenerationRetryRequired, match="paused; retry the failed step manually"):
+    with pytest.raises(AssetGenerationRetryRequired, match="waiting for manual retry"):
         generate_game_assets(dict(_SHOOTER_STATE), router=router)
 
     # 并行语义:所有在飞请求都会跑完(每个恰好重试一次)再按计划顺序结算失败
     image_items = [p for p in plan_game_assets(dict(_SHOOTER_STATE)) if p.modality == "image"]
-    assert router.calls == 2 * len(image_items)
+    assert router.calls == 3 * len(image_items)
+
+
+def test_required_tileset_failure_pauses_without_palette_fallback(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ASSET_GENERATION_ENABLED", True)
+    monkeypatch.setattr(settings, "TILEMAP_GENERATION_ENABLED", True)
+    monkeypatch.setattr(settings, "ASSET_PROVIDER_MAX_RETRIES", 2)
+    router = _TilesetFailRouter()
+
+    with pytest.raises(AssetGenerationRetryRequired, match="Image asset 'tileset'.*waiting for manual retry"):
+        generate_game_assets(dict(_CN_SHOOTER_STATE), router=router)
+
+    assert router.tileset_calls == 3
+
+
+def test_invalid_generated_spritesheet_pauses_instead_of_shipping_plain_image(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ASSET_GENERATION_ENABLED", True)
+    monkeypatch.setattr(settings, "TILEMAP_GENERATION_ENABLED", False)
+
+    class InvalidImageRouter:
+        def generate(self, request):
+            return GeneratedMedia(b"not-an-image", "image/png", ".png", "stub", "broken-image")
+
+    with pytest.raises(AssetGenerationRetryRequired, match="could not be normalized as a spritesheet"):
+        generate_game_assets(dict(_SHOOTER_STATE), router=InvalidImageRouter())
 
 
 def test_generate_game_assets_emits_spritesheet_manifest(monkeypatch):
@@ -542,7 +645,7 @@ def test_gameplay_qa_flags_unused_generated_assets():
     play = _PAD + "createCursorKeys();\nthis.juice.shake(0.01); // restart, procedural circles only"
     authored = validation_nodes._gameplay_qa(_vite_state(play, "author", _SHEET_MANIFEST))
     assert any("sprite sheet is preloaded but never used" in issue for issue in authored["issues"])
-    assert any("background image is preloaded but never displayed" in w for w in authored["warnings"])
+    assert any("background image is preloaded but never displayed" in issue for issue in authored["issues"])
     # 模板兜底只警告不拦发布
     template = validation_nodes._gameplay_qa(_vite_state(play, "template", _SHEET_MANIFEST))
     assert not any("sprite sheet" in issue for issue in template["issues"])
@@ -840,3 +943,63 @@ def test_gameplay_qa_flags_designed_obstacles_missing_from_code():
     state_ok["game_design"] = {"entities": [{"name": "路障", "role": "obstacle 掩体", "visual": "混凝土路障"}]}
     result_ok = validation_nodes._gameplay_qa(state_ok)
     assert not any("obstacle/blocking" in issue for issue in result_ok["issues"])
+
+
+def test_compress_image_asset_recompresses_large_pngs_to_webp():
+    import io as _io
+    import random
+
+    from PIL import Image
+
+    from app.services.game_assets import _compress_image_asset
+
+    rng = random.Random(3)
+    noisy = Image.new("RGB", (1024, 1024))
+    noisy.putdata(
+        [
+            (rng.randrange(256), rng.randrange(200), 40 + (i % 60))
+            for i, _ in enumerate(range(1024 * 1024))
+        ]
+    )
+    buffer = _io.BytesIO()
+    noisy.save(buffer, format="PNG")
+    raw = buffer.getvalue()
+    assert len(raw) > 262_144
+
+    content, content_type, extension = _compress_image_asset(
+        raw, "image/png", ".png", keep_alpha=False
+    )
+    assert content_type == "image/webp" and extension == ".webp"
+    assert len(content) < len(raw) * 0.85
+
+    # Sheets keep their alpha channel through the WebP round trip.
+    rgba = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
+    for x in range(0, 1024, 3):
+        for y in range(0, 1024, 3):
+            rgba.putpixel((x, y), (x % 256, y % 256, 128, 255))
+    buffer = _io.BytesIO()
+    rgba.save(buffer, format="PNG")
+    sheet_raw = buffer.getvalue()
+    content, content_type, extension = _compress_image_asset(
+        sheet_raw, "image/png", ".png", keep_alpha=True
+    )
+    if extension == ".webp":
+        round_trip = Image.open(_io.BytesIO(content))
+        assert round_trip.mode in {"RGBA", "LA", "P"} or "A" in round_trip.getbands()
+
+
+def test_compress_image_asset_keeps_small_or_marginal_files():
+    from app.services.game_assets import _compress_image_asset
+
+    tiny = b"x" * 1000
+    assert _compress_image_asset(tiny, "image/png", ".png", keep_alpha=False) == (
+        tiny,
+        "image/png",
+        ".png",
+    )
+    svg = b"<svg/>" * 100_000
+    assert _compress_image_asset(svg, "image/svg+xml", ".svg", keep_alpha=False) == (
+        svg,
+        "image/svg+xml",
+        ".svg",
+    )

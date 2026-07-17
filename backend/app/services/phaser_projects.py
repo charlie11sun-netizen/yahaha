@@ -261,7 +261,11 @@ def create_modular_phaser_project(
         ),
         text_artifact(
             "src/config/gameConfig.ts",
-            """export type AssetKind = "image" | "spritesheet" | "audio" | "video" | "tilemap";
+            """// Side-effect import: installs the QA runtime probes (scene/anims/backdrop
+// instrumentation) in every game, since every module imports gameConfig.
+import "../systems/Probe";
+
+export type AssetKind = "image" | "spritesheet" | "audio" | "video" | "tilemap";
 
 export interface AssetEntry {
   key: string;
@@ -370,10 +374,97 @@ export function colorNum(hex: string): number {
 """,
         ),
         text_artifact(
+            "src/systems/Probe.ts",
+            """import Phaser from "phaser";
+
+/** Runtime behavior probes for automated QA.
+ *
+ * The QA sandbox reads `window.__GW_PROBES__.counts` after driving the game to
+ * verify that declared content actually happens at runtime (scenes reached,
+ * backdrops drawn, animations played, actors spawned). Everything here is
+ * best-effort and bounded: a probe must never break or slow the game.
+ *
+ * Scaffold systems report automatically (scene starts, animation playback,
+ * Backdrop.draw). Gameplay code adds the calls QA reconciles against the
+ * design roster:
+ * - `Probe.spawn("enemy", definition.id)` whenever an enemy or boss enters play
+ * - `Probe.emit("projectile:spawn", projectileId)` when a projectile is fired
+ */
+interface ProbeStore {
+  counts: Record<string, number>;
+  total: number;
+}
+
+const MAX_KEYS = 300;
+const MAX_DETAIL = 80;
+
+function store(): ProbeStore | null {
+  if (typeof window === "undefined") return null;
+  const host = window as unknown as { __GW_PROBES__?: ProbeStore };
+  if (!host.__GW_PROBES__) host.__GW_PROBES__ = { counts: {}, total: 0 };
+  return host.__GW_PROBES__;
+}
+
+export const Probe = {
+  /** Count a named runtime event, optionally qualified: emit("projectile:spawn", "bolt"). */
+  emit(kind: string, detail = ""): void {
+    try {
+      const data = store();
+      if (!data) return;
+      const key = detail ? `${kind}|${String(detail).slice(0, MAX_DETAIL)}` : kind;
+      if (data.counts[key] === undefined && Object.keys(data.counts).length >= MAX_KEYS) return;
+      data.counts[key] = (data.counts[key] ?? 0) + 1;
+      data.total += 1;
+    } catch {
+      /* probes must never break gameplay */
+    }
+  },
+
+  /** Report an actor entering play, e.g. Probe.spawn("enemy", "grunt"). */
+  spawn(category: string, id: string): void {
+    Probe.emit(`spawn:${category}`, id);
+  },
+};
+
+function install(): void {
+  try {
+    const host = window as unknown as { __GW_PROBE_HOOKS__?: boolean };
+    if (host.__GW_PROBE_HOOKS__) return;
+    host.__GW_PROBE_HOOKS__ = true;
+    Probe.emit("probe:ready");
+
+    const scenePrototype = Phaser.Scenes.ScenePlugin.prototype;
+    const originalStart = scenePrototype.start;
+    scenePrototype.start = function (this: Phaser.Scenes.ScenePlugin, key?: unknown, data?: object) {
+      if (typeof key === "string" && key) Probe.emit("scene:start", key);
+      return originalStart.call(this, key as never, data);
+    };
+
+    const animsPrototype = Phaser.Animations.AnimationState.prototype;
+    const originalPlay = animsPrototype.play;
+    animsPrototype.play = function (
+      this: Phaser.Animations.AnimationState,
+      key: unknown,
+      ignoreIfPlaying?: boolean,
+    ) {
+      const name = typeof key === "string" ? key : ((key as { key?: string } | null)?.key ?? "");
+      if (name) Probe.emit("anims:play", name);
+      return originalPlay.call(this, key as never, ignoreIfPlaying);
+    };
+  } catch {
+    /* instrumentation is best-effort */
+  }
+}
+
+install();
+""",
+        ),
+        text_artifact(
             "src/systems/Backdrop.ts",
             """import Phaser from "phaser";
 import { gameConfig } from "../config/gameConfig";
 import { colorNum } from "./Colors";
+import { Probe } from "./Probe";
 
 /** Show a generated background image when one exists (cover-fit at the
  * lowest depth, dimmed toward the palette bg so gameplay sprites stay
@@ -388,6 +479,7 @@ export const Backdrop = {
   draw(scene: Phaser.Scene, dim = 0.35, key?: string): Phaser.GameObjects.Image | null {
     const textureKey = key ?? gameConfig.assetKeys.background;
     if (!textureKey || !scene.textures.exists(textureKey)) return null;
+    Probe.emit("backdrop:draw", scene.scene.key);
     const { width, height } = scene.scale;
     const image = scene.add.image(width / 2, height / 2, textureKey).setDepth(-20);
     const scale = Math.max(width / image.width, height / image.height);
@@ -511,6 +603,164 @@ export class GameState {
 """,
         ),
         text_artifact(
+            "src/systems/GameWeaveBridge.ts",
+            """/** Sandboxed, host-backed persistence for saves, settings, and key bindings.
+ * Generated games must not access browser storage directly. The GameWeave host
+ * namespaces values by game id and answers through this postMessage bridge.
+ * In the isolated QA sandbox (where no host answers), an in-memory fallback keeps
+ * the game playable and load() resolves quickly instead of hanging startup. */
+
+type StoredValue = unknown;
+
+type StorageResponse = {
+  type: "gameweave:storage:response";
+  requestId: string;
+  ok: boolean;
+  found?: boolean;
+  value?: StoredValue;
+  error?: string;
+};
+
+type CloneResult<T> = { ok: true; value: T } | { ok: false };
+
+export class GameWeaveBridge {
+  private static readonly memory = new Map<string, StoredValue>();
+  private static sequence = 0;
+
+  private static safeSlot(slot: string): string {
+    const normalized = String(slot || "default").replace(/[^A-Za-z0-9_.-]/g, "-").slice(0, 64);
+    return normalized || "default";
+  }
+
+  /** JSON-only values keep host persistence deterministic and give the memory
+   * fallback value semantics: callers never share an object reference with the
+   * cached copy. The byte check mirrors the host's per-slot limit. */
+  private static clone<T>(value: T): CloneResult<T> {
+    const ancestors = new Set<object>();
+    const isJsonValue = (candidate: unknown): boolean => {
+      if (candidate === null || typeof candidate === "string" || typeof candidate === "boolean") return true;
+      if (typeof candidate === "number") return Number.isFinite(candidate);
+      if (typeof candidate !== "object" || ancestors.has(candidate)) return false;
+      const prototype = Object.getPrototypeOf(candidate);
+      if (!Array.isArray(candidate) && prototype !== Object.prototype && prototype !== null) return false;
+      if (Object.getOwnPropertySymbols(candidate).length > 0) return false;
+      ancestors.add(candidate);
+      try {
+        if (Array.isArray(candidate)) {
+          for (let index = 0; index < candidate.length; index += 1) {
+            if (!(index in candidate) || !isJsonValue(candidate[index])) return false;
+          }
+        } else {
+          for (const key of Object.keys(candidate)) {
+            if (!isJsonValue((candidate as Record<string, unknown>)[key])) return false;
+          }
+        }
+        return true;
+      } finally {
+        ancestors.delete(candidate);
+      }
+    };
+    try {
+      if (!isJsonValue(value)) return { ok: false };
+      const encoded = JSON.stringify(value);
+      if (typeof encoded !== "string" || new TextEncoder().encode(encoded).byteLength > 64 * 1024) {
+        return { ok: false };
+      }
+      return { ok: true, value: JSON.parse(encoded) as T };
+    } catch {
+      return { ok: false };
+    }
+  }
+
+  static save(slot: string, value: StoredValue, timeoutMs = 250): Promise<boolean> {
+    const key = GameWeaveBridge.safeSlot(slot);
+    const cloned = GameWeaveBridge.clone(value);
+    if (!cloned.ok) return Promise.resolve(false);
+    const hadPrevious = GameWeaveBridge.memory.has(key);
+    const previous = GameWeaveBridge.memory.get(key);
+    GameWeaveBridge.memory.set(key, cloned.value);
+    const requestId = `gw-storage-${Date.now()}-${++GameWeaveBridge.sequence}`;
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      let timer = 0;
+      const finish = (ok: boolean, rollback = false): void => {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener("message", onMessage);
+        window.clearTimeout(timer);
+        if (rollback) {
+          if (hadPrevious) GameWeaveBridge.memory.set(key, previous);
+          else GameWeaveBridge.memory.delete(key);
+        }
+        resolve(ok);
+      };
+      const onMessage = (event: MessageEvent<StorageResponse>): void => {
+        if (event.source !== window.parent) return;
+        const data = event.data;
+        if (!data || data.type !== "gameweave:storage:response" || data.requestId !== requestId) return;
+        finish(data.ok, !data.ok);
+      };
+      // Keep the in-memory copy for a hostless QA sandbox, but do not claim
+      // durable persistence unless the host explicitly acknowledges the write.
+      timer = window.setTimeout(() => finish(false), Math.max(50, timeoutMs));
+      window.addEventListener("message", onMessage);
+      try {
+        window.parent.postMessage({ type: "gameweave:storage:set", key, value: cloned.value, requestId }, "*");
+      } catch {
+        finish(false, true);
+      }
+    });
+  }
+
+  static load<T>(slot: string, fallback: T, timeoutMs = 250): Promise<T> {
+    const key = GameWeaveBridge.safeSlot(slot);
+    const clonedFallback = GameWeaveBridge.clone(fallback);
+    const safeFallback = clonedFallback.ok ? clonedFallback.value : fallback;
+    const memoryValue = GameWeaveBridge.memory.has(key) ? GameWeaveBridge.memory.get(key) : safeFallback;
+    const clonedMemory = GameWeaveBridge.clone(memoryValue as T);
+    const memoryFallback = clonedMemory.ok ? clonedMemory.value : safeFallback;
+    const requestId = `gw-storage-${Date.now()}-${++GameWeaveBridge.sequence}`;
+    return new Promise<T>((resolve) => {
+      let settled = false;
+      let timer = 0;
+      const finish = (value: T): void => {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener("message", onMessage);
+        window.clearTimeout(timer);
+        resolve(value);
+      };
+      const onMessage = (event: MessageEvent<StorageResponse>): void => {
+        if (event.source !== window.parent) return;
+        const data = event.data;
+        if (!data || data.type !== "gameweave:storage:response" || data.requestId !== requestId) return;
+        if (data.ok && data.found) {
+          const remote = GameWeaveBridge.clone(data.value as T);
+          if (!remote.ok) return finish(memoryFallback);
+          const cached = GameWeaveBridge.clone(remote.value);
+          if (cached.ok) GameWeaveBridge.memory.set(key, cached.value);
+          finish(remote.value);
+        } else if (data.ok) {
+          GameWeaveBridge.memory.delete(key);
+          const freshFallback = GameWeaveBridge.clone(fallback);
+          finish(freshFallback.ok ? freshFallback.value : fallback);
+        } else {
+          finish(memoryFallback);
+        }
+      };
+      timer = window.setTimeout(() => finish(memoryFallback), Math.max(50, timeoutMs));
+      window.addEventListener("message", onMessage);
+      try {
+        window.parent.postMessage({ type: "gameweave:storage:get", key, requestId }, "*");
+      } catch {
+        finish(memoryFallback);
+      }
+    });
+  }
+}
+""",
+        ),
+        text_artifact(
             "src/systems/Sfx.ts",
             """/** Procedural WebAudio sound presets — no audio files, sandbox-safe.
  * Call Sfx.play("pickup" | "hit" | ...) on gameplay events; every key action
@@ -548,6 +798,18 @@ const PRESETS: Record<SfxName, TonePreset> = {
 
 export class Sfx {
   private static ctx: AudioContext | null = null;
+  private static masterVolume = 1;
+
+  /** Global 0..1 gain used by generated settings menus. */
+  static setMasterVolume(value: number): number {
+    const finite = Number.isFinite(value) ? value : 1;
+    Sfx.masterVolume = Math.max(0, Math.min(1, finite));
+    return Sfx.masterVolume;
+  }
+
+  static getMasterVolume(): number {
+    return Sfx.masterVolume;
+  }
 
   private static context(): AudioContext | null {
     if (typeof window === "undefined" || typeof window.AudioContext !== "function") return null;
@@ -574,6 +836,8 @@ export class Sfx {
 
   private static tone(preset: TonePreset, multiplier: number, volume: number): void {
     try {
+      const effectiveVolume = preset.volume * Math.max(0, volume) * Sfx.masterVolume;
+      if (effectiveVolume <= 0) return;
       const ctx = Sfx.context();
       if (!ctx) return;
       const osc = ctx.createOscillator();
@@ -582,7 +846,7 @@ export class Sfx {
       osc.type = preset.wave;
       osc.frequency.setValueAtTime(Math.max(1, preset.from * multiplier), now);
       osc.frequency.exponentialRampToValueAtTime(Math.max(1, preset.to * multiplier), now + preset.duration);
-      gain.gain.setValueAtTime(Math.max(0.0001, preset.volume * volume), now);
+      gain.gain.setValueAtTime(Math.max(0.0001, effectiveVolume), now);
       gain.gain.exponentialRampToValueAtTime(0.0001, now + preset.duration);
       osc.connect(gain);
       gain.connect(ctx.destination);

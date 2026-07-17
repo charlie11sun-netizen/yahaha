@@ -285,6 +285,15 @@ def test_modular_phaser_scaffold_is_neutral_stage_with_quality_kit():
     assert "hitStop" in by_path["src/systems/Juice.ts"]
     assert "floatText" in by_path["src/systems/Juice.ts"]
     assert "playPitched" in by_path["src/systems/Sfx.ts"]
+    assert "setMasterVolume" in by_path["src/systems/Sfx.ts"]
+    bridge = by_path["src/systems/GameWeaveBridge.ts"]
+    assert "gameweave:storage:set" in bridge and "gameweave:storage:get" in bridge
+    assert "window.setTimeout(() => finish(false)" in bridge
+    assert "localStorage" not in bridge
+    assert "static save(slot: string, value: StoredValue, timeoutMs = 250): Promise<boolean>" in bridge
+    assert 'value: cloned.value, requestId' in bridge
+    assert "event.source !== window.parent" in bridge
+    assert "JSON.parse(encoded)" in bridge
     play = by_path["src/scenes/PlayScene.ts"]
     assert "GW_PLACEHOLDER_GAMEPLAY" in play
     assert "this.juice" in play and "Sfx.play" in play

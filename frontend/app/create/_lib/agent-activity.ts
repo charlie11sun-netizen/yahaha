@@ -1,5 +1,5 @@
 import type { AgentLogItem, Task } from "@/lib/types";
-import { activityMessageFromEvent, logEntries } from "./agent-events";
+import { activityMessageFromEvent, logEntries, usageFromEvent } from "./agent-events";
 
 const STREAM_TOKEN_RE = /^stream_tokens=(\d+)$/;
 
@@ -12,27 +12,17 @@ export function cleanStreamLine(line: string | null | undefined) {
   return line;
 }
 
-function parseStreamTokens(line: string | null | undefined) {
-  const match = line?.trim().match(STREAM_TOKEN_RE);
-  return match ? Number(match[1]) : null;
-}
-
 export function activeTaskLogs(task?: Task) {
   const logs = task?.logs ?? [];
   const running = logs.filter((log) => log.status === "running");
   return running.length ? running : logs.slice(-1);
 }
 
-export function getLiveStreamTokens(task?: Task) {
-  const logs = activeTaskLogs(task);
-  for (let logIndex = logs.length - 1; logIndex >= 0; logIndex -= 1) {
-    const lines = logs[logIndex].lines.length ? logs[logIndex].lines : [logs[logIndex].message];
-    for (let lineIndex = lines.length - 1; lineIndex >= 0; lineIndex -= 1) {
-      const value = parseStreamTokens(lines[lineIndex]);
-      if (value !== null) return value;
-    }
-  }
-  return null;
+export function getLiveTokenTotal(task?: Task) {
+  // Per-response usage is committed before usage_progress is published.  The
+  // durable task counter is therefore already live; adding streamed totals here
+  // double-counts the active response.
+  return task?.tokens ?? null;
 }
 
 export function getLiveAgentActivity(task?: Task) {
@@ -62,8 +52,15 @@ export function visibleAgentLogs(task?: Task): AgentLogItem[] {
 }
 
 function stripStreamTokenEntries(log: AgentLogItem): AgentLogItem {
-  const lines = log.lines.filter((line) => !isStreamTokenLine(line));
-  const entries = log.entries?.filter((entry) => !isStreamTokenLine(entry.line));
-  const message = isStreamTokenLine(log.message) ? (lines.at(-1) ?? entries?.at(-1)?.line ?? "") : log.message;
+  const entries = log.entries?.flatMap((entry) => {
+    if (!isStreamTokenLine(entry.line)) return [entry];
+    if (!usageFromEvent(entry.event)) return [];
+    const usageMessage = activityMessageFromEvent(entry.event);
+    return usageMessage ? [{ ...entry, line: usageMessage }] : [];
+  });
+  const lines = log.entries?.length
+    ? (entries ?? []).map((entry) => entry.line)
+    : log.lines.filter((line) => !isStreamTokenLine(line));
+  const message = isStreamTokenLine(log.message) ? (lines.at(-1) ?? "") : log.message;
   return { ...log, message, lines, entries };
 }

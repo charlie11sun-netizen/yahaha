@@ -27,6 +27,48 @@ is to wire them into every meaningful event.
 - `BootScene.createFallbackTexture`-style procedural textures and the soft
   `"spark"` glow texture for particle bursts.
 
+## Controls must work, not merely exist in source
+
+Phaser key names are not DOM `KeyboardEvent.code` names. A rebinding service may
+persist `KeyW`, `ArrowUp`, `Space`, and `Escape`, but `keyboard.addKey()` expects
+`W`, `UP`, `SPACE`, and `ESC` (or numeric `Phaser.Input.Keyboard.KeyCodes`).
+Passing the DOM string through unchanged compiles and animates normally while
+all keyboard controls remain inert.
+
+```ts
+const phaserKeyName = (code: string): string => {
+  if (code.startsWith("Key")) return code.slice(3).toUpperCase();
+  if (code.startsWith("Digit")) return code.slice(5);
+  return ({
+    ArrowUp: "UP", ArrowDown: "DOWN", ArrowLeft: "LEFT", ArrowRight: "RIGHT",
+    Space: "SPACE", Escape: "ESC", Enter: "ENTER", Tab: "TAB",
+  } as Record<string, string>)[code] ?? code.toUpperCase();
+};
+
+keyboard.addKey(phaserKeyName(savedDomCode), false, false);
+```
+
+Keep capture/storage and runtime registration separate. Before declaring input
+complete, exercise every advertised primary control and confirm it changes a
+rules-owned state or visible actor, not just that `addKey` appears in source.
+
+## Design for the embedded play surface
+
+The 1280x720 canvas is commonly displayed around 840x470 CSS pixels. Text and
+sprites that look acceptable at source resolution shrink by roughly one third:
+
+- essential HUD, objective, and control text: at least 18px source size;
+- secondary labels and tooltips: at least 16px source size;
+- generated player/threat art: size by the visible opaque silhouette, not the
+  padded sprite-sheet cell; aim for a clearly readable ~28-36 CSS-pixel actor;
+- keep instructions short and progressive instead of one dense line of controls.
+
+Generated backdrop art belongs in the primary gameplay scene, not only the
+title screen. Call `Backdrop.draw(this)` from `PlayScene.create()` and keep large
+arena panels translucent enough that the image, palette, and phase changes stay
+visible behind gameplay. A near-opaque full-screen rectangle technically uses
+the asset but still looks like a flat debug arena.
+
 ## Generated sprite sheet — use it when present
 
 When assets were generated, `gameConfig.sheet` holds a preloaded spritesheet with
@@ -89,6 +131,25 @@ backdrop it started on is leaving generated art unused. For the generated backgr
 `src/systems/Backdrop.ts`) in your scene's create(): it cover-fits the image at
 the lowest depth with a contrast dim, and falls back to a palette gradient when
 no background was generated — never replace it with a flat fill.
+
+## Runtime probes — QA replays the game and checks content actually happens
+
+`src/systems/Probe.ts` reports runtime behavior to the QA sandbox. Scene
+transitions, `anims.play`, and `Backdrop.draw` report automatically. You add
+exactly two kinds of calls:
+
+- `Probe.spawn("enemy", definition.id)` (or `"boss"`) whenever an actor enters
+  play — put it in the content factory or the scene spawn helper, once per
+  spawn.
+- `Probe.emit("projectile:spawn", projectileId)` when a projectile is fired.
+
+QA drives the built game for a few seconds and reconciles probes against the
+design roster: a backdrop that never draws in the gameplay scene, animation
+groups that never play, or an enemy roster with zero spawn reports all read as
+"content generated but never wired". Probes are no-ops in production terms
+(bounded counters on `window`), so never gate gameplay on them — just call
+them at the real spawn points. Faking probes without the behavior is useless:
+QA also sees screenshots, input response, and the static wiring checks.
 
 ## World edges — nothing drifts offscreen
 

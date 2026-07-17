@@ -1,3 +1,4 @@
+import json
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -50,7 +51,10 @@ def test_llm_chat_records_usage_and_cost(db_session_factory, monkeypatch):
                     input_tokens=1000,
                     output_tokens=2000,
                     total_tokens=3000,
-                    input_tokens_details=SimpleNamespace(cached_tokens=600),
+                    input_tokens_details=SimpleNamespace(
+                        cached_tokens=600,
+                        cache_write_tokens=400,
+                    ),
                 ),
             )
             return [
@@ -81,29 +85,225 @@ def test_llm_chat_records_usage_and_cost(db_session_factory, monkeypatch):
     assert result.prompt_tokens == 1000
     assert result.completion_tokens == 2000
     assert result.cached_tokens == 600
+    assert result.cache_write_tokens == 400
     # stream_tokens=0 起始行 + prompt cache 观测行，各发一次 log_appended
     assert published_events == [(task.id, "log_appended"), (task.id, "log_appended")]
 
     db = db_session_factory()
     call = db.query(LLMCall).one()
     refreshed_task = db.get(GenerationTask, task.id)
+    refreshed_step = db.get(AgentStep, step.id)
     assert call.task_id == task.id
     assert call.step_id == step.id
     assert call.total_tokens == 3000
     assert call.cached_tokens == 600
+    assert call.cache_write_tokens == 400
     assert call.cost_usd == Decimal("0.021250")
+    assert refreshed_step.tokens == 3000
+    assert refreshed_task.tokens_used == 3000
     assert refreshed_task.cost_usd == Decimal("0.021250")
     cache_log = (
         db.query(AgentLog)
         .filter(AgentLog.step_id == step.id, AgentLog.line.like("prompt cache:%"))
         .one()
     )
-    assert cache_log.line == "prompt cache: 600/1000 read (60%)"
+    assert cache_log.line == "prompt cache: 600/1000 read (60%), 400 written"
     event = json.loads(cache_log.payload_json)
     assert event["type"] == "usage"
     assert event["cached_tokens"] == 600
+    assert event["cache_write_tokens"] == 400
     assert event["cache_percent"] == 60
     db.close()
+
+
+def test_llm_chat_builds_gpt56_explicit_prompt_cache_request(monkeypatch):
+    from app.agents import llm
+    from app.core.telemetry import bind_context, clear_context
+
+    captured = {}
+    progress = []
+    response = SimpleNamespace(
+        id="resp_cache_write",
+        model="gpt-5.6-sol",
+        output=[],
+        usage=SimpleNamespace(
+            input_tokens=2200,
+            output_tokens=40,
+            total_tokens=2240,
+            input_tokens_details=SimpleNamespace(
+                cached_tokens=0,
+                cache_write_tokens=1772,
+            ),
+        ),
+    )
+
+    class _FakeResponses:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return [
+                SimpleNamespace(type="response.output_text.delta", delta='{"ok":true}'),
+                SimpleNamespace(type="response.completed", response=response),
+            ]
+
+    monkeypatch.setattr(
+        llm,
+        "_client",
+        lambda timeout=None: SimpleNamespace(responses=_FakeResponses()),
+    )
+    monkeypatch.setattr(llm, "_record_call", lambda _result, retried=False: None)
+    monkeypatch.setattr(
+        llm,
+        "_record_stream_progress",
+        lambda line, payload=None: progress.append((line, payload)),
+    )
+    monkeypatch.setattr(llm.settings, "CODE_AGENT_PROMPT_CACHE_KEY_PREFIX", "cache-test")
+    monkeypatch.setattr(llm.settings, "OPENAI_EXPLICIT_PROMPT_CACHE_ENABLED", True)
+
+    cache_prefix = "Stable shared planning contract. " * 400
+    system = f"{cache_prefix}\n\nNODE-SPECIFIC RESPONSIBILITY:\nReturn JSON."
+    bind_context(task_id="12345678-1234-4abc-9def-1234567890ab")
+    try:
+        result = llm.chat(
+            system,
+            "dynamic game state",
+            model="gpt-5.6-sol",
+            cache_namespace="planning-v1",
+            cache_prefix=cache_prefix,
+        )
+    finally:
+        clear_context()
+
+    assert "instructions" not in captured
+    assert captured["prompt_cache_key"] == "cache-test:planning-v1:123456781234"
+    assert captured["prompt_cache_options"] == {"mode": "explicit", "ttl": "30m"}
+    assert captured["input"][0] == {
+        "type": "message",
+        "role": "developer",
+        "content": [
+            {
+                "type": "input_text",
+                "text": cache_prefix,
+                "prompt_cache_breakpoint": {"mode": "explicit"},
+            }
+        ],
+    }
+    assert captured["input"][1]["role"] == "developer"
+    assert captured["input"][1]["content"][0]["text"].startswith(
+        "NODE-SPECIFIC RESPONSIBILITY:"
+    )
+    assert captured["input"][2]["role"] == "user"
+    assert captured["input"][2]["content"][0]["text"] == "dynamic game state"
+    assert result.cache_write_tokens == 1772
+    usage_line, usage_payload = next(
+        (line, payload) for line, payload in progress if line.startswith("prompt cache:")
+    )
+    assert usage_line == "prompt cache: 0/2200 read (0%), 1772 written"
+    assert usage_payload["cache_write_tokens"] == 1772
+    assert usage_payload["prompt_cache_mode"] == "explicit"
+
+
+def test_sdk_response_ledger_is_idempotent_and_survives_run_level_stops(
+    db_session_factory, monkeypatch
+):
+    from app.agents import llm
+    from app.models import AgentStep, GenerationTask, LLMCall
+    from app.models.common import StepStatus
+
+    db = db_session_factory()
+    user = _user()
+    db.add(user)
+    db.flush()
+    task = GenerationTask(user_id=user.id, idea="generate with a bounded team")
+    db.add(task)
+    db.flush()
+    step = AgentStep(
+        task_id=task.id,
+        seq=1,
+        agent="GameCodeAgent",
+        name="Code Generation",
+        status=StepStatus.RUNNING,
+    )
+    db.add(step)
+    db.commit()
+    task_id, step_id = task.id, step.id
+    db.close()
+
+    monkeypatch.setattr(llm, "SessionLocal", db_session_factory)
+    kwargs = {
+        "model": "gpt-5.5",
+        "prompt_tokens": 80,
+        "completion_tokens": 20,
+        "cached_tokens": 40,
+        "latency_ms": 123,
+        "step_id": step_id,
+        "run_id": "team-run-1",
+        "agent": "RulesAndSimulationCoder",
+        "workflow_name": "gameweave-project-rules",
+        "provider_response_id": "resp-ledger-1",
+        "request_index": 1,
+    }
+    llm.record_response_usage(**kwargs)
+    # A reconnect/replay must not double charge or double count.
+    llm.record_response_usage(**kwargs)
+
+    db = db_session_factory()
+    rows = db.query(LLMCall).all()
+    assert len(rows) == 1
+    assert rows[0].run_id == "team-run-1"
+    assert rows[0].agent == "RulesAndSimulationCoder"
+    assert rows[0].provider_response_id == "resp-ledger-1"
+    assert rows[0].request_index == 1
+    assert rows[0].total_tokens == 100
+    assert rows[0].cached_tokens == 40
+    assert db.get(AgentStep, step_id).tokens == 100
+    assert db.get(GenerationTask, task_id).tokens_used == 100
+    db.close()
+
+
+def test_unexpected_ledger_integrity_error_is_reported(monkeypatch):
+    from sqlalchemy.exc import IntegrityError
+
+    from app.agents import llm
+
+    class BrokenSession:
+        def add(self, _row):
+            return None
+
+        def flush(self):
+            raise IntegrityError(
+                "INSERT INTO llm_calls",
+                {},
+                RuntimeError("CHECK constraint failed: total_tokens"),
+            )
+
+        def rollback(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(llm, "SessionLocal", BrokenSession)
+    reported = []
+    monkeypatch.setattr(
+        llm.logger,
+        "exception",
+        lambda message, *args, **kwargs: reported.append(message),
+    )
+    inserted = llm._persist_call(
+        llm.LLMResult(
+            text="",
+            prompt_tokens=1,
+            completion_tokens=1,
+            total_tokens=2,
+            model="gpt-test",
+            latency_ms=1,
+        ),
+        task_id="task-test",
+        run_id="run-test",
+    )
+
+    assert inserted is False
+    assert reported == ["unexpected llm usage ledger integrity failure"]
 
 
 def test_code_agent_detailed_trace_switch_controls_full_payload(
@@ -373,6 +573,194 @@ def test_llm_chat_retries_streamed_server_error(monkeypatch):
 
     assert result.text == "recovered"
     assert responses.calls == 2
+
+
+def test_llm_chat_retries_provider_internal_server_error(monkeypatch):
+    from app.agents import llm
+
+    completed = SimpleNamespace(
+        model="gpt-5.5",
+        output=[],
+        usage=SimpleNamespace(input_tokens=10, output_tokens=20, total_tokens=30),
+    )
+    failed = SimpleNamespace(
+        type="error",
+        error=SimpleNamespace(code="internal_server_error", message="unexpected EOF"),
+    )
+
+    class _FakeResponses:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return [failed]
+            return [
+                SimpleNamespace(type="response.output_text.delta", delta="recovered"),
+                SimpleNamespace(type="response.completed", response=completed),
+            ]
+
+    responses = _FakeResponses()
+    monkeypatch.setattr(llm, "_client", lambda timeout=None: SimpleNamespace(responses=responses))
+    monkeypatch.setattr(llm, "_record_stream_progress", lambda _line, payload=None: None)
+    monkeypatch.setattr(llm, "_record_call", lambda _result, retried=False: None)
+    monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(llm.settings, "OPENAI_MAX_RETRIES", 2)
+
+    result = llm.chat("system", "user")
+
+    assert result.text == "recovered"
+    assert responses.calls == 2
+
+
+def test_llm_chat_retries_top_level_response_error_event(monkeypatch):
+    from app.agents import llm
+
+    completed = SimpleNamespace(
+        model="gpt-5.6-sol",
+        output=[],
+        usage=SimpleNamespace(input_tokens=10, output_tokens=20, total_tokens=30),
+    )
+    failed = SimpleNamespace(
+        type="error",
+        code="internal_server_error",
+        message="stream error: INTERNAL_ERROR received from peer",
+    )
+
+    class _FakeResponses:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return [failed]
+            return [
+                SimpleNamespace(type="response.output_text.delta", delta="recovered"),
+                SimpleNamespace(type="response.completed", response=completed),
+            ]
+
+    responses = _FakeResponses()
+    monkeypatch.setattr(llm, "_client", lambda timeout=None: SimpleNamespace(responses=responses))
+    monkeypatch.setattr(llm, "_record_stream_progress", lambda _line, payload=None: None)
+    monkeypatch.setattr(llm, "_record_call", lambda _result, retried=False: None)
+    monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(llm.settings, "OPENAI_MAX_RETRIES", 2)
+
+    result = llm.chat("system", "user")
+
+    assert result.text == "recovered"
+    assert responses.calls == 2
+
+
+def test_llm_chat_recovers_complete_json_from_interrupted_attempt(monkeypatch):
+    from app.agents import llm
+
+    complete_json = '{"title":"Recovered","genre":"strategy","core_loop":"plan, build, resolve"}'
+
+    class _FakeResponses:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                def interrupted():
+                    yield SimpleNamespace(
+                        type="response.output_text.delta",
+                        delta=complete_json,
+                    )
+                    raise ConnectionError("peer closed connection")
+
+                return interrupted()
+            raise ConnectionError("connection unavailable")
+
+    responses = _FakeResponses()
+    recorded = []
+    monkeypatch.setattr(llm, "_client", lambda timeout=None: SimpleNamespace(responses=responses))
+    monkeypatch.setattr(llm, "_record_stream_progress", lambda _line, payload=None: None)
+    monkeypatch.setattr(
+        llm,
+        "_record_call",
+        lambda result, retried=False: recorded.append((result, retried)),
+    )
+    monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(llm.settings, "OPENAI_MAX_RETRIES", 2)
+    monkeypatch.setattr(llm.settings, "OPENAI_PARTIAL_STREAM_MIN_CHARS", 2000)
+
+    result = llm.chat("system", "user", recover_partial_json=True)
+
+    assert result.partial is True
+    assert json.loads(result.text)["title"] == "Recovered"
+    assert responses.calls == 3
+    assert recorded == [(result, True)]
+
+
+def test_llm_chat_logs_stream_failure_details_and_closes_each_attempt(monkeypatch):
+    from app.agents import llm
+
+    completed = SimpleNamespace(
+        id="resp-ok",
+        model="gpt-5.5",
+        output=[],
+        usage=SimpleNamespace(input_tokens=3, output_tokens=1, total_tokens=4),
+    )
+
+    class _FakeStream:
+        def __init__(self, events=None, error=None):
+            self.events = list(events or [])
+            self.error = error
+            self.closed = False
+
+        def __iter__(self):
+            if self.error is not None:
+                raise self.error
+            return iter(self.events)
+
+        def close(self):
+            self.closed = True
+
+    class _FakeClient:
+        def __init__(self, stream):
+            self.stream = stream
+            self.responses = SimpleNamespace(create=lambda **_kwargs: self.stream)
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    streams = [
+        _FakeStream(error=TimeoutError("local stream read timed out")),
+        _FakeStream(
+            events=[
+                SimpleNamespace(type="response.output_text.delta", delta="OK"),
+                SimpleNamespace(type="response.completed", response=completed),
+            ]
+        ),
+    ]
+    all_clients = [_FakeClient(stream) for stream in streams]
+    pending_clients = list(all_clients)
+    progress = []
+    monkeypatch.setattr(llm, "_client", lambda timeout=None: pending_clients.pop(0))
+    monkeypatch.setattr(
+        llm,
+        "_record_stream_progress",
+        lambda line, payload=None: progress.append((line, payload)),
+    )
+    monkeypatch.setattr(llm, "_record_call", lambda _result, retried=False: None)
+    monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(llm.settings, "OPENAI_MAX_RETRIES", 1)
+
+    result = llm.chat("system", "user")
+
+    assert result.text == "OK"
+    assert all(stream.closed for stream in streams)
+    assert all(client.closed for client in all_clients)
+    failure = next(payload for _line, payload in progress if payload and payload.get("type") == "llm_stream_error")
+    assert failure["exception_type"] == "TimeoutError"
+    assert failure["will_retry"] is True
+    assert failure["partial_chars"] == 0
 
 
 def test_llm_chat_does_not_retry_streamed_invalid_prompt(monkeypatch):

@@ -1,5 +1,7 @@
 """Pure game specification and design normalization helpers."""
 
+import json
+
 from app.agents.nodes_common import (
     _ARCHETYPES,
     _ARCHETYPES_3D,
@@ -37,7 +39,39 @@ def _detect_genre(prompt: str) -> str:
 
 
 def _theme_cover(theme) -> str:
-    return _THEME_COVER.get(str(theme or "").lower(), _THEME_COVER["retro"])
+    text = str(theme or "").lower()
+    exact = _THEME_COVER.get(text)
+    if exact:
+        return exact
+    return _THEME_COVER.get(_detect_theme(text), _THEME_COVER["retro"])
+
+
+def _structured_text(value: object, *, limit: int, preferred_keys: tuple[str, ...] = ()) -> str:
+    """Turn model-authored structured prose into readable prompt text, never Python repr."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return " ".join(value.split())[:limit]
+    if isinstance(value, dict):
+        keys = [key for key in preferred_keys if key in value]
+        if not keys:
+            keys = list(value)[:8]
+        parts = []
+        for key in keys:
+            text = _structured_text(value.get(key), limit=max(40, limit // 2))
+            if text:
+                parts.append(f"{key}: {text}")
+        return "; ".join(parts)[:limit]
+    if isinstance(value, (list, tuple, set)):
+        parts = [
+            _structured_text(item, limit=max(40, limit // 3))
+            for item in list(value)[:10]
+        ]
+        return "; ".join(item for item in parts if item)[:limit]
+    try:
+        return " ".join(str(value).split())[:limit]
+    except Exception:  # noqa: BLE001 - model normalization is fail-open
+        return json.dumps(value, ensure_ascii=False, default=str)[:limit]
 
 
 def _heuristic_spec(prompt: str) -> dict:
@@ -74,20 +108,27 @@ def _heuristic_spec(prompt: str) -> dict:
 def _coerce_spec(data: dict, prompt: str) -> dict:
     base = _heuristic_spec(prompt)
     if isinstance(data, dict):
-        for key in (
-            "title",
-            "summary",
-            "genre",
-            "theme",
-            "core_loop",
-            "win_condition",
-            "lose_condition",
-            "score_rule",
-            "difficulty_curve",
-            "visual_style",
-        ):
-            if data.get(key):
-                base[key] = str(data[key])[:220]
+        text_fields = {
+            "title": (120, ("name", "title")),
+            "summary": (500, ("summary", "overview", "fantasy")),
+            "genre": (80, ("name", "genre", "label", "type")),
+            "theme": (400, ("setting", "tone", "visual_style", "art_direction", "palette", "name")),
+            "core_loop": (1200, ("campaign", "run", "combat", "turn", "loop", "progression")),
+            "win_condition": (500, ("primary", "win", "victory")),
+            "lose_condition": (500, ("primary", "lose", "defeat")),
+            "score_rule": (500, ("score", "rewards", "calculation")),
+            "difficulty_curve": (500, ("opening", "midgame", "late_game", "boss", "curve")),
+            "visual_style": (500, ("style", "art_direction", "palette", "readability", "effects")),
+        }
+        for key, (limit, preferred_keys) in text_fields.items():
+            if data.get(key) is not None:
+                normalized = _structured_text(
+                    data[key],
+                    limit=limit,
+                    preferred_keys=preferred_keys,
+                )
+                if normalized:
+                    base[key] = normalized
         if isinstance(data.get("tags"), list) and data["tags"]:
             base["tags"] = [str(tag)[:30] for tag in data["tags"]][:5]
         if isinstance(data.get("controls"), dict):
@@ -97,13 +138,29 @@ def _coerce_spec(data: dict, prompt: str) -> dict:
 
 def _heuristic_design(spec: dict) -> dict:
     archetype = spec.get("archetype") or ("logic_grid" if spec.get("genre") == "puzzle" else "lane_runner" if spec.get("genre") == "runner" else "topdown_collect")
-    if archetype == "logic_grid":
+    if archetype not in _ARCHETYPES:
+        entities = [
+            {"name": "player", "type": "avatar", "movement": "genre_defined"},
+            {"name": "objective", "type": "goal", "behavior": "defined by the GameSpec core loop"},
+        ]
+        rules = {
+            "win": spec.get("win_condition") or "complete the authored objective",
+            "lose": spec.get("lose_condition") or "reach the authored failure state",
+        }
+        ui = {
+            "show_score": False,
+            "show_timer": False,
+            "show_lives": True,
+            "show_restart_button": True,
+        }
+    elif archetype == "logic_grid":
         entities = [
             {"name": "tile", "type": "rotating_pipe", "movement": "click_rotate"},
             {"name": "source", "type": "beacon", "spawn": "left_edge"},
             {"name": "exit", "type": "beacon", "spawn": "right_edge"},
         ]
         rules = {"connect_left_to_right": "win", "timer_zero": "fail", "survive_seconds": 70}
+        ui = {"show_score": True, "show_timer": True, "show_lives": True, "show_restart_button": True}
     elif archetype == "lane_runner":
         entities = [
             {"name": "runner", "type": "avatar", "movement": "lane_switch"},
@@ -111,6 +168,7 @@ def _heuristic_design(spec: dict) -> dict:
             {"name": "bonus", "type": "collectible", "spawn": "lane_top"},
         ]
         rules = {"collision_player_hazard": "lose_life", "collision_player_star": "score_plus_18", "survive_seconds": 55}
+        ui = {"show_score": True, "show_timer": True, "show_lives": True, "show_restart_button": True}
     else:
         entities = [
             {"name": "player", "type": "avatar", "movement": "top_down"},
@@ -118,12 +176,13 @@ def _heuristic_design(spec: dict) -> dict:
             {"name": "reward", "type": "collectible", "spawn": "safe_arena"},
         ]
         rules = {"collision_player_hazard": "lose_life", "collision_player_star": "score_plus_combo", "survive_seconds": 55}
+        ui = {"show_score": True, "show_timer": True, "show_lives": True, "show_restart_button": True}
     return {
         "archetype": archetype,
         "screen": {"width": 900, "height": 600},
         "entities": entities,
         "rules": rules,
-        "ui": {"show_score": True, "show_timer": True, "show_lives": True, "show_restart_button": True},
+        "ui": ui,
     }
 
 
@@ -161,6 +220,27 @@ def _coerce_design(data: dict, spec: dict | None = None) -> dict:
 def _simplify_design(design: dict) -> dict:
     current = design or {}
     archetype = current.get("archetype") or "topdown_collect"
+    if archetype not in _ARCHETYPES:
+        simplified = {
+            key: current[key]
+            for key in (
+                "archetype",
+                "screen",
+                "background",
+                "player",
+                "rules",
+                "ui",
+                "palette",
+                "signature_twist",
+                "sfx_events",
+                "boss",
+            )
+            if current.get(key) is not None
+        }
+        simplified["entities"] = list(current.get("entities") or [])[:6]
+        simplified["waves"] = list(current.get("waves") or [])[:3]
+        simplified["scope_simplified"] = True
+        return simplified
     spec = {"archetype": archetype, "genre": _ARCHETYPES.get(archetype, _ARCHETYPES["topdown_collect"])["genre"]}
     simplified = _heuristic_design(spec)
     simplified["rules"]["survive_seconds"] = 50

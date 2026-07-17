@@ -64,8 +64,12 @@ docker compose up --build
   `tsc --noEmit` 和 Vite 构建；只将静态 `dist` 写入公开游戏 manifest 和 MinIO。
 - Vite 源工程保存到私有 `game-sources/{game}/{version}` 前缀，Revision 从源码继续修改，不编辑压缩后的产物。
 - 新工程原生使用 TypeScript，并按 `src/scenes`、`src/entities`、`src/systems`、`src/ui`、`src/config`
-  分层。开启 `CODE_AGENT_AUTHOR_ENABLED=true` 后，受限 Project Author Agent 会逐模块读写工程，并通过
-  `tsc --noEmit` 与隔离 Vite 构建后再进入外层验证。
+  分层。开启 `CODE_AGENT_AUTHOR_ENABLED=true` 后，`GameCodeAgent` 内部运行有界团队：只读
+  `DesignContractAgent` 冻结状态/事件/所有权契约；`RulesAndSimulationCoder`、`WorldAndContentCoder`、
+  `PresentationAndInteractionCoder` 基于同一骨架快照在工具级目录白名单内产出隔离候选；唯一的
+  `IntegrationAgent` 负责场景组合，并通过 `tsc --noEmit` 与隔离 Vite 构建后再进入外层验证。
+- 内部团队不新增顶层 LangGraph 节点，不改变 checkpoint、任务恢复或日志表；外层
+  `build_validation → gameplay_qa → repair/replan` 门禁保持不变。
 
 ### 可选的 GameCodeAgent 完整追踪
 

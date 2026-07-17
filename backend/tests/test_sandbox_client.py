@@ -79,6 +79,14 @@ def test_sandbox_client_adds_http_timeout_headroom(monkeypatch):
                 "intervals_observed": 0,
                 "load_ms": 300,
                 "timed_out": False,
+                "input_attempted": True,
+                "inputs_sent": ["pointer:canvas-center", "keyboard:Enter"],
+                "start_attempts": ["pointer:canvas-center", "keyboard:Enter"],
+                "visual_probe": "page-screenshot-png-byte-diff",
+                "visual_before_sha256": "before",
+                "visual_after_sha256": "after",
+                "visual_changed": True,
+                "visual_change_ratio": 0.25,
             },
             request=httpx.Request("POST", "http://sandbox:8001/run"),
         )
@@ -92,6 +100,34 @@ def test_sandbox_client_adds_http_timeout_headroom(monkeypatch):
 
     assert result.ok is True
     assert captured["timeout"] == 8.5
+    assert result.input_attempted is True
+    assert result.inputs_sent == ["pointer:canvas-center", "keyboard:Enter"]
+    assert result.start_attempts == ["pointer:canvas-center", "keyboard:Enter"]
+    assert result.visual_changed is True
+    assert result.visual_change_ratio == 0.25
+    assert result.visual_probe == "page-screenshot-png-byte-diff"
+
+
+def test_sandbox_client_keeps_observation_fields_optional(monkeypatch):
+    from app.core.config import settings
+    from app.services import sandbox_client
+
+    def fake_post(*_args, **_kwargs):
+        return httpx.Response(
+            200,
+            json={"ok": True, "frames_observed": 1, "load_ms": 10},
+            request=httpx.Request("POST", "http://sandbox:8001/run"),
+        )
+
+    monkeypatch.setattr(settings, "SANDBOX_URL", "http://sandbox:8001")
+    monkeypatch.setattr(sandbox_client.httpx, "post", fake_post)
+
+    result = sandbox_client.run_bundle(_files())
+
+    assert result.ok is True
+    assert result.inputs_sent == []
+    assert result.visual_changed is None
+    assert result.visual_change_ratio is None
 
 
 def test_gameplay_qa_marks_required_sandbox_unavailable(monkeypatch):
@@ -183,6 +219,23 @@ def test_sandbox_defaults_match_relaxed_vite_limits(monkeypatch):
     assert sandbox_main.settings.max_file_bytes == MAX_PROJECT_FILE_BYTES
     assert sandbox_main.settings.max_total_bytes == MAX_PROJECT_BYTES
 
+    unchanged = sandbox_main._visual_metrics(b"same", b"same")
+    changed = sandbox_main._visual_metrics(b"same", b"some")
+    assert unchanged["visual_changed"] is False
+    assert unchanged["visual_change_ratio"] == 0.0
+    assert changed["visual_changed"] is True
+    assert changed["visual_change_ratio"] > 0
+
+    legacy = sandbox_main.RunResponse(
+        ok=True,
+        page_errors=[],
+        console_errors=[],
+        frames_observed=1,
+        load_ms=10,
+    )
+    assert legacy.inputs_sent == []
+    assert legacy.visual_changed is None
+
 
 def test_setinterval_loop_is_valid_sandbox_activity(monkeypatch):
     from app.agents import nodes
@@ -212,3 +265,59 @@ def test_setinterval_loop_is_valid_sandbox_activity(monkeypatch):
         }
     )
     assert result["gameplay_qa_result"]["passed"] is True
+
+
+def test_sandbox_client_parses_runtime_probes(monkeypatch):
+    from app.core.config import settings
+    from app.services import sandbox_client
+
+    def fake_post(*_args, **_kwargs):
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "page_errors": [],
+                "console_errors": [],
+                "frames_observed": 12,
+                "intervals_observed": 0,
+                "load_ms": 800,
+                "probes": {
+                    "probe:ready": 1,
+                    "scene:start|PlayScene": "2",
+                    "anims:play|player-run": 40,
+                    "bogus": "not-a-number",
+                    12345: 3,
+                },
+            },
+            request=httpx.Request("POST", "http://sandbox:8001/run"),
+        )
+
+    monkeypatch.setattr(settings, "SANDBOX_URL", "http://sandbox:8001")
+    monkeypatch.setattr(settings, "SANDBOX_REQUIRED", False)
+    monkeypatch.setattr(sandbox_client.httpx, "post", fake_post)
+
+    result = sandbox_client.run_bundle(_files(), timeout_ms=500)
+    assert result.probes["probe:ready"] == 1
+    assert result.probes["scene:start|PlayScene"] == 2
+    assert result.probes["anims:play|player-run"] == 40
+    assert result.probes["12345"] == 3
+    assert "bogus" not in result.probes
+
+
+def test_sandbox_client_probes_default_empty(monkeypatch):
+    from app.core.config import settings
+    from app.services import sandbox_client
+
+    def fake_post(*_args, **_kwargs):
+        return httpx.Response(
+            200,
+            json={"ok": True, "page_errors": [], "console_errors": [], "frames_observed": 3, "load_ms": 100},
+            request=httpx.Request("POST", "http://sandbox:8001/run"),
+        )
+
+    monkeypatch.setattr(settings, "SANDBOX_URL", "http://sandbox:8001")
+    monkeypatch.setattr(settings, "SANDBOX_REQUIRED", False)
+    monkeypatch.setattr(sandbox_client.httpx, "post", fake_post)
+
+    result = sandbox_client.run_bundle(_files(), timeout_ms=500)
+    assert result.probes == {}

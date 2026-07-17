@@ -2,6 +2,7 @@
 import json
 from datetime import datetime, timezone
 
+from app import schemas
 from app.core.config import settings
 from app.services.runtime_urls import game_file_url, game_manifest_url
 from app.services.upload_safety import presigned_asset_url
@@ -174,7 +175,13 @@ def _parse_log_payload(raw):
         data = json.loads(raw)
     except Exception:
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    # Unknown event types must degrade to "no structured event" (the log line
+    # still shows) instead of failing task-detail response validation.
+    if data.get("type") not in schemas.AGENT_LOG_EVENT_TYPES:
+        return None
+    return data
 
 
 def _dur(s):
@@ -237,6 +244,61 @@ def _design_preview(spec: dict, design: dict):
     return {"title": spec.get("title") or "", "fields": fields} if fields else None
 
 
+def _agent_log_entry_out(log) -> dict:
+    return {
+        "cursor": getattr(log, "id", None),
+        "line": log.line,
+        "level": getattr(log, "level", "info"),
+        "created_at": _iso(getattr(log, "created_at", None)),
+        "event": _parse_log_payload(getattr(log, "payload_json", None)),
+    }
+
+
+def _agent_log_item_out(step) -> dict:
+    logs = list(step.logs or [])
+    return {
+        "step_id": step.id,
+        "agent_name": step.agent,
+        "step": step.name,
+        "message": logs[-1].line if logs else "",
+        "created_at": _iso(logs[-1].created_at if logs else step.created_at),
+        "duration": _dur(step),
+        "status": _ST.get(step.status, "pending"),
+        "lines": [log.line for log in logs],
+        "entries": [_agent_log_entry_out(log) for log in logs],
+    }
+
+
+def task_event_delta_out(t, rows: list[tuple[object, object]], cursor: int) -> dict:
+    """Compact SSE projection: current task summary plus only newly appended logs."""
+    spec, design = _parse(t.spec_json), _parse(t.design_json)
+    summary = task_out(t, include_details=False)
+    summary["design"] = _design_preview(spec, design)
+    logs = []
+    for step, log in rows:
+        logs.append(
+            {
+                "cursor": int(log.id),
+                "step_id": step.id,
+                "agent_name": step.agent,
+                "step": step.name,
+                "status": _ST.get(step.status, "pending"),
+                "entry": _agent_log_entry_out(log),
+            }
+        )
+    steps = [
+        {
+            "step_id": step.id,
+            "agent_name": step.agent,
+            "step": step.name,
+            "status": _ST.get(step.status, "pending"),
+            "duration": _dur(step),
+        }
+        for step in t.steps
+    ]
+    return {"cursor": int(cursor), "task": summary, "logs": logs, "steps": steps}
+
+
 def task_out(t, include_details: bool = True) -> dict:
     """完整任务 DTO。include_details=False 产出列表用的轻量 summary：
     跳过 logs / steps / design / assets 与逐步日志行 —— 任务详情由 SSE 实时更新，
@@ -251,8 +313,15 @@ def task_out(t, include_details: bool = True) -> dict:
     stages = _REMIX_STAGES if task_kind == "remix" else _REVISION_STAGES if task_kind == "revision" else _STAGES
     for agent, key, title in stages:
         s = steps_by_agent.get(agent)
-        status = _ST.get(s.status, "pending") if s else "pending"
-        summary = (s.logs[-1].line if (include_details and s and s.logs) else None)
+        # The frontend already owns the fixed user-facing stage list.  Only send
+        # summaries for steps that actually ran; emitting compatibility-only
+        # agents as ``pending`` makes mutually exclusive old/new pipelines look
+        # incomplete forever (for example GameplayPlanningAgent versus the old
+        # BriefExpansionAgent + MechanicPlannerAgent pair).
+        if s is None:
+            continue
+        status = _ST.get(s.status, "pending")
+        summary = (s.logs[-1].line if (include_details and s.logs) else None)
         if status == "completed":
             progress = max(progress, _PROGRESS[key])
         elif status == "running":
@@ -297,23 +366,7 @@ def task_out(t, include_details: bool = True) -> dict:
          "kind": a.kind, "scan_status": a.scan_status, "url": presigned_asset_url(a)}
         for a in t.assets
     ]
-    out["logs"] = [
-        {"agent_name": s.agent, "step": s.name,
-         "message": (s.logs[-1].line if s.logs else ""),
-         "created_at": _iso(s.logs[-1].created_at if s.logs else s.created_at),
-         "duration": _dur(s), "status": _ST.get(s.status, "pending"),
-         "lines": [log.line for log in s.logs],
-         "entries": [
-             {
-                 "line": log.line,
-                 "level": getattr(log, "level", "info"),
-                 "created_at": _iso(getattr(log, "created_at", None)),
-                 "event": _parse_log_payload(getattr(log, "payload_json", None)),
-             }
-             for log in s.logs
-         ]}
-        for s in t.steps
-    ]
+    out["logs"] = [_agent_log_item_out(s) for s in t.steps]
     out["steps"] = [
         {"seq": s.seq, "agent": s.agent, "name": s.name, "status": s.status,
          "tokens": getattr(s, "tokens", 0), "attempt": getattr(s, "attempt", 1),

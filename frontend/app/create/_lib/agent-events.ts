@@ -1,4 +1,5 @@
 import type { AgentBundleFile, AgentFileContext, AgentLogItem } from "@/lib/types";
+import { authorTeamEventMessage } from "./author-team";
 
 export type FileChange = {
   action: "created" | "modified" | "deleted";
@@ -15,6 +16,25 @@ export type AgentContextSummary = {
   files: AgentBundleFile[];
   filesInContext: AgentFileContext[];
   scriptRefs: string[];
+};
+
+export type RepairAttemptEvent = {
+  agent: string;
+  attempt: number;
+  maxAttempts: number;
+  repairKind: string;
+};
+
+export type AgentUsageSummary = {
+  agent: string;
+  cachePercent: number;
+  cachedTokens: number;
+  cacheWriteTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  requests: number;
+  totalTokens: number;
+  type: "usage" | "usage_progress";
 };
 
 function eventType(event: unknown): string {
@@ -161,6 +181,26 @@ function clineToolLabel(tool: string) {
 }
 
 export function activityMessageFromEvent(event: unknown): string {
+  const repairAttempt = repairAttemptFromEvent(event);
+  if (repairAttempt) {
+    const count = repairAttempt.maxAttempts
+      ? ` ${repairAttempt.attempt} of ${repairAttempt.maxAttempts}`
+      : repairAttempt.attempt
+        ? ` ${repairAttempt.attempt}`
+        : "";
+    return `Repair attempt${count} started`;
+  }
+  const teamMessage = authorTeamEventMessage(event);
+  if (teamMessage) return teamMessage;
+  const usage = usageFromEvent(event);
+  if (usage) {
+    const total = usage.totalTokens
+      ? `Model usage ${usage.totalTokens.toLocaleString()} tokens`
+      : "Model usage updated";
+    const requests = usage.requests > 1 ? ` across ${usage.requests.toLocaleString()} requests` : "";
+    const readTotal = usage.inputTokens ? `/${usage.inputTokens.toLocaleString()} (${usage.cachePercent}%)` : "";
+    return `${total}${requests}; prompt cache read ${usage.cachedTokens.toLocaleString()}${readTotal}, wrote ${usage.cacheWriteTokens.toLocaleString()}`;
+  }
   const type = eventType(event);
   if (type === "turn_state") {
     const phase = eventString(event, "phase");
@@ -171,12 +211,6 @@ export function activityMessageFromEvent(event: unknown): string {
     if (phase === "error") return message || "Agent stopped";
     return message || (phase ? `Agent ${phase}` : "");
   }
-  if (type === "usage") {
-    const total = eventNumber(event, "total_tokens");
-    const cached = eventNumber(event, "cached_tokens");
-    const cachePercent = eventNumber(event, "cache_percent");
-    return total ? `Model usage ${total.toLocaleString()} tokens, cache ${cached.toLocaleString()} (${cachePercent}%)` : "";
-  }
   if (type === "file_change") {
     const change = fileChangeFromEvent(event, "");
     if (!change) return "";
@@ -184,7 +218,7 @@ export function activityMessageFromEvent(event: unknown): string {
     return `${label} ${change.path} (+${change.added} -${change.deleted})`;
   }
   if (type === "heartbeat") {
-    const phase = eventString(event, "phase") || "authoring";
+    const phase = eventString(event, "operation") || eventString(event, "phase") || "authoring";
     const elapsed = eventNumber(event, "elapsed_seconds");
     const idle = eventNumber(event, "idle_seconds");
     const files = eventNumber(event, "file_count");
@@ -212,6 +246,38 @@ export function activityMessageFromEvent(event: unknown): string {
   if (type === "error") return eventString(event, "message") || "Agent error";
   if (type === "notice") return eventString(event, "message") || "Agent update";
   return "";
+}
+
+export function usageFromEvent(event: unknown): AgentUsageSummary | null {
+  const type = eventType(event);
+  if (type !== "usage" && type !== "usage_progress") return null;
+  const record = eventRecord(event);
+  if (!record) return null;
+  const inputTokens = eventNumber(event, "input_tokens");
+  const outputTokens = eventNumber(event, "output_tokens");
+  const cachedTokens = eventNumber(event, "cached_tokens");
+  const explicitCachePercent = optionalEventNumber(record, "cache_percent");
+  return {
+    agent: eventString(event, "agent"),
+    cachePercent: explicitCachePercent ?? (inputTokens ? Math.floor((cachedTokens * 100) / inputTokens) : 0),
+    cachedTokens,
+    cacheWriteTokens: eventNumber(event, "cache_write_tokens"),
+    inputTokens,
+    outputTokens,
+    requests: eventNumber(event, "requests"),
+    totalTokens: eventNumber(event, "total_tokens") || inputTokens + outputTokens,
+    type,
+  };
+}
+
+export function repairAttemptFromEvent(event: unknown): RepairAttemptEvent | null {
+  if (eventType(event) !== "repair_attempt_started") return null;
+  return {
+    agent: eventString(event, "agent"),
+    attempt: eventNumber(event, "attempt"),
+    maxAttempts: eventNumber(event, "max_attempts"),
+    repairKind: eventString(event, "repair_kind"),
+  };
 }
 
 export function fileChangeFromEvent(event: unknown, line: string): FileChange | null {

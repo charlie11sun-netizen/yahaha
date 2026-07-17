@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import os
 import shutil
 import subprocess
@@ -50,6 +51,9 @@ class RunRequest(BaseModel):
     entry: str = "index.html"
     timeout_ms: int | None = Field(default=None, ge=500, le=30_000)
     simulate_input: bool = False
+    # Return the after-input screenshot even on success so the caller can run
+    # visual quality review; screenshot_on_failure only covers debugging.
+    screenshot_always: bool = False
 
 
 class RunResponse(BaseModel):
@@ -63,6 +67,19 @@ class RunResponse(BaseModel):
     load_ms: int
     timed_out: bool = False
     screenshot_b64: str | None = None
+    input_attempted: bool = False
+    inputs_sent: list[str] = Field(default_factory=list)
+    start_attempts: list[str] = Field(default_factory=list)
+    input_errors: list[str] = Field(default_factory=list)
+    visual_probe: str = ""
+    visual_before_sha256: str | None = None
+    visual_after_sha256: str | None = None
+    visual_changed: bool | None = None
+    visual_change_ratio: float | None = None
+    visual_probe_error: str = ""
+    # Aggregated runtime behavior probes reported by the game's scaffold
+    # (window.__GW_PROBES__.counts): "scene:start|PlayScene" -> 3 etc.
+    probes: dict[str, int] = Field(default_factory=dict)
 
 
 class ViteBuildRequest(BaseModel):
@@ -206,18 +223,120 @@ _INIT_SCRIPT = r"""
 """
 
 
+def _visual_metrics(before: bytes | None, after: bytes | None) -> dict[str, object]:
+    if before is None or after is None:
+        return {}
+    size = max(len(before), len(after))
+    mismatches = abs(len(before) - len(after))
+    mismatches += sum(left != right for left, right in zip(before, after, strict=False))
+    return {
+        "visual_probe": "page-screenshot-png-byte-diff",
+        "visual_before_sha256": hashlib.sha256(before).hexdigest(),
+        "visual_after_sha256": hashlib.sha256(after).hexdigest(),
+        "visual_changed": before != after,
+        "visual_change_ratio": round(mismatches / size, 6) if size else 0.0,
+    }
+
+
+async def _capture_page(page: Page) -> tuple[bytes | None, str]:
+    # CDP first: Page.captureScreenshot does not wait for document.fonts.ready,
+    # which never resolves on some generated bundles (a registered FontFace that
+    # never loads) and made page.screenshot() time out forever.
+    try:
+        session = await page.context.new_cdp_session(page)
+        try:
+            data = await asyncio.wait_for(
+                session.send("Page.captureScreenshot", {"format": "png"}),
+                timeout=2.5,
+            )
+            raw = base64.b64decode(data.get("data") or "")
+            if raw:
+                return raw, ""
+        finally:
+            try:
+                await session.detach()
+            except PlaywrightError:
+                pass
+    except (PlaywrightError, TimeoutError, ValueError, KeyError):
+        pass
+    try:
+        return await page.screenshot(type="png", timeout=2500), ""
+    except PlaywrightError as exc:
+        return None, " ".join(str(exc).split())[:300]
+
+
+async def _simulate_game_inputs(page: Page) -> tuple[list[str], list[str], list[str]]:
+    sent: list[str] = []
+    start_attempts: list[str] = []
+    errors: list[str] = []
+    try:
+        target = await page.evaluate(
+            """() => {
+              const canvases = [...document.querySelectorAll('canvas')]
+                .map((canvas) => ({ canvas, rect: canvas.getBoundingClientRect() }))
+                .filter(({ rect }) => rect.width > 0 && rect.height > 0)
+                .sort((a, b) => (b.rect.width * b.rect.height) - (a.rect.width * a.rect.height));
+              const rect = canvases[0]?.rect;
+              return rect
+                ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, scope: 'canvas' }
+                : { x: innerWidth / 2, y: innerHeight / 2, scope: 'page' };
+            }"""
+        )
+        pointer = f"pointer:{target['scope']}-center"
+        start_attempts.append(pointer)
+        await page.mouse.click(float(target["x"]), float(target["y"]))
+        sent.append(pointer)
+    except (PlaywrightError, KeyError, TypeError, ValueError) as exc:
+        errors.append(f"pointer: {' '.join(str(exc).split())[:240]}")
+
+    for key in ("Enter", "Space", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "a", "d", "w", "s"):
+        action = f"keyboard:{key}"
+        if key in {"Enter", "Space"}:
+            start_attempts.append(action)
+        try:
+            await page.keyboard.press(key, delay=35)
+            sent.append(action)
+        except PlaywrightError as exc:
+            errors.append(f"{action}: {' '.join(str(exc).split())[:240]}")
+    return sent, start_attempts, errors
+
+
+async def _collect_probes(page: Page) -> dict[str, int]:
+    """Read the game scaffold's runtime behavior counters (best-effort)."""
+    try:
+        raw = await page.evaluate(
+            "(window.__GW_PROBES__ && window.__GW_PROBES__.counts) || {}"
+        )
+    except PlaywrightError:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    probes: dict[str, int] = {}
+    for key, value in list(raw.items())[:300]:
+        try:
+            probes[str(key)[:120]] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return probes
+
+
 async def _drive_page(
     browser: Browser,
     files: dict[str, bytes],
     entry: str,
     timeout_ms: int,
     simulate_input: bool,
+    screenshot_always: bool = False,
 ) -> RunResponse:
     page_errors: list[str] = []
     console_errors: list[str] = []
     console_warnings: list[str] = []
     requests_aborted: list[str] = []
     screenshot_b64: str | None = None
+    inputs_sent: list[str] = []
+    start_attempts: list[str] = []
+    input_errors: list[str] = []
+    visual_probe_errors: list[str] = []
     started = time.perf_counter()
     context = await browser.new_context(viewport={"width": 1280, "height": 720})
     await context.add_init_script(_INIT_SCRIPT)
@@ -234,11 +353,32 @@ async def _drive_page(
 
         page.on("console", on_console)
         await _install_routes(page, files, requests_aborted)
-        await page.goto(f"{ORIGIN}/{entry}", wait_until="load", timeout=timeout_ms)
+        # domcontentloaded + first-frame polling instead of the full load event:
+        # one straggling subresource (a pending FontFace, a slow decode) used to
+        # keep `load` from firing and misreported a running game as frames=0.
+        await page.goto(
+            f"{ORIGIN}/{entry}", wait_until="domcontentloaded", timeout=timeout_ms
+        )
+        # Total in-page budget stays ~timeout_ms from navigation start so the
+        # +8s outer headroom remains reserved for input simulation and capture.
+        frame_deadline = started + timeout_ms / 1000
+        while time.perf_counter() < frame_deadline:
+            try:
+                if int(await page.evaluate("window.__sandboxFrameCount || 0")) > 0:
+                    break
+            except PlaywrightError:
+                break
+            await page.wait_for_timeout(250)
+        await page.wait_for_timeout(min(180, max(60, timeout_ms // 30)))
+        before_screenshot, before_error = await _capture_page(page)
+        if before_error:
+            visual_probe_errors.append(f"before: {before_error}")
         if simulate_input:
-            for key in ("ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space"):
-                await page.keyboard.press(key)
+            inputs_sent, start_attempts, input_errors = await _simulate_game_inputs(page)
         await page.wait_for_timeout(min(500, max(120, timeout_ms // 10)))
+        after_screenshot, after_error = await _capture_page(page)
+        if after_error:
+            visual_probe_errors.append(f"after: {after_error}")
         try:
             frames_observed = int(await page.evaluate("window.__sandboxFrameCount || 0"))
         except PlaywrightError:
@@ -247,11 +387,14 @@ async def _drive_page(
             intervals_observed = int(await page.evaluate("window.__sandboxIntervalCount || 0"))
         except PlaywrightError:
             intervals_observed = 0
+        probes = await _collect_probes(page)
         load_ms = int((time.perf_counter() - started) * 1000)
         ok = not page_errors and not console_errors and not requests_aborted and (frames_observed > 0 or intervals_observed > 0)
-        if not ok and settings.screenshot_on_failure:
-            raw = await page.screenshot(type="png", timeout=1000)
-            screenshot_b64 = base64.b64encode(raw).decode("ascii")
+        if screenshot_always or (not ok and settings.screenshot_on_failure):
+            raw = after_screenshot or before_screenshot
+            if raw is not None:
+                screenshot_b64 = base64.b64encode(raw).decode("ascii")
+        visual_metrics = _visual_metrics(before_screenshot, after_screenshot)
         return RunResponse(
             ok=ok,
             page_errors=page_errors,
@@ -262,6 +405,13 @@ async def _drive_page(
             intervals_observed=intervals_observed,
             load_ms=load_ms,
             screenshot_b64=screenshot_b64,
+            input_attempted=simulate_input,
+            inputs_sent=inputs_sent,
+            start_attempts=start_attempts,
+            input_errors=input_errors,
+            visual_probe_error="; ".join(visual_probe_errors),
+            probes=probes,
+            **visual_metrics,
         )
     finally:
         await context.close()
@@ -275,9 +425,19 @@ async def _run_with_timeout(payload: RunRequest) -> RunResponse:
     timeout_ms = payload.timeout_ms or settings.default_timeout_ms
     browser = await _ensure_browser()
     try:
+        # Post-load work (input simulation, two screenshots, settle waits) can
+        # take several seconds on WebGL pages; the old +2.5s headroom flagged
+        # slow-but-successful loads as timeouts.
         result = await asyncio.wait_for(
-            _drive_page(browser, files, entry, timeout_ms, payload.simulate_input),
-            timeout=(timeout_ms + 750) / 1000,
+            _drive_page(
+                browser,
+                files,
+                entry,
+                timeout_ms,
+                payload.simulate_input,
+                payload.screenshot_always,
+            ),
+            timeout=(timeout_ms + 8_000) / 1000,
         )
     except TimeoutError:
         result = RunResponse(

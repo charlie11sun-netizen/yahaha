@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     # Model service (OpenAI compatible)
     OPENAI_API_KEY: str = ""
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
-    MODEL_NAME: str = "gpt-5.5"
+    MODEL_NAME: str = "gpt-5.6-sol"
     USE_REAL_MODEL: bool = False
     REAL_MODEL_FALLBACK_ENABLED: bool = False
     MEMORY_VECTOR_ENABLED: bool = True
@@ -58,13 +58,20 @@ class Settings(BaseSettings):
     MEMORY_EMBEDDING_API_KEY: str = ""
     MEMORY_EMBEDDING_BASE_URL: str = ""
     MEMORY_EMBEDDING_TIMEOUT: int = 15
-    MEMORY_EXTRACTION_MODEL: str = "gpt-4.1-mini"
+    MEMORY_EXTRACTION_MODEL: str = "gpt-5.6-sol"
     MEMORY_EXTRACTION_TIMEOUT: int = 30
     MEMORY_RRF_K: int = 60
     MEMORY_LEXICAL_MIN_SCORE: float = 0.10
     MEMORY_SEMANTIC_MIN_SCORE: float = 0.20
     OPENAI_TIMEOUT: int = 600  # 写整个 game.js 耗时长，给足超时
+    # Planning responses are streamed JSON. This is an idle/read timeout, not a
+    # total generation deadline: active streams may continue for as long as needed.
+    OPENAI_PLANNING_STREAM_IDLE_TIMEOUT: int = 180
     OPENAI_CODE_TIMEOUT: int = 1800
+    # Agents SDK tool loops need a shorter idle/read boundary than the broad
+    # client timeout. Active streams may run indefinitely; only a model turn
+    # that emits no semantic event for this many seconds is retried.
+    CODE_AGENT_STREAM_IDLE_TIMEOUT: int = 180
     OPENAI_ALLOW_PARTIAL_CODE_STREAM: bool = True
     OPENAI_PARTIAL_STREAM_MIN_CHARS: int = 2000
     MODEL_PRICING_JSON: str = ""
@@ -73,7 +80,9 @@ class Settings(BaseSettings):
     # 最小修复 + 自测收敛；gameplay QA 的浏览器运行时报错也先走最小 patch 再回
     # build_validation 门禁。任何失败自动回落旧路径；仅 USE_REAL_MODEL=true 的任务生效。
     CODE_AGENT_ENABLED: bool = False
-    CODE_AGENT_MAX_TURNS: int = 8
+    # Gameplay-QA repairs routinely need reads + several patches + a check
+    # round; 8 turns clipped real repairs mid-flight (observed in traces).
+    CODE_AGENT_MAX_TURNS: int = 12
     CODE_AGENT_MODEL: str = ""  # 留空复用 MODEL_NAME
     # Optional Responses API routing key. Leave empty for compatible proxies
     # that reject prompt_cache_key; official OpenAI endpoints may opt in.
@@ -81,11 +90,15 @@ class Settings(BaseSettings):
     # 分片/渠道亲和;不发的话逐轮命中率全看路由运气（2026-07-13 实测:15 轮
     # 整跑仅 48%,单轮在 0%/52%/97% 之间波动）。
     CODE_AGENT_PROMPT_CACHE_KEY_PREFIX: str = "gameweave"
+    # Some OpenAI-compatible gateways accept prompt_cache_key but reject the
+    # GPT-5.6 prompt_cache_options/breakpoint fields. Keep explicit mode opt-in;
+    # the shared >=1024-token planning prefix still caches in implicit mode.
+    OPENAI_EXPLICIT_PROMPT_CACHE_ENABLED: bool = False
     # 作者模式：real 任务由 agent 在受限工具循环里逐文件扩展骨架。
     # For Phaser/Vite this agent edits the typed scenes/entities/systems/ui/config
     # tree and must pass TypeScript plus the isolated Vite build before returning.
     CODE_AGENT_AUTHOR_ENABLED: bool = False
-    CODE_AGENT_AUTHOR_MAX_TURNS: int = 32
+    CODE_AGENT_AUTHOR_MAX_TURNS: int = 56
     # Opt-in because this persists complete prompts, model responses, tool
     # arguments/results, generated code, and exception tracebacks.
     CODE_AGENT_DETAILED_LOGGING_ENABLED: bool = False
@@ -120,6 +133,7 @@ class Settings(BaseSettings):
     # gpt-image 级别的图片生成常见 90-180s；120s 会让客户端先断开、上游报
     # "context canceled"（2026-07-13 实测事故）。给足余量。
     ASSET_PROVIDER_TIMEOUT_SECONDS: int = 300
+    ASSET_PROVIDER_MAX_RETRIES: int = 2
     ASSET_PROVIDER_MAX_BYTES: int = 8_000_000
     ASSET_IMAGE_PROVIDER: str = "local"
     ASSET_IMAGE_API_KEY: str = ""
@@ -164,8 +178,18 @@ class Settings(BaseSettings):
     # empty and keep the old V8 precheck as a non-blocking fallback.
     SANDBOX_URL: str = ""
     SANDBOX_REQUIRED: bool = False
-    SANDBOX_TIMEOUT_MS: int = 5000
+    # Asset-heavy Phaser/Vite bundles routinely need 5-10s just to load; a 5s
+    # goto timeout produced random frames=0 false failures at the QA gate.
+    # 12MB 级素材包在冷启动 Chromium 里解码+首帧可到 15-20s（2026-07-15 实测
+    # a5d9791e：QA2 load_ms=18.6s 险过，QA1/QA3 零帧超时被误判成代码缺陷烧掉
+    # 整轮重生成）。预算给足，真正的启动挂死仍会在 24s 内暴露。
+    SANDBOX_TIMEOUT_MS: int = 24000
     SANDBOX_HTTP_TIMEOUT_OVERHEAD_MS: int = 10_000
+    # Screenshot-based visual QA: deterministic blank-screen probe plus a VLM
+    # soft gate on the after-input frame. Uses MODEL_NAME unless overridden.
+    VISUAL_REVIEW_ENABLED: bool = True
+    VISUAL_REVIEW_MODEL: str = ""
+    VISUAL_REVIEW_TIMEOUT_SECONDS: int = 90
     MAX_ACTIVE_TASKS_PER_USER: int = 2
     TASK_TOKEN_BUDGET: int = 0
 

@@ -3,15 +3,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import time
 import uuid
+from typing import Literal
 
 from app.agents import detailed_trace, llm, tracing
-from app.agents.agent_tools import _make_tools
+from app.agents.agent_tools import AgentToolPolicy, _make_tools
 from app.agents.repair_session import RepairOutcome, RepairSession, _bundle_context_text, available_skills
 from app.core.config import settings
-from app.core.telemetry import get_context
+
+logger = logging.getLogger(__name__)
 
 _HEARTBEAT_INTERVAL_SECONDS = 12.0
 _STREAM_TRACE_INTERVAL_SECONDS = 5.0
@@ -37,7 +40,12 @@ _STREAM_RETRYABLE_EXCEPTION_NAMES = {
     "ConflictError",
     "InternalServerError",
     "RateLimitError",
+    "TimeoutError",
 }
+
+
+class _AgentDeadlineExceeded(RuntimeError):
+    """Raised only at a streamed event boundary when an execution deadline expires."""
 
 _INSTRUCTIONS = """You repair a small self-contained HTML5 game bundle (index.html, style.css, game.js) that just failed one of GameWeave's quality gates — static build validation or browser gameplay QA (the task input states which).
 
@@ -86,11 +94,14 @@ _PROJECT_REPAIR_INSTRUCTIONS = """You repair a generated Phaser 3.90 + Vite + Ty
 
 The project is modular: src/main.ts wires scenes; src/scenes owns lifecycle; src/entities owns actors; src/systems owns rules/state; src/ui owns presentation; src/config owns typed generated configuration. Preserve these boundaries.
 
+Budget discipline: the task input already lists every bundle file — never call list_files. Go straight to one read_files batch (the implicated files plus their imported types), then patch.
+
 Hard contract:
 - Keep package.json, index.html, tsconfig.json, and src/main.ts. Do not add dependencies or Vite config.
-- No external URLs, network APIs, storage APIs, eval, dynamic import, or parent/top access except window.parent.postMessage.
+- No external URLs, network APIs, direct browser storage APIs, eval, dynamic import, or parent/top access except window.parent.postMessage. The immutable src/systems/GameWeaveBridge.ts is the only allowed persistence capability; do not edit it.
 - Read the reported file and its imported types together in one read_files call before editing. Use the smallest patch that fixes the root cause.
 - If the failure is a gameplay-QA quality issue (missing feedback effects, placeholder gameplay never replaced), read the game-quality-bar skill and wire the scaffold's Juice/Sfx helpers into the offending events instead of inventing new systems.
+- If the failure is a top-down humanoid that rolls/spins as it moves or aims, keep the body sprite at rotation 0, use pose frames/flipX for facing, keep aim separate from movement, and rotate only weapons/reticles/projectiles.
 - Use apply_patch_set for fixes spanning imports, types, and callers. Run run_checks after every patch or patch set; it performs source validation, TypeScript checking, and an isolated Vite build.
 - Finish only when checks pass, with: FIXED: <summary>."""
 
@@ -118,13 +129,15 @@ Quality bar (gameplay QA checks this):
 - Use gameConfig.palette for every color so the game keeps its own visual identity; tune with gameConfig.params and the design's balance numbers.
 - Ease motion and UI tweens (Back/Quad/Elastic) — nothing pops in or moves linearly-only.
 - Scoring encodes risk-reward (combo multipliers, proximity bonuses, costs for playing safe). Difficulty: safe opening (~8s), then escalating speed/density/complexity. Win AND loss must both be reachable; restart works without reloading.
-- When the design includes progression/economy, it is mandatory: working shop/upgrade screens with prices and effects tied to the design's balance, all state in memory.
+- When the design includes progression/economy, it is mandatory: working shop/upgrade screens with prices and effects tied to the design's balance. Keep live run state in memory; persist only the versioned snapshots explicitly requested through GameWeaveBridge.
+- When the request includes persistence, settings, key rebinding, or volume, use the scaffold's immutable GameWeaveBridge for versioned save/settings snapshots and Sfx.setMasterVolume() for 0..1 gain. Never call browser storage directly. These screens and controls must be reachable and functional, not labels.
 - Read the game-quality-bar skill (read_skill) before writing gameplay code.
 
 Physics safety:
 - Keep every spawned Arcade Physics body fully inside the configured world bounds, including its radius and body offset. For telegraphed or delayed spawns, include pending entities in wave caps and allow at most one pending spawn per timer so background-tab catch-up cannot burst a whole wave onto the arena edges.
 - EVERY moving actor must handle the world edge explicitly with the scaffold's Bounds system (src/systems/Bounds.ts): Bounds.collideWorld for contained/bouncing actors, Bounds.clamp or Bounds.wrap in update() for steered actors, Bounds.despawnOutside for projectiles and spawned waves. Enemies must never drift out of the arena and linger offscreen.
 - For top-down moving actors, explicitly disable gravity, keep bodies movable, and set velocity every gameplay tick; do not rely on an actor starting partly outside a world bound and correcting itself later.
+- For top-down humanoid pose sheets, never rotate the whole player body toward movement/aim. Keep movement and aim as separate vectors; update last aim only from non-zero aim input, use movement only as fallback when no aim input exists, keep facing stable while idle, and use pose frames/flipX. Rotate weapons, reticles, telegraphs, and projectiles instead.
 
 Method:
 - Work in small coherent increments. Use apply_patch_set for coordinated multi-file edits, then call run_checks. It performs source validation, TypeScript checking, and an isolated Vite build.
@@ -206,7 +219,10 @@ def _build_author_input(
             "src/systems/Juice.ts (hitFlash/shake/hitStop/burst/floatText/pulse), src/systems/Sfx.ts (procedural sound "
             "presets), src/systems/Bounds.ts (world-edge handling: collideWorld/clamp/wrap/despawnOutside — every "
             "moving actor uses one), src/systems/Backdrop.ts (Backdrop.draw shows the generated background image, "
-            "gradient fallback), src/config/gameConfig.ts (per-game palette + free-form params + generated sprite-sheet "
+            "gradient fallback), src/systems/Probe.ts (Probe.spawn('enemy', id) when an actor enters play and "
+            "Probe.emit('projectile:spawn', id) when a projectile fires — QA replays the game and reconciles probes "
+            "against the design roster), src/systems/GameWeaveBridge.ts (immutable versioned save/settings bridge when requested), "
+            "Sfx.setMasterVolume() (0..1 settings gain), src/config/gameConfig.ts (per-game palette + free-form params + generated sprite-sheet "
             "frame maps: gameConfig.sheets lists every sheet, sheetFrame(name) resolves a frame across them, and "
             "gameConfig.tilemap describes the generated ground-decor tilemap when present), and a Boot -> Title -> "
             "Play -> GameOver scene flow. src/scenes/PlayScene.ts is a placeholder marked GW_PLACEHOLDER_GAMEPLAY — "
@@ -284,11 +300,121 @@ def _record(result, model_name: str, latency_ms: int) -> int:
     if total:
         try:
             llm.record_usage(
-                model_name, u["input"], u["output"], latency_ms, cached_tokens=u["cached"]
+                model_name,
+                u["input"],
+                u["output"],
+                latency_ms,
+                cached_tokens=u["cached"],
+                cache_write_tokens=u["cache_write"],
             )
-        except Exception:  # noqa: BLE001 —— 记账失败不影响修复结果
-            pass
+        except Exception:  # noqa: BLE001 - accounting cannot abort generation
+            logger.exception("legacy author usage accounting failed")
     return total
+
+
+def _record_fallback_response(
+    result,
+    *,
+    model_name: str,
+    latency_ms: int,
+    execution_run_id: str,
+    agent_name: str,
+    workflow_name: str,
+    step_id: str | None,
+) -> int:
+    """Persist one aggregate row only when no response.completed event was emitted."""
+    if result is None:
+        return 0
+    u = _usage_of(result)
+    total = u["total"] or (u["input"] + u["output"])
+    try:
+        llm.record_response_usage(
+            model=model_name,
+            prompt_tokens=u["input"],
+            completion_tokens=u["output"],
+            cached_tokens=u["cached"],
+            cache_write_tokens=u["cache_write"],
+            latency_ms=latency_ms,
+            step_id=step_id,
+            run_id=execution_run_id,
+            agent=agent_name,
+            workflow_name=workflow_name,
+            provider_response_id=getattr(result, "last_response_id", None),
+            request_index=1,
+        )
+    except Exception:  # noqa: BLE001 - accounting cannot abort generation
+        logger.exception("fallback author response accounting failed")
+    return total
+
+
+def _display_output(value: object, limit: int) -> str:
+    """Keep typed/raw output intact while producing a bounded activity note."""
+    if value is None:
+        return ""
+    try:
+        if callable(getattr(value, "model_dump_json", None)):
+            text = value.model_dump_json()
+        elif isinstance(value, (dict, list, tuple)):
+            text = json.dumps(value, ensure_ascii=False, default=str)
+        else:
+            text = str(value)
+    except Exception:  # noqa: BLE001 - display text is best effort
+        text = str(value)
+    return text.strip()[: max(1, int(limit or 1))]
+
+
+def _quality_state(session: RepairSession, *, require_checks: bool) -> str:
+    if not session.changed:
+        return "empty"
+    if require_checks and not session.checks_ok:
+        return "unchecked"
+    return "valid"
+
+
+def _terminal_completion_components(
+    session: RepairSession,
+    *,
+    require_checks: bool,
+):
+    """Build the optional SDK completion tool and guarded final-output policy."""
+    try:
+        from agents import ToolsToFinalOutputResult, function_tool
+    except (ImportError, AttributeError):
+        return None
+
+    baseline_changed = set(session.changed)
+
+    @function_tool(name_override="complete_work")
+    def complete_work(summary: str) -> str:
+        """Finish only after a real change and all required checks pass.
+
+        A NOT_READY result is not terminal. Continue working, then call this
+        tool again only after satisfying the stated condition.
+        """
+        changed_now = set(session.changed) - baseline_changed
+        if not changed_now:
+            return "NOT_READY: no new workspace change has been produced"
+        if require_checks and not session.checks_ok:
+            return "NOT_READY: run_checks must pass before completion"
+        clean_summary = str(summary or "").strip() or "work completed"
+        return f"READY: {clean_summary}"
+
+    def tool_use_behavior(_context, tool_results):
+        for tool_result in tool_results:
+            tool = getattr(tool_result, "tool", None)
+            name = getattr(tool, "name", None) or getattr(tool, "qualified_name", None)
+            output = str(getattr(tool_result, "output", "") or "")
+            if name != "complete_work" or not output.startswith("READY:"):
+                continue
+            final_output = output.removeprefix("READY:").strip() or "work completed"
+            return ToolsToFinalOutputResult(
+                is_final_output=True,
+                final_output=final_output,
+            )
+        # In particular, NOT_READY must be sent back to the model so it continues.
+        return ToolsToFinalOutputResult(is_final_output=False, final_output=None)
+
+    return complete_work, tool_use_behavior
 
 
 def _close_client(client) -> None:
@@ -318,6 +444,27 @@ def _stream_error_details(raw_event) -> tuple[str | None, str | None, str | None
     )
 
 
+def _response_usage(response) -> dict[str, int]:
+    usage = _field(response, "usage")
+    details = _field(usage, "input_tokens_details")
+    input_tokens = int(_field(usage, "input_tokens", 0) or 0)
+    output_tokens = int(_field(usage, "output_tokens", 0) or 0)
+    reported_total = int(_field(usage, "total_tokens", 0) or 0)
+    if input_tokens + output_tokens <= 0 and reported_total > 0:
+        # The ledger API persists input/output rather than an independent total.
+        # Preserve providers that expose only total_tokens without losing usage.
+        output_tokens = reported_total
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+        "cached_tokens": int(_field(details, "cached_tokens", 0) or 0),
+        "cache_write_tokens": int(
+            _field(details, "cache_write_tokens", 0) or 0
+        ),
+    }
+
+
 class _StreamActivity:
     """Thread-safe, compact state for stream-aware heartbeats and retries."""
 
@@ -337,6 +484,14 @@ class _StreamActivity:
         self.incomplete_reason: str | None = None
         self.error_message: str | None = None
         self.current_response_output_started = False
+        self._completed_response_ids: set[str] = set()
+        self._response_started_at: dict[str, float] = {}
+        self.completed_responses = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.total_tokens = 0
+        self.cached_tokens = 0
+        self.cache_write_tokens = 0
 
     def begin_attempt(self, attempt: int) -> None:
         now = time.perf_counter()
@@ -361,6 +516,7 @@ class _StreamActivity:
         response = _field(raw, "response")
         response_id = _field(response, "id") or _field(raw, "response_id")
         sequence_number = _field(raw, "sequence_number")
+        response_usage = _response_usage(response) if event_type == "response.completed" else None
         is_output_progress = (
             event_type.endswith(".delta")
             or event_type in {"response.output_item.added", "response.content_part.added"}
@@ -368,7 +524,12 @@ class _StreamActivity:
         )
 
         with self._lock:
+            response_key = str(
+                response_id
+                or f"attempt-{self.attempt}-sequence-{sequence_number}"
+            )
             if event_type == "response.created":
+                self._response_started_at[response_key] = now
                 self.current_response_output_started = False
                 self.terminal_failure = None
                 self.error_code = None
@@ -402,6 +563,28 @@ class _StreamActivity:
                     _stream_error_details(raw)
                 )
 
+            usage_updated = False
+            completed_response = None
+            if event_type == "response.completed" and response_key not in self._completed_response_ids:
+                self._completed_response_ids.add(response_key)
+                self.completed_responses += 1
+                response_usage = response_usage or _response_usage(None)
+                started_at = self._response_started_at.pop(response_key, self.last_progress_at)
+                completed_response = {
+                    **response_usage,
+                    "provider_response_id": str(response_id) if response_id else None,
+                    "request_index": self.completed_responses,
+                    "model": str(_field(response, "model", "") or ""),
+                    "latency_ms": max(0, int((now - started_at) * 1000)),
+                }
+                if response_usage["total_tokens"]:
+                    self.input_tokens += response_usage["input_tokens"]
+                    self.output_tokens += response_usage["output_tokens"]
+                    self.total_tokens += response_usage["total_tokens"]
+                    self.cached_tokens += response_usage["cached_tokens"]
+                    self.cache_write_tokens += response_usage["cache_write_tokens"]
+                    usage_updated = True
+
             trace_now = (
                 event_type in _STREAM_TERMINAL_FAILURE_EVENTS
                 or event_type in {"response.created", "response.completed"}
@@ -419,6 +602,14 @@ class _StreamActivity:
                 "output_started": self.current_response_output_started,
                 "error_code": self.error_code,
                 "incomplete_reason": self.incomplete_reason,
+                "usage_updated": usage_updated,
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens,
+                "total_tokens": self.total_tokens,
+                "cached_tokens": self.cached_tokens,
+                "cache_write_tokens": self.cache_write_tokens,
+                "response_count": self.completed_responses,
+                "completed_response": completed_response,
             }
         return payload, trace_now
 
@@ -435,6 +626,12 @@ class _StreamActivity:
                 "incomplete_reason": self.incomplete_reason,
                 "error_message": self.error_message,
                 "output_started": self.current_response_output_started,
+                "response_count": self.completed_responses,
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens,
+                "total_tokens": self.total_tokens,
+                "cached_tokens": self.cached_tokens,
+                "cache_write_tokens": self.cache_write_tokens,
                 "event_idle_seconds": max(0, int(now - self.last_event_at)),
                 "progress_idle_seconds": max(0, int(now - self.last_progress_at)),
             }
@@ -443,11 +640,10 @@ class _StreamActivity:
 def _stream_failure_is_retryable(
     exc: BaseException,
     activity: _StreamActivity,
+    *,
+    allow_partial_output: bool = False,
 ) -> tuple[bool, str]:
     state = activity.snapshot()
-    if state["output_started"]:
-        return False, "partial model output already emitted"
-
     code = str(state["error_code"] or _field(exc, "code", "") or "").lower()
     reason = str(state["incomplete_reason"] or "").lower()
     if code in _STREAM_PERMANENT_ERROR_CODES:
@@ -456,23 +652,45 @@ def _stream_failure_is_retryable(
         return False, f"non-retryable incomplete reason {reason}"
 
     terminal = state["terminal_failure"]
+    retry_reason: str | None = None
     if terminal == "response.incomplete":
-        return False, "incomplete response without a transient reason"
-    if terminal in {"response.failed", "response.error", "error"}:
-        return True, terminal
+        retry_reason = None
+    elif terminal in {"response.failed", "response.error", "error"}:
+        retry_reason = terminal
 
     status_code = _field(exc, "status_code")
     if isinstance(status_code, int) and (
         status_code in {408, 409, 429} or status_code >= 500
     ):
-        return True, f"HTTP {status_code}"
-    if type(exc).__name__ in _STREAM_RETRYABLE_EXCEPTION_NAMES:
-        return True, type(exc).__name__
+        retry_reason = f"HTTP {status_code}"
+    elif type(exc).__name__ in _STREAM_RETRYABLE_EXCEPTION_NAMES:
+        retry_reason = type(exc).__name__
     message = str(exc).lower()
-    transient_markers = ("connection", "rate limit", "server error", "timed out", "timeout")
-    if any(marker in message for marker in transient_markers):
-        return True, "transient transport failure"
-    return False, "non-transient stream failure"
+    transient_markers = (
+        "connection",
+        "incomplete chunked read",
+        "peer closed",
+        "rate limit",
+        "server error",
+        "timed out",
+        "timeout",
+        "unexpected eof",
+    )
+    if retry_reason is None and any(marker in message for marker in transient_markers):
+        retry_reason = "transient transport failure"
+    if retry_reason is None:
+        if terminal == "response.incomplete":
+            return False, "incomplete response without a transient reason"
+        return False, "non-transient stream failure"
+    if state["output_started"] and not allow_partial_output:
+        return False, "partial model output already emitted"
+    if state["output_started"]:
+        return True, retry_reason + " after discardable partial output"
+    return True, retry_reason
+
+
+def _deadline_reached(deadline_at: float | None) -> bool:
+    return deadline_at is not None and time.monotonic() >= float(deadline_at)
 
 
 async def _run_agent_streamed(
@@ -485,35 +703,148 @@ async def _run_agent_streamed(
     agent_name: str,
     activity: _StreamActivity,
     trace_recorder=None,
+    execution_run_id: str | None = None,
+    workflow_name: str = "",
+    model_name: str = "",
+    step_id: str | None = None,
+    deadline_at: float | None = None,
+    safe_partial_stream_retry: bool = False,
 ):
     """Consume semantic SDK events and resume only safe failed model turns."""
     max_retries = max(0, int(settings.OPENAI_MAX_RETRIES or 0))
+    execution_run_id = execution_run_id or str(uuid.uuid4())
     retry_input = task_input
     for retry_index in range(max_retries + 1):
+        if _deadline_reached(deadline_at):
+            raise _AgentDeadlineExceeded("agent execution deadline reached")
         attempt = retry_index + 1
         activity.begin_attempt(attempt)
+        attempt_changed = set(session.changed)
         result = runner.run_streamed(agent, retry_input, **run_kwargs)
         try:
-            async for event in result.stream_events():
+            stream = result.stream_events().__aiter__()
+            while True:
+                try:
+                    idle_timeout = max(
+                        0.0,
+                        float(settings.CODE_AGENT_STREAM_IDLE_TIMEOUT or 0),
+                    )
+                    wait_limits = [idle_timeout] if idle_timeout else []
+                    deadline_is_wait_limit = False
+                    if deadline_at is not None:
+                        deadline_remaining = float(deadline_at) - time.monotonic()
+                        if deadline_remaining <= 0:
+                            raise _AgentDeadlineExceeded(
+                                "agent execution deadline reached"
+                            )
+                        deadline_is_wait_limit = (
+                            not idle_timeout or deadline_remaining <= idle_timeout
+                        )
+                        wait_limits.append(deadline_remaining)
+                    if wait_limits:
+                        # Keep the SDK async generator in this task. wait_for()
+                        # creates a child task for anext(), and the Agents SDK's
+                        # model_run_owner ContextVar cannot be reset when that
+                        # generator is later finalized from the parent context.
+                        async with asyncio.timeout(min(wait_limits)):
+                            event = await anext(stream)
+                    else:
+                        event = await anext(stream)
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError as exc:
+                    # The event loop may fire a short deadline timeout a few
+                    # microseconds before a fresh monotonic() comparison reaches
+                    # the same boundary. Remember which limit armed the timeout
+                    # so a real deadline is never mislabeled as stream idleness.
+                    if deadline_is_wait_limit or _deadline_reached(deadline_at):
+                        raise _AgentDeadlineExceeded(
+                            "agent execution deadline reached while waiting for a stream event"
+                        ) from exc
+                    state = activity.snapshot()
+                    raise TimeoutError(
+                        "agent model stream idle timeout after "
+                        f"{idle_timeout:g}s without an event "
+                        f"(last event: {state['event_type']})"
+                    ) from exc
                 payload, should_trace = activity.observe(event)
+                completed = payload.get("completed_response")
+                if completed is not None:
+                    try:
+                        llm.record_response_usage(
+                            model=completed.get("model") or model_name,
+                            prompt_tokens=completed["input_tokens"],
+                            completion_tokens=completed["output_tokens"],
+                            cached_tokens=completed["cached_tokens"],
+                            cache_write_tokens=completed["cache_write_tokens"],
+                            latency_ms=completed["latency_ms"],
+                            step_id=step_id,
+                            run_id=execution_run_id,
+                            agent=agent_name,
+                            workflow_name=workflow_name,
+                            provider_response_id=completed["provider_response_id"],
+                            request_index=completed["request_index"],
+                        )
+                    except Exception:  # noqa: BLE001 - accounting cannot abort generation
+                        logger.exception(
+                            "streamed author response accounting failed",
+                            extra={
+                                "step_id": step_id,
+                                "run_id": execution_run_id,
+                                "provider_response_id": completed["provider_response_id"],
+                            },
+                        )
+                if payload.get("usage_updated"):
+                    session._log(
+                        f"stream_tokens={payload['total_tokens']}",
+                        event=session._event(
+                            "usage_progress",
+                            agent=agent_name,
+                            input_tokens=payload["input_tokens"],
+                            output_tokens=payload["output_tokens"],
+                            total_tokens=payload["total_tokens"],
+                            cached_tokens=payload["cached_tokens"],
+                            cache_write_tokens=payload["cache_write_tokens"],
+                            status="running",
+                        ),
+                    )
                 if trace_recorder is not None and should_trace:
                     trace_recorder.record("llm_stream_event", payload)
+                if _deadline_reached(deadline_at):
+                    raise _AgentDeadlineExceeded("agent execution deadline reached")
             return result
         except Exception as exc:
-            retryable, reason = _stream_failure_is_retryable(exc, activity)
+            no_new_workspace_effects = set(session.changed) == attempt_changed
+            retryable, reason = _stream_failure_is_retryable(
+                exc,
+                activity,
+                allow_partial_output=(
+                    safe_partial_stream_retry and no_new_workspace_effects
+                ),
+            )
             if not retryable or retry_index >= max_retries:
                 raise
-            try:
-                retry_input = result.to_state()
-            except Exception:
-                # Restarting from the original prompt after prior tool turns can
-                # duplicate writes. If state cannot be preserved, fail safely.
-                raise exc
+            state = activity.snapshot()
+            if (
+                state["output_started"]
+                and safe_partial_stream_retry
+                and no_new_workspace_effects
+            ):
+                # The failing model request did not execute a write/check tool.
+                # Discard its truncated text/function arguments and restart from
+                # the immutable prompt against the unchanged current workspace.
+                retry_input = task_input
+            else:
+                try:
+                    retry_input = result.to_state()
+                except Exception:
+                    # Restarting from the original prompt after prior tool turns can
+                    # duplicate writes. If state cannot be preserved, fail safely.
+                    raise exc
 
             delay = max(0.0, float(settings.OPENAI_RETRY_BACKOFF_SECONDS or 0)) * (
                 2**retry_index
             )
-            state = activity.snapshot()
             message = (
                 f"{agent_name} stream failed ({reason}); retrying model turn "
                 f"{attempt + 1}/{max_retries + 1}"
@@ -524,7 +855,7 @@ async def _run_agent_streamed(
                 source="model_stream",
                 attempt=attempt,
                 next_attempt=attempt + 1,
-                event_type=state["terminal_failure"] or state["event_type"],
+                stream_event=state["terminal_failure"] or state["event_type"],
                 error_code=state["error_code"],
                 response_id=state["response_id"],
                 status="retrying",
@@ -580,13 +911,13 @@ def _start_heartbeat(
     session: RepairSession,
     *,
     agent_name: str,
+    operation: Literal["authoring", "repairing"],
     activity: _StreamActivity | None = None,
     interval: float = _HEARTBEAT_INTERVAL_SECONDS,
 ) -> tuple[threading.Event, threading.Thread | None]:
     stop = threading.Event()
     if not session.live_step_id or interval <= 0:
         return stop, None
-    verb = "authoring" if "Author" in agent_name else "repairing"
     started = time.perf_counter()
 
     def run() -> None:
@@ -596,12 +927,14 @@ def _start_heartbeat(
             checks = "ok" if session.checks_ok else "pending"
             stream_state = activity.snapshot() if activity is not None else {}
             session._log(
-                f"agent {verb} waiting on model response: {elapsed}s elapsed, "
+                f"agent {operation} waiting on model response: {elapsed}s elapsed, "
                 f"{_heartbeat_status(session, activity)}",
                 heartbeat=True,
                 event=session._event(
                     "heartbeat",
-                    phase=verb,
+                    agent=agent_name,
+                    operation=operation,
+                    phase=operation,
                     elapsed_seconds=elapsed,
                     idle_seconds=idle,
                     file_count=len(session.contents),
@@ -612,7 +945,6 @@ def _start_heartbeat(
                     stream_progress_idle_seconds=stream_state.get("progress_idle_seconds"),
                     stream_attempt=stream_state.get("attempt"),
                     response_id=stream_state.get("response_id"),
-                    files_in_context=session.context_snapshot(),
                     status="waiting",
                 ),
             )
@@ -634,12 +966,7 @@ def _prompt_cache_key(workflow_name: str) -> str | None:
     整段重付 uncached（c166a81f 取证：两次修复相隔 35s 内容几乎相同，重付 ~1.85 万
     token）。workflow 段保留，不同 agent 家族不混分片；不同任务各占分片不挤热点；
     无任务上下文时回退每跑唯一。网关需按 key 做粘性路由此收益才稳定。"""
-    prefix = str(settings.CODE_AGENT_PROMPT_CACHE_KEY_PREFIX or "").strip().rstrip(":")
-    if not prefix:
-        return None
-    task_scope = str(get_context().get("task_id") or "").replace("-", "")[:12]
-    scope = task_scope or uuid.uuid4().hex[:12]
-    return f"{prefix}:{workflow_name}:{scope}"
+    return llm.prompt_cache_key(workflow_name)
 
 
 def _execute_agent(
@@ -651,6 +978,16 @@ def _execute_agent(
     task_input: str,
     turns_limit: int,
     workflow_name: str,
+    operation: Literal["authoring", "repairing"],
+    tool_policy: AgentToolPolicy | None = None,
+    final_output_limit: int = 200,
+    output_type: object | None = None,
+    deadline_at: float | None = None,
+    terminal_completion: bool = True,
+    completion_requires_checks: bool | None = None,
+    safe_partial_stream_retry: bool = True,
+    preserve_partial_on_error: bool = False,
+    workspace_tools: bool = True,
 ) -> RepairOutcome | None:
     """共享的 SDK 工具循环执行器。返回 None 表示不可用/异常（调用方回落旧路径）。
 
@@ -680,7 +1017,31 @@ def _execute_agent(
         session._turn("error", "agent runtime unavailable", source="sdk", status="failed")
         return None
 
-    tools = _make_tools(session, author=author_tools)
+    tools = (
+        _make_tools(session, author=author_tools, policy=tool_policy)
+        if workspace_tools
+        else []
+    )
+    require_checks = (
+        bool(completion_requires_checks)
+        if completion_requires_checks is not None
+        else bool(tool_policy.allow_checks) if tool_policy is not None else True
+    )
+    completion = (
+        _terminal_completion_components(session, require_checks=require_checks)
+        if terminal_completion and output_type is None
+        else None
+    )
+    agent_instructions = instructions
+    tool_use_behavior = None
+    if completion is not None:
+        completion_tool, tool_use_behavior = completion
+        tools = [*tools, completion_tool]
+        agent_instructions += (
+            "\n\nCompletion protocol: do not end with ordinary prose. Call "
+            "complete_work(summary) only after your workspace changes are finished. "
+            "If it returns NOT_READY, continue editing or checking and call it again later."
+        )
 
     try:
         client = AsyncOpenAI(
@@ -701,20 +1062,30 @@ def _execute_agent(
         session._turn("error", "OpenAI client unavailable", source="client", status="failed")
         return None
 
-    agent = Agent(
+    agent_kwargs = dict(
         name=agent_name,
-        instructions=instructions,
+        instructions=agent_instructions,
         model=OpenAIResponsesModel(model=model_name, openai_client=client),
         tools=tools,
     )
+    if output_type is not None:
+        agent_kwargs["output_type"] = output_type
+    if tool_use_behavior is not None:
+        agent_kwargs["tool_use_behavior"] = tool_use_behavior
+    agent = Agent(**agent_kwargs)
 
     start = time.perf_counter()
+    execution_run_id = str(getattr(trace_recorder, "run_id", None) or uuid.uuid4())
     result = None
     hit_limit = False
+    deadline_stop = False
+    error_stop = False
+    raw_output = None
     session._turn(
         "streaming",
         f"{agent_name} running with {len(tools)} tool(s)",
         agent=agent_name,
+        operation=operation,
         tool_count=len(tools),
         bundle=session.bundle_metadata(),
         status="running",
@@ -723,6 +1094,7 @@ def _execute_agent(
     heartbeat_stop, heartbeat_thread = _start_heartbeat(
         session,
         agent_name=agent_name,
+        operation=operation,
         activity=stream_activity,
     )
     try:
@@ -733,6 +1105,7 @@ def _execute_agent(
             tracing_disabled=True,
             model_settings=ModelSettings(
                 parallel_tool_calls=False,
+                include_usage=True,
                 extra_args=extra_args,
             ),
         )
@@ -762,9 +1135,16 @@ def _execute_agent(
                 agent_name=agent_name,
                 activity=stream_activity,
                 trace_recorder=trace_recorder,
+                execution_run_id=execution_run_id,
+                workflow_name=workflow_name,
+                model_name=model_name,
+                step_id=session.live_step_id,
+                deadline_at=deadline_at,
+                safe_partial_stream_retry=safe_partial_stream_retry,
             )
         )
-        note = str(result.final_output or "").strip()[:200]
+        raw_output = result.final_output
+        note = _display_output(raw_output, final_output_limit)
     except MaxTurnsExceeded as exc:
         hit_limit = True
         note = f"max turns ({turns_limit}) exhausted"
@@ -774,6 +1154,19 @@ def _execute_agent(
                 {
                     "phase": "agent_loop",
                     "reason": "max_turns",
+                    "latency_ms": int((time.perf_counter() - start) * 1000),
+                    **detailed_trace.exception_payload(exc),
+                },
+            )
+    except _AgentDeadlineExceeded as exc:
+        deadline_stop = True
+        note = "agent execution deadline reached"
+        if trace_recorder:
+            trace_recorder.record(
+                "run_error",
+                {
+                    "phase": "agent_loop",
+                    "reason": "deadline",
                     "latency_ms": int((time.perf_counter() - start) * 1000),
                     **detailed_trace.exception_payload(exc),
                 },
@@ -794,7 +1187,10 @@ def _execute_agent(
             f"agent aborted: {message}",
             event=session._event("error", source="agent", message=message, status="failed"),
         )
-        return None
+        if not (preserve_partial_on_error and session.changed):
+            return None
+        error_stop = True
+        note = f"agent error after workspace changes: {message}"
     except Exception as exc:  # noqa: BLE001 —— 网络/供应商异常，一律回落旧路径
         message = str(exc)[:160]
         if trace_recorder:
@@ -811,13 +1207,28 @@ def _execute_agent(
             f"agent failed: {message}",
             event=session._event("error", source="model", message=message, status="failed"),
         )
-        return None
+        if not (preserve_partial_on_error and session.changed):
+            return None
+        error_stop = True
+        note = f"model stream failed after workspace changes: {message}"
     finally:
         _stop_heartbeat(heartbeat_stop, heartbeat_thread)
         _close_client(client)
 
     latency_ms = int((time.perf_counter() - start) * 1000)
-    tokens = _record(result, model_name, latency_ms)
+    stream_usage = stream_activity.snapshot()
+    if stream_usage["response_count"]:
+        tokens = int(stream_usage["total_tokens"] or 0)
+    else:
+        tokens = _record_fallback_response(
+            result,
+            model_name=model_name,
+            latency_ms=latency_ms,
+            execution_run_id=execution_run_id,
+            agent_name=agent_name,
+            workflow_name=workflow_name,
+            step_id=session.live_step_id,
+        )
     _log_cache_hit(session, result)
     if trace_recorder and result is not None:
         final_history = None
@@ -840,10 +1251,47 @@ def _execute_agent(
             },
         )
     if hit_limit:
-        session._turn("error", note, reason="max_turns", status="stopped")
         session._log(
-            f"agent stopped: {note}",
-            event=session._event("notice", reason="max_turns", message=note, status="stopped"),
+            f"{agent_name} reached its turn budget; preserving partial work",
+            event=session._event(
+                "role_budget_exhausted",
+                agent=agent_name,
+                operation=operation,
+                reason="max_turns",
+                message=note,
+                turns_limit=turns_limit,
+                changed=sorted(session.changed),
+                checks_ok=session.checks_ok,
+                status="partial",
+            ),
+        )
+    elif deadline_stop:
+        session._log(
+            f"{agent_name} reached its execution deadline; preserving partial work",
+            event=session._event(
+                "notice",
+                agent=agent_name,
+                operation=operation,
+                reason="deadline",
+                message=note,
+                changed=sorted(session.changed),
+                checks_ok=session.checks_ok,
+                status="partial",
+            ),
+        )
+    elif error_stop:
+        session._log(
+            f"{agent_name} failed after workspace changes; preserving candidate for validation",
+            event=session._event(
+                "role_stream_failed_partial",
+                agent=agent_name,
+                operation=operation,
+                reason="stream_error",
+                message=note,
+                changed=sorted(session.changed),
+                checks_ok=session.checks_ok,
+                status="partial",
+            ),
         )
     else:
         session._turn(
@@ -855,6 +1303,20 @@ def _execute_agent(
             bundle=session.bundle_metadata(),
             status="done",
         )
+    stop_reason = (
+        "max_turns"
+        if hit_limit
+        else "deadline"
+        if deadline_stop
+        else "stream_error"
+        if error_stop
+        else "completed"
+    )
+    quality_state = _quality_state(session, require_checks=require_checks)
+    result_usage = _usage_of(result) if result is not None else {"requests": 0}
+    turns = int(stream_usage["response_count"] or result_usage["requests"] or 0)
+    if hit_limit and turns <= 0:
+        turns = turns_limit
     return RepairOutcome(
         files=session.to_files(),
         changed=sorted(session.changed),
@@ -862,7 +1324,10 @@ def _execute_agent(
         logs=list(session.log_lines),
         note=note,
         checks_ok=session.checks_ok,
-        turns=_usage_of(result)["requests"] if result is not None else turns_limit,
+        turns=turns,
+        stop_reason=stop_reason,
+        quality_state=quality_state,
+        raw_output=raw_output,
     )
 
 
@@ -874,6 +1339,7 @@ def run_repair(
     task_note: str | None = None,
     failure_label: str = "Build validation",
     max_turns: int | None = None,
+    deadline_at: float | None = None,
 ) -> RepairOutcome | None:
     """跑一轮修复 agent。返回 None 表示 agent 路径不可用/异常（调用方回落旧路径）。"""
     if not files:
@@ -890,6 +1356,8 @@ def run_repair(
         task_input=_build_input(files, error, dimension, task_note, failure_label),
         turns_limit=max_turns or settings.CODE_AGENT_MAX_TURNS,
         workflow_name="gameweave-project-repair" if project_mode else "gameweave-repair",
+        operation="repairing",
+        deadline_at=deadline_at,
     )
 
 
@@ -902,6 +1370,7 @@ def run_author(
     dimension: str = "2d",
     qa_feedback: list | None = None,
     max_turns: int | None = None,
+    deadline_at: float | None = None,
 ) -> RepairOutcome | None:
     """作者模式：从骨架 bundle 起步，agent 自定文件结构逐文件写出完整游戏。
 
@@ -914,15 +1383,34 @@ def run_author(
     from app.services.vite_projects import is_vite_project
 
     project_mode = is_vite_project(files)
+    if project_mode:
+        # Keep the fixed outer LangGraph node and its checkpoint/log lifecycle.
+        # The bounded team owns only the implementation inside GameCodeAgent.
+        from app.agents.author_team import run_project_author_team
+
+        return run_project_author_team(
+            files,
+            spec=spec,
+            design=design,
+            runtime=runtime,
+            dimension=dimension,
+            qa_feedback=qa_feedback,
+            max_turns=max_turns or settings.CODE_AGENT_AUTHOR_MAX_TURNS,
+            live_step_id=tracing.current_step_id(),
+            deadline_at=deadline_at,
+        )
+
     session = RepairSession.from_files(files, live_step_id=tracing.current_step_id())
     return _execute_agent(
         session,
-        agent_name="GameProjectAuthor" if project_mode else "GameCodeAuthor",
-        instructions=_PROJECT_AUTHOR_INSTRUCTIONS if project_mode else _AUTHOR_INSTRUCTIONS,
+        agent_name="GameCodeAuthor",
+        instructions=_AUTHOR_INSTRUCTIONS,
         author_tools=True,
         task_input=_build_author_input(files, spec, design, runtime, dimension, qa_feedback),
         turns_limit=max_turns or settings.CODE_AGENT_AUTHOR_MAX_TURNS,
-        workflow_name="gameweave-project-author" if project_mode else "gameweave-author",
+        workflow_name="gameweave-author",
+        operation="authoring",
+        deadline_at=deadline_at,
     )
 
 
@@ -933,6 +1421,7 @@ def run_revision(
     spec: dict,
     design: dict,
     max_turns: int | None = None,
+    deadline_at: float | None = None,
 ) -> RepairOutcome | None:
     """Run a bounded, tool-using revision over a modular Vite project."""
     from app.services.vite_projects import is_vite_project
@@ -957,4 +1446,6 @@ def run_revision(
         task_input=task_input,
         turns_limit=max_turns or settings.CODE_AGENT_AUTHOR_MAX_TURNS,
         workflow_name="gameweave-project-revision",
+        operation="authoring",
+        deadline_at=deadline_at,
     )
