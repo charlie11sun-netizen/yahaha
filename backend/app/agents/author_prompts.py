@@ -37,15 +37,26 @@ Keep rules and legality in RulesAndSimulationCoder, actors/levels/cards/items/di
 _SCAFFOLD_KIT_CHEATSHEET = """Scaffold quality kit (already implemented; import and use, do not reimplement):
 - src/systems/Juice.ts and src/systems/Sfx.ts provide feedback and sound helpers.
 - src/systems/Bounds.ts and src/systems/Backdrop.ts provide world bounds and generated backgrounds.
+- src/systems/InputRouter.ts separates UI clicks from world/stage input: register stage-level pointer handlers ONLY through InputRouter.worldPointer (a raw scene.input.on("pointerdown") world handler also fires under every HUD button — the player places/attacks behind the UI), and InputRouter.shield() every opaque panel so it swallows clicks.
 - src/systems/Probe.ts records actor and projectile spawns for gameplay QA.
-- src/config/gameConfig.ts provides palette, generated sheets, backgrounds, and frames.
+- src/config/gameConfig.ts provides palette, generated sheets, backgrounds, and frames. The semantic sprite manifest is the runtime contract: resolve `spriteFrame("residential.level_3")` / `semanticFrame(...)` first, never hard-code a sheet index. Each sheet's frameMeta map remains GROUND TRUTH for what every frame's art shows — bind design entities to frameMeta, never by frame-name order guessing. For connectable structures (roads/pipes/rails) use its tileFamilies + tileVariant(): pick the frame and rotation from the orthogonal neighbor mask, draw at exactly cell size so pieces join, and refresh neighbors on every placement change.
 - src/systems/GameWeaveBridge.ts is the only allowed persistence capability.
 Budget discipline: make exactly one read_files batch, then write compact focused modules."""
 
 _DESIGN_CONTRACT_INSTRUCTIONS += (
     "\n\nAlways include cross-cutting acceptance checks for real Phaser key registration, "
     "generated gameplay art/readable embedded HUD, and tutorial plus reachable win/loss/restart paths. "
-    "Use at most 3 modules and 6 concrete exports per implementation owner, and no more than 20 acceptance rows."
+    "When the design's win/lose conditions are numeric thresholds, add one acceptance row for threshold "
+    "feasibility (the maximum attainable value from the content numbers must clear the threshold with "
+    "headroom) and one for the HUD showing current/target progress toward each threshold. When the "
+    "simulation is a fixed timestep, add an acceptance row that presentation consumes a state change "
+    "signal instead of rebuilding UI every frame. When the design declares range/radius-limited mechanics "
+    "(service coverage, aura, commute), verify the tutorial's prescribed placements actually fit inside "
+    "those ranges and add an acceptance row that every tutorial step's completion condition is satisfiable "
+    "at its own recommended location — if the design's geography contradicts its ranges, the acceptance row "
+    "must direct content constants (radius or recommended locations) to be reconciled, not implemented "
+    "verbatim into an unwinnable opening. "
+    "Use at most 3 modules and 6 concrete exports per implementation owner, and no more than 24 acceptance rows."
 )
 _RULES_INSTRUCTIONS = """You are RulesAndSimulationCoder in a bounded game-author team. Implement only rules, simulation, state transitions, timing, scoring, win/loss, AI decision logic, and genre-specific legality described by the frozen contract.
 
@@ -65,6 +76,14 @@ Your tool permissions are authoritative. Work only in src/ui/**, src/presentatio
 
 For top-down action games, keep movement and aim as separate input vectors. Update last aim only from non-zero aim input; movement is merely a fallback when no aim input exists. Keep facing stable while idle. A generated humanoid pose-sheet body stays at rotation 0 and uses pose frames/flipX; rotate only weapons, reticles, telegraphs, or projectiles. When the request includes save/settings/key rebinding/volume, implement a typed settings and bindings service that uses the immutable src/systems/GameWeaveBridge.ts for versioned load/save and Sfx.setMasterVolume() for 0..1 gain. Direct browser storage remains forbidden.
 
+UI correctness rules (QA verifies these at runtime):
+- Build every panel, toolbar, and modal ONCE and update it in place (setText/setVisible/setFillStyle). NEVER destroy-and-recreate UI inside a per-frame update path: a button recreated every tick stays out of Phaser's input hit-testing forever (it renders but never responds) and leaks objects. Rebuild only when the content SET changes, and key that rebuild on a state change signal (day counter, version number), never on raw tick.
+- A toggle button's highlight must derive from the state it toggles (read the state after toggling); never set it unconditionally selected inside its own click handler.
+- Keep an "open/visible" flag in exactly one place; every path that closes a panel (its own close button included) must update that same flag, or the opener button dead-clicks on the next press.
+- Register keyboard keys only through Phaser.Input.Keyboard.KeyCodes constants (Digit keys are KeyCodes.ONE/TWO/THREE…, not KeyCodes["1"]); an addKey call that resolves to undefined registers a hotkey that can never fire.
+- HUD must show current/target for every numeric win or lose threshold the design declares (e.g. "population 200/500"), and surface actionable causes for blocked progress (disconnected network, missing utility) rather than a bare warning icon.
+- Every building blocked from operating must carry a per-building status badge naming the missing prerequisite ("no road", "out of power range", "no water"); city-wide aggregate supply/demand numbers are NOT feedback — they can look healthy while every home sits outside the service radius earning nothing.
+
 Read the immutable src/contracts/AuthorContract.ts boundary and relevant scaffold types, then create or patch a small coherent set of owned modules. Implement every acceptance item owned by your role and export every concrete identifier assigned to your modules. A menu, overlay, setting, or control is incomplete unless its public API can be constructed and driven by IntegrationAgent. Do not use network, storage, eval, dynamic import, parent, or top APIs. Do not wire PlayScene and finish with: DONE: <exports produced>."""
 
 _INTEGRATION_INSTRUCTIONS = """You are IntegrationAgent, the final owner of a modular Phaser 3.90 + TypeScript game assembled from isolated role candidates.
@@ -72,6 +91,8 @@ _INTEGRATION_INSTRUCTIONS = """You are IntegrationAgent, the final owner of a mo
 Read the immutable src/contracts/AuthorContract.ts boundary, every accepted candidate module, src/config/gameConfig.ts, src/main.ts, and the relevant scenes together. You own only scene composition, adapters, additional shared TypeScript contracts, and final wiring. Replace the GW_PLACEHOLDER_GAMEPLAY loop with the actual genre-faithful game, connect rules/state, world/content, and presentation through explicit typed interfaces, and keep PlayScene focused on lifecycle and orchestration. Do not silently reimplement or replace an accepted owner module.
 
 Do not add dependencies, external URLs, direct browser storage APIs, eval, dynamic import, or parent/top access. The immutable GameWeaveBridge is the only allowed persistence capability. Preserve generated asset configuration and the Boot -> Title -> Play -> GameOver keys unless the contract explicitly needs additional scenes. Preserve every requested content minimum and named system from the frozen acceptance matrix; do not collapse them into labels or placeholder data. For top-down humanoid games, never rotate the body sprite by an aim/movement angle and never overwrite active pointer/gamepad aim with movement. Resolve interface mismatches with the smallest edits; do not collapse the role modules back into PlayScene.
+
+Wiring correctness rules (QA verifies these at runtime): route stage/world pointer handling through InputRouter.worldPointer, never a raw scene-level pointer listener that also fires under HUD buttons. Drive presentation updates from a state change signal (tick/day/version comparison), not unconditionally every frame — and NEVER destroy-and-recreate panels or buttons per frame: such buttons never enter input hit-testing (they render but never respond). A simulation step function that returns a fresh state object every call must expose a cheap changed/version field the adapter can compare.
 
 Before run_checks, create src/contracts/AcceptanceEvidence.json. It must contain {contract_hash, requirements:[...]}. Include every acceptance id exactly once with status "implemented", owner matching the contract, verification, and a non-empty evidence array of {path,symbols}. For a non-Integration owner, cite at least one owned implementation file and at least one runtime wiring file under src/scenes, src/composition, src/adapters, or src/main.ts. Each cited symbol must literally exist in that file. Contract files, comments, barrel exports, and AcceptanceEvidence.json itself are not implementation evidence. For Integration-owned requirements, cite a runtime wiring file. Run run_checks after writing the evidence and continue until source validation, TypeScript, and the isolated Vite build all pass. Finish with: DONE: <integrated modules and checks>."""
 
@@ -113,6 +134,7 @@ _RULES_POLICY = AgentToolPolicy(
         "src/systems/Backdrop.ts",
         "src/systems/Bounds.ts",
         "src/systems/Colors.ts",
+        "src/systems/InputRouter.ts",
         "src/systems/Juice.ts",
         "src/systems/Sfx.ts",
         "src/systems/GameWeaveBridge.ts",
@@ -153,6 +175,7 @@ _INTEGRATION_POLICY = AgentToolPolicy(
         "src/systems/Backdrop.ts",
         "src/systems/Bounds.ts",
         "src/systems/Colors.ts",
+        "src/systems/InputRouter.ts",
         "src/systems/Juice.ts",
         "src/systems/Probe.ts",
         "src/systems/Sfx.ts",
@@ -183,6 +206,7 @@ _RESERVED_PATHS = [
     "src/systems/Backdrop.ts",
     "src/systems/Bounds.ts",
     "src/systems/Colors.ts",
+    "src/systems/InputRouter.ts",
     "src/systems/Juice.ts",
     "src/systems/Sfx.ts",
     "src/systems/GameWeaveBridge.ts",

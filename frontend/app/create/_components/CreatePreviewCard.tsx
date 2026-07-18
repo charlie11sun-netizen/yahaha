@@ -112,6 +112,10 @@ function GeneratedAssetGallery({ assets }: { assets: GeneratedTaskAsset[] }) {
   return (
     <div className="grid aspect-[16/10] grid-cols-2 auto-rows-[minmax(140px,1fr)] gap-3 overflow-y-auto bg-slate-50 p-4">
       {assets.map((asset, index) => (
+        (() => {
+          const audit = asset.frame_audit as { passed?: boolean; failed_frame_ids?: string[] } | undefined;
+          const failedFrames = audit?.failed_frame_ids?.length ?? 0;
+          return (
         <figure
           className={cn(
             "group relative min-h-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm",
@@ -125,10 +129,19 @@ function GeneratedAssetGallery({ assets }: { assets: GeneratedTaskAsset[] }) {
             src={asset.data_url}
           />
           <figcaption className="absolute inset-x-2 bottom-2 flex items-center justify-between gap-2 rounded-lg bg-slate-950/80 px-2.5 py-1.5 text-white backdrop-blur">
-            <span className="truncate text-xs font-semibold">{asset.name}</span>
-            <span className="shrink-0 text-[10px] uppercase tracking-wide text-slate-300">{asset.kind}</span>
+            <span className="min-w-0 truncate text-xs font-semibold">
+              {asset.name}
+              {asset.semantic_ids?.length ? (
+                <span className="ml-1 font-normal text-slate-300">· {asset.semantic_ids.length} semantic frames</span>
+              ) : null}
+            </span>
+            <span className={cn("shrink-0 text-[10px] uppercase tracking-wide", failedFrames ? "text-amber-300" : "text-slate-300")}>
+              {failedFrames ? `${failedFrames} audit flags` : asset.kind}
+            </span>
           </figcaption>
         </figure>
+          );
+        })()
       ))}
     </div>
   );

@@ -3,6 +3,11 @@ import { activityMessageFromEvent, logEntries, usageFromEvent } from "./agent-ev
 
 const STREAM_TOKEN_RE = /^stream_tokens=(\d+)$/;
 
+function parseStreamTokens(line: string | null | undefined) {
+  const match = line?.trim().match(STREAM_TOKEN_RE);
+  return match ? Number(match[1]) : null;
+}
+
 export function isStreamTokenLine(line: string | null | undefined) {
   return Boolean(line && STREAM_TOKEN_RE.test(line.trim()));
 }
@@ -19,10 +24,52 @@ export function activeTaskLogs(task?: Task) {
 }
 
 export function getLiveTokenTotal(task?: Task) {
-  // Per-response usage is committed before usage_progress is published.  The
-  // durable task counter is therefore already live; adding streamed totals here
-  // double-counts the active response.
-  return task?.tokens ?? null;
+  if (!task) return null;
+
+  const durableTokens = Math.max(0, task.tokens ?? 0);
+  const logs = task.logs ?? [];
+  if (!logs.some((log) => log.status === "running")) return durableTokens;
+
+  let latestUsageCursor = -1;
+  let latestUsageOrder = -1;
+  let pendingTokens: number | null = null;
+  let pendingCursor: number | null = null;
+  let pendingOrder = -1;
+  let order = 0;
+
+  logs.forEach((log) => {
+    const entries = log.entries?.length
+      ? log.entries
+      : (log.lines.length ? log.lines : [log.message]).map((line) => ({
+          line,
+          cursor: null,
+          event: null,
+        }));
+    entries.forEach((entry) => {
+      const usage = usageFromEvent(entry.event);
+      const cursor = typeof entry.cursor === "number" ? entry.cursor : null;
+      if (usage) {
+        if (cursor !== null) latestUsageCursor = Math.max(latestUsageCursor, cursor);
+        latestUsageOrder = order;
+      }
+      if (log.status === "running") {
+        const streamed = parseStreamTokens(entry.line);
+        if (streamed !== null) {
+          pendingTokens = streamed;
+          pendingCursor = cursor;
+          pendingOrder = order;
+        }
+      }
+      order += 1;
+    });
+  });
+
+  if (pendingTokens === null) return durableTokens;
+  const isAfterUsage =
+    pendingCursor !== null && latestUsageCursor >= 0
+      ? pendingCursor > latestUsageCursor
+      : pendingOrder > latestUsageOrder;
+  return isAfterUsage ? durableTokens + pendingTokens : durableTokens;
 }
 
 export function getLiveAgentActivity(task?: Task) {

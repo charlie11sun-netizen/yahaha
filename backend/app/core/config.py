@@ -1,5 +1,6 @@
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -102,6 +103,18 @@ class Settings(BaseSettings):
     # Opt-in because this persists complete prompts, model responses, tool
     # arguments/results, generated code, and exception tracebacks.
     CODE_AGENT_DETAILED_LOGGING_ENABLED: bool = False
+    CODE_AGENT_TRACE_PAYLOAD_WARN_CHARS: int = Field(default=250_000, ge=1)
+    CODE_AGENT_TRACE_MAX_PAYLOAD_CHARS: int = Field(default=1_000_000, ge=256)
+    CODE_AGENT_TRACE_RETENTION_DAYS: int = Field(default=7, ge=1)
+
+    # Opik self-hosted Agent trace export. Keep disabled unless the SDK and
+    # endpoint are intentionally configured; PostgreSQL traces remain the
+    # local audit source regardless of this setting.
+    OPIK_ENABLED: bool = False
+    OPIK_URL_OVERRIDE: str = ""
+    OPIK_PROJECT_NAME: str = "gameweave-agent"
+    OPIK_WORKSPACE: str = "default"
+    OPIK_ENVIRONMENT: str = "staging"
     # All newly generated 2D games use modular Phaser 3.90 + TypeScript.
     VITE_BUILD_TIMEOUT_MS: int = 120_000
     SANDBOX_BUILD_TIMEOUT_OVERHEAD_MS: int = 15_000
@@ -157,6 +170,7 @@ class Settings(BaseSettings):
     SENTRY_DSN: str = ""
     SENTRY_ENVIRONMENT: str = "development"
     LOG_FORMAT: str = "console"  # console | json
+    LOG_LEVEL: str = "INFO"  # DEBUG | INFO | WARNING | ERROR | CRITICAL
     OTEL_EXPORTER_OTLP_ENDPOINT: str = ""
     OTEL_TRACES_SAMPLE_RATE: float = 1.0
 
@@ -184,7 +198,9 @@ class Settings(BaseSettings):
     # a5d9791e：QA2 load_ms=18.6s 险过，QA1/QA3 零帧超时被误判成代码缺陷烧掉
     # 整轮重生成）。预算给足，真正的启动挂死仍会在 24s 内暴露。
     SANDBOX_TIMEOUT_MS: int = 24000
-    SANDBOX_HTTP_TIMEOUT_OVERHEAD_MS: int = 10_000
+    # Must stay above the sandbox runner's own outer headroom (timeout+12s)
+    # or the client gives up while the runner is still finishing captures.
+    SANDBOX_HTTP_TIMEOUT_OVERHEAD_MS: int = 16_000
     # Screenshot-based visual QA: deterministic blank-screen probe plus a VLM
     # soft gate on the after-input frame. Uses MODEL_NAME unless overridden.
     VISUAL_REVIEW_ENABLED: bool = True

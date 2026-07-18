@@ -215,14 +215,21 @@ def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[d
     if state.get("use_real") and not state.get("use_template_code"):
         if code_agent.author_enabled(state) and repair_error is None:
             qa_feedback = [str(item) for item in (state.get("gameplay_qa_feedback") or [])]
-            outcome = code_agent.run_author(
-                files,
-                spec=spec,
-                design=design,
-                runtime="phaser-vite",
-                dimension="2d",
-                qa_feedback=qa_feedback or None,
-            )
+            author_kwargs = {
+                "spec": spec,
+                "design": design,
+                "runtime": "phaser-vite",
+                "dimension": "2d",
+                "qa_feedback": qa_feedback or None,
+            }
+            if state.get("planning_transcript"):
+                # Hand the design-contract agent the planning conversation as
+                # replayable items; response_id is ledger lineage only.
+                author_kwargs["planning_context"] = {
+                    "items": state["planning_transcript"],
+                    "response_id": state.get("planning_response_id"),
+                }
+            outcome = code_agent.run_author(files, **author_kwargs)
             authored_project = bool(
                 outcome
                 and outcome.changed

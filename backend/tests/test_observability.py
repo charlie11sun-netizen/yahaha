@@ -150,7 +150,11 @@ def test_llm_chat_builds_gpt56_explicit_prompt_cache_request(monkeypatch):
         "_client",
         lambda timeout=None: SimpleNamespace(responses=_FakeResponses()),
     )
-    monkeypatch.setattr(llm, "_record_call", lambda _result, retried=False: None)
+    monkeypatch.setattr(
+        llm,
+        "_record_call",
+        lambda _result, retried=False, previous_response_id=None: None,
+    )
     monkeypatch.setattr(
         llm,
         "_record_stream_progress",
@@ -241,6 +245,7 @@ def test_sdk_response_ledger_is_idempotent_and_survives_run_level_stops(
         "workflow_name": "gameweave-project-rules",
         "provider_response_id": "resp-ledger-1",
         "request_index": 1,
+        "retried": True,
     }
     llm.record_response_usage(**kwargs)
     # A reconnect/replay must not double charge or double count.
@@ -255,6 +260,7 @@ def test_sdk_response_ledger_is_idempotent_and_survives_run_level_stops(
     assert rows[0].request_index == 1
     assert rows[0].total_tokens == 100
     assert rows[0].cached_tokens == 40
+    assert rows[0].retried is True
     assert db.get(AgentStep, step_id).tokens == 100
     assert db.get(GenerationTask, task_id).tokens_used == 100
     db.close()
@@ -565,7 +571,11 @@ def test_llm_chat_retries_streamed_server_error(monkeypatch):
     responses = _FakeResponses()
     monkeypatch.setattr(llm, "_client", lambda timeout=None: SimpleNamespace(responses=responses))
     monkeypatch.setattr(llm, "_record_stream_progress", lambda _line, payload=None: None)
-    monkeypatch.setattr(llm, "_record_call", lambda _result, retried=False: None)
+    monkeypatch.setattr(
+        llm,
+        "_record_call",
+        lambda _result, retried=False, previous_response_id=None: None,
+    )
     monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(llm.settings, "OPENAI_MAX_RETRIES", 2)
 
@@ -604,7 +614,11 @@ def test_llm_chat_retries_provider_internal_server_error(monkeypatch):
     responses = _FakeResponses()
     monkeypatch.setattr(llm, "_client", lambda timeout=None: SimpleNamespace(responses=responses))
     monkeypatch.setattr(llm, "_record_stream_progress", lambda _line, payload=None: None)
-    monkeypatch.setattr(llm, "_record_call", lambda _result, retried=False: None)
+    monkeypatch.setattr(
+        llm,
+        "_record_call",
+        lambda _result, retried=False, previous_response_id=None: None,
+    )
     monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(llm.settings, "OPENAI_MAX_RETRIES", 2)
 
@@ -644,7 +658,11 @@ def test_llm_chat_retries_top_level_response_error_event(monkeypatch):
     responses = _FakeResponses()
     monkeypatch.setattr(llm, "_client", lambda timeout=None: SimpleNamespace(responses=responses))
     monkeypatch.setattr(llm, "_record_stream_progress", lambda _line, payload=None: None)
-    monkeypatch.setattr(llm, "_record_call", lambda _result, retried=False: None)
+    monkeypatch.setattr(
+        llm,
+        "_record_call",
+        lambda _result, retried=False, previous_response_id=None: None,
+    )
     monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(llm.settings, "OPENAI_MAX_RETRIES", 2)
 
@@ -683,7 +701,9 @@ def test_llm_chat_recovers_complete_json_from_interrupted_attempt(monkeypatch):
     monkeypatch.setattr(
         llm,
         "_record_call",
-        lambda result, retried=False: recorded.append((result, retried)),
+        lambda result, retried=False, previous_response_id=None: recorded.append(
+            (result, retried)
+        ),
     )
     monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(llm.settings, "OPENAI_MAX_RETRIES", 2)
@@ -748,7 +768,11 @@ def test_llm_chat_logs_stream_failure_details_and_closes_each_attempt(monkeypatc
         "_record_stream_progress",
         lambda line, payload=None: progress.append((line, payload)),
     )
-    monkeypatch.setattr(llm, "_record_call", lambda _result, retried=False: None)
+    monkeypatch.setattr(
+        llm,
+        "_record_call",
+        lambda _result, retried=False, previous_response_id=None: None,
+    )
     monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(llm.settings, "OPENAI_MAX_RETRIES", 1)
 

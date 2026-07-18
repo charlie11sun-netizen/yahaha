@@ -10,6 +10,8 @@ import logging
 from psycopg import Error as PsycopgError
 from psycopg_pool import PoolTimeout
 
+from app.agents import opik_integration
+from app.agents.decision_trace import DECISION_TRACE_SCHEMA_VERSION
 from app.agents.state import STEP_META
 from app.agents.tracing import TaskBudgetExceededError, TaskCancelledError
 from app.core.checkpointing import CheckpointStorageError, checkpoint_config, open_checkpointer
@@ -17,7 +19,7 @@ from app.core.config import settings
 from app.core.errors import TaskErrorCode
 from app.core.telemetry import bind_context, clear_context
 from app.db.session import SessionLocal
-from app.models import GenerationTask
+from app.models import Game, GameVersion, GenerationTask
 from app.models.common import StepStatus, TaskStatus, now_utc
 from app.services.game_assets import AssetGenerationRetryRequired
 from app.services.task_events import publish_task_event
@@ -158,7 +160,7 @@ def _cleanup_cancelled_artifacts(db, task, final: dict | None) -> None:
             pass
 
 
-def run_generation(task_id: str, expected_dispatch_generation: int | None = None) -> None:
+def _run_generation(task_id: str, expected_dispatch_generation: int | None = None) -> None:
     bind_context(task_id=task_id)
     # 1) Read immutable inputs and determine whether a prior run may resume.
     db = SessionLocal()
@@ -201,6 +203,29 @@ def run_generation(task_id: str, expected_dispatch_generation: int | None = None
         bind_context(task_id=task_id, user_id=user_id)
     finally:
         db.close()
+
+    trace_game_id = base_game_id if task_kind == "revision" else None
+    opik_integration.update_generation_trace(
+        input={
+            "task_id": task_id,
+            "task_kind": task_kind,
+            "prompt": feedback_text if _uses_existing_bundle(task_kind) else idea,
+            "asset_ids": asset_ids,
+            "dimension": dimension,
+        },
+        metadata={
+            "task_id": task_id,
+            "task_kind": task_kind,
+            "dimension": dimension,
+            "base_game_id": base_game_id,
+            "base_version": base_version,
+            "game_id": trace_game_id,
+            "model": settings.MODEL_NAME,
+            "decision_schema_version": DECISION_TRACE_SCHEMA_VERSION,
+        },
+        tags=[f"task-kind:{task_kind}", f"dimension:{dimension}"],
+        thread_id=f"game:{trace_game_id}" if trace_game_id else None,
+    )
 
     # 2) Resolve and run the durable graph. The saver remains open for the run.
     final: dict | None = None
@@ -284,6 +309,10 @@ def run_generation(task_id: str, expected_dispatch_generation: int | None = None
                     "prompt": feedback_text if _uses_existing_bundle(task_kind) else idea,
                     "asset_ids": asset_ids,
                     "dimension": dimension,
+                    "contract_version": DECISION_TRACE_SCHEMA_VERSION,
+                    "prompt_version": "generation-prompts/v1",
+                    "model": settings.MODEL_NAME,
+                    "provider": "openai",
                     "repair_attempts": 0,
                     "replan_attempts": 0,
                     "gameplay_repair_attempts": 0,
@@ -372,3 +401,65 @@ def run_generation(task_id: str, expected_dispatch_generation: int | None = None
         finally:
             db.close()
     clear_context()
+
+
+def _finalize_generation_trace(task_id: str) -> None:
+    """Backfill result identifiers so Opik can filter by game and version."""
+    db = SessionLocal()
+    try:
+        task = db.get(GenerationTask, task_id)
+        if not task:
+            return
+        game_id = task.result_game_id
+        if not game_id and (task.task_kind or "generation") == "revision":
+            game_id = task.base_game_id
+        game = db.get(Game, game_id) if game_id else None
+        version = db.get(GameVersion, task.version_id) if task.version_id else None
+        status = str(task.status or "unknown")
+        metadata = {
+            "task_id": task.id,
+            "task_kind": task.task_kind or "generation",
+            "status": status,
+            "game_id": game_id,
+            "game_title": game.title if game else None,
+            "version": version.version if version else task.base_version,
+            "version_id": task.version_id,
+            "dimension": task.dimension,
+            "error_code": task.error_code,
+            "failed_stage": task.failed_stage,
+            "decision_schema_version": DECISION_TRACE_SCHEMA_VERSION,
+        }
+        output = {
+            "status": status,
+            "game_id": game_id,
+            "version": version.version if version else task.base_version,
+            "tokens": int(task.tokens_used or 0),
+            "cost_usd": float(task.cost_usd) if task.cost_usd is not None else None,
+            "error_code": task.error_code,
+        }
+        display_name = game.title if game and game.title else task.id
+        opik_integration.update_generation_trace(
+            name=f"game-generation:{display_name}",
+            output=output,
+            metadata=metadata,
+            tags=[f"status:{status}"],
+            thread_id=f"game:{game_id}" if game_id else f"task:{task.id}",
+        )
+    finally:
+        db.close()
+
+
+def run_generation(task_id: str, expected_dispatch_generation: int | None = None) -> None:
+    """Run one generation inside a searchable Opik task-level root trace."""
+    try:
+        with opik_integration.generation_trace(
+            task_id=task_id,
+            dispatch_generation=expected_dispatch_generation,
+        ) as trace:
+            try:
+                _run_generation(task_id, expected_dispatch_generation)
+            finally:
+                if trace is not None:
+                    _finalize_generation_trace(task_id)
+    finally:
+        opik_integration.flush()

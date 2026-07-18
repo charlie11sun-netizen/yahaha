@@ -1,0 +1,206 @@
+{
+  "contract_hash": "03d7e42d1b86d0b1b714d0b390fe86d44f6e7a3fbc2d773cfc593d46dd223cef",
+  "requirements": [
+    {
+      "id": "AC01",
+      "owner": "WorldAndContentCoder",
+      "status": "implemented",
+      "verification": "启动后断言网格240格、起始道路5格、walls/cover坐标匹配；尝试在墙、cover、桥口放路并验证前两者失败、桥口成功；第121座建筑被拒绝。",
+      "evidence": [
+        { "path": "src/levels/CityLevel.ts", "symbols": ["LEVEL_LAYOUT"] },
+        { "path": "src/composition/CityGameRuntime.ts", "symbols": ["LEVEL_LAYOUT", "drawWorld"] }
+      ]
+    },
+    {
+      "id": "AC02",
+      "owner": "RulesAndSimulationCoder",
+      "status": "implemented",
+      "verification": "逐类放置后比较资金和月维护；测试2×2边界、占用、障碍和资金不足；核对容量与需求数值。",
+      "evidence": [
+        { "path": "src/domain/CitySimulation.ts", "symbols": ["validateBuildCommand", "applyBuildCommand", "CITY_SIMULATION_CATALOG"] },
+        { "path": "src/composition/CityGameRuntime.ts", "symbols": ["validateBuildCommand", "applyBuildCommand"] }
+      ]
+    },
+    {
+      "id": "AC03",
+      "owner": "RulesAndSimulationCoder",
+      "status": "implemented",
+      "verification": "构造距离10与11、断路和容量不足布局；确认覆盖边界、近端优先、住宅40游戏秒内最多迁入4人及道路不消耗容量。",
+      "evidence": [
+        { "path": "src/domain/CitySimulation.ts", "symbols": ["recalculateCityNetworks", "roadDistances", "resolveMonthlyLedger"] },
+        { "path": "src/composition/CityGameRuntime.ts", "symbols": ["advanceSimulationFixedStep", "renderStructures"] }
+      ]
+    },
+    {
+      "id": "AC04",
+      "owner": "RulesAndSimulationCoder",
+      "status": "implemented",
+      "verification": "以固定输入分别运行各速度并比较游戏秒；暂停运行实际10秒状态不变；用已知指标计算分数并验证封顶、三月均值与连胜重置。",
+      "evidence": [
+        { "path": "src/domain/CitySimulation.ts", "symbols": ["advanceSimulationFixedStep", "setSimulationControl", "resolveMonthlyLedger"] },
+        { "path": "src/composition/CityGameRuntime.ts", "symbols": ["update", "setSimulationControl"] }
+      ]
+    },
+    {
+      "id": "AC05",
+      "owner": "RulesAndSimulationCoder",
+      "status": "implemented",
+      "verification": "将人口置于9/10、19/20、34/35两侧推进结算，核对解锁、污染扣减、繁荣税和调度区间。",
+      "evidence": [
+        { "path": "src/domain/CitySimulation.ts", "symbols": ["createInitialSimulationState", "updateProgression"] },
+        { "path": "src/composition/CityGameRuntime.ts", "symbols": ["createInitialSimulationState", "reset"] }
+      ]
+    },
+    {
+      "id": "AC06",
+      "owner": "RulesAndSimulationCoder",
+      "status": "implemented",
+      "verification": "使用种子随机模拟多个周期，记录首次时间、间隔、预警、并发数、目标区域和影响集合；断言均满足边界。",
+      "evidence": [
+        { "path": "src/domain/CitySimulation.ts", "symbols": ["scheduleDisaster", "advanceSimulationFixedStep"] },
+        { "path": "src/composition/CityGameRuntime.ts", "symbols": ["advanceSimulationFixedStep", "handleSimulationEvents"] }
+      ]
+    },
+    {
+      "id": "AC07",
+      "owner": "RulesAndSimulationCoder",
+      "status": "implemented",
+      "verification": "分别在充足/不足资金和有/无凭证下调度三种灾害，核对扣款、0.4倍剩余时间、凭证消费及统计。",
+      "evidence": [
+        { "path": "src/domain/CitySimulation.ts", "symbols": ["dispatchEmergency", "disasterCost"] },
+        { "path": "src/composition/CityGameRuntime.ts", "symbols": ["dispatchEmergency", "requestEmergency"] }
+      ]
+    },
+    {
+      "id": "AC08",
+      "owner": "RulesAndSimulationCoder",
+      "status": "implemented",
+      "verification": "依次制造高维护、缺电、缺水、就业不足和污染布局，确认相应指标、扣分原因与繁荣条件图标变化。",
+      "evidence": [
+        { "path": "src/domain/CitySimulation.ts", "symbols": ["updateMetrics", "CityMetrics", "ScoreBreakdown"] },
+        { "path": "src/adapters/CityPresentationAdapter.ts", "symbols": ["toCityHudSnapshot"] }
+      ]
+    },
+    {
+      "id": "AC09",
+      "owner": "RulesAndSimulationCoder",
+      "status": "implemented",
+      "verification": "构造满足条件状态推进59/60秒；测试暂停、每项阈值跌破、前10秒灾害抑制和胜利后继续。",
+      "evidence": [
+        { "path": "src/domain/CitySimulation.ts", "symbols": ["evaluateOutcome", "continueAfterVictory"] },
+        { "path": "src/composition/CityGameRuntime.ts", "symbols": ["advanceSimulationFixedStep", "openVictoryFlow", "continueVictory"] }
+      ]
+    },
+    {
+      "id": "AC10",
+      "owner": "RulesAndSimulationCoder",
+      "status": "implemented",
+      "verification": "分别推进29/30秒触发两条路径，并在中途恢复资金或满意度验证倒计时清零。",
+      "evidence": [
+        { "path": "src/domain/CitySimulation.ts", "symbols": ["evaluateOutcome", "insolvencySeconds", "dissatisfactionSeconds"] },
+        { "path": "src/composition/CityGameRuntime.ts", "symbols": ["advanceSimulationFixedStep", "openDefeatFlow"] }
+      ]
+    },
+    {
+      "id": "AC11",
+      "owner": "IntegrationAgent",
+      "status": "implemented",
+      "verification": "从胜利、两类失败和HUD分别触发操作，比较地图、统计、灾害、凭证、计时器、面板和速度状态。",
+      "evidence": [
+        { "path": "src/composition/CityGameRuntime.ts", "symbols": ["resetGameSession", "reset", "continueVictory"] }
+      ]
+    },
+    {
+      "id": "AC12",
+      "owner": "PresentationAndInteractionCoder",
+      "status": "implemented",
+      "verification": "运行时检查KeyboardPlugin键对象并模拟keydown；确认状态转换、Space默认行为被阻止且无仅修改UI未修改规则的旁路。",
+      "evidence": [
+        { "path": "src/input/GameControls.ts", "symbols": ["registerGameControls", "RegisteredGameControls"] },
+        { "path": "src/composition/CityGameRuntime.ts", "symbols": ["registerGameControls", "controls"] }
+      ]
+    },
+    {
+      "id": "AC13",
+      "owner": "PresentationAndInteractionCoder",
+      "status": "implemented",
+      "verification": "拖动含回退和对角路径，核对唯一铺路格与扣款；拆除各建筑核对floor或设计统一取整后的40%退款及网络即时重算。",
+      "evidence": [
+        { "path": "src/presentation/PlannerController.ts", "symbols": ["createPlannerController", "confirmDemolition", "appendOrthogonal"] },
+        { "path": "src/composition/CityGameRuntime.ts", "symbols": ["createPlannerController", "toDemolitionPreview"] }
+      ]
+    },
+    {
+      "id": "AC14",
+      "owner": "PresentationAndInteractionCoder",
+      "status": "implemented",
+      "verification": "连续切换P/U/O和按钮，断言最多一层可见；抽查五类建筑字段并切换M与Escape。",
+      "evidence": [
+        { "path": "src/presentation/CoverageOverlayView.ts", "symbols": ["createCoverageOverlayView", "CoverageOverlayView"] },
+        { "path": "src/ui/BuildingInspector.ts", "symbols": ["createBuildingInspector"] },
+        { "path": "src/composition/CityGameRuntime.ts", "symbols": ["createCoverageOverlayView", "createBuildingInspector", "setOverlay"] }
+      ]
+    },
+    {
+      "id": "AC15",
+      "owner": "PresentationAndInteractionCoder",
+      "status": "implemented",
+      "verification": "运行场景确认不是纯色占位或调试图形；截图检查所有HUD文本可读、城市仍可见，并验证道路0.2秒、1×1建筑1.2秒、2×2设施1.8秒动画不延迟规则结算。",
+      "evidence": [
+        { "path": "src/presentation/CityPresentationEffects.ts", "symbols": ["createCityPresentationEffects", "CityPresentationEffects"] },
+        { "path": "src/composition/CityGameRuntime.ts", "symbols": ["createCityPresentationEffects", "CITY_VISUAL_MANIFEST", "renderStructures"] }
+      ]
+    },
+    {
+      "id": "AC16",
+      "owner": "WorldAndContentCoder",
+      "status": "implemented",
+      "verification": "从全新会话按提示完成步骤并确认灾害为零；另一路立即跳过，确认工具和时间仍可用且没有免费建筑。",
+      "evidence": [
+        { "path": "src/content/CityContent.ts", "symbols": ["TUTORIAL_SEQUENCE", "TutorialSequenceDefinition"] },
+        { "path": "src/composition/CityGameRuntime.ts", "symbols": ["TUTORIAL_SEQUENCE", "createTutorialPanel", "advanceTutorialAfterBuild"] }
+      ]
+    },
+    {
+      "id": "AC17",
+      "owner": "PresentationAndInteractionCoder",
+      "status": "implemented",
+      "verification": "触发胜负后对照模拟统计检查每个字段和按钮；确认面板未替换或销毁地图视图。",
+      "evidence": [
+        { "path": "src/ui/OutcomePanels.ts", "symbols": ["createOutcomePanels", "OutcomePanels"] },
+        { "path": "src/composition/CityGameRuntime.ts", "symbols": ["createOutcomePanels", "openVictoryFlow", "openDefeatFlow"] }
+      ]
+    },
+    {
+      "id": "AC18",
+      "owner": "PresentationAndInteractionCoder",
+      "status": "implemented",
+      "verification": "灰度截图检查状态仍可区分，静音运行检查文字提示；重启及页面重载后核对无旧会话持久数据。",
+      "evidence": [
+        { "path": "src/ui/CityHud.ts", "symbols": ["createCityHud", "announce"] },
+        { "path": "src/presentation/CoverageOverlayView.ts", "symbols": ["OVERLAY_STYLE", "createCoverageOverlayView"] },
+        { "path": "src/composition/CityGameRuntime.ts", "symbols": ["createCityHud", "resetGameSession"] }
+      ]
+    },
+    {
+      "id": "AC19",
+      "owner": "IntegrationAgent",
+      "status": "implemented",
+      "verification": "源代码依赖检查禁止规则模块导入phaser和表现模块写入SimulationState；用固定种子重放命令并比较最终状态快照。",
+      "evidence": [
+        { "path": "src/composition/CityGameRuntime.ts", "symbols": ["wireSimulationEvents", "createCommands", "CityGameRuntime"] },
+        { "path": "src/adapters/CityPresentationAdapter.ts", "symbols": ["toCityHudSnapshot", "toBuildingPresentation"] }
+      ]
+    },
+    {
+      "id": "AC20",
+      "owner": "IntegrationAgent",
+      "status": "implemented",
+      "verification": "以30/60/120渲染FPS和1/2/4倍重放同一输入比较状态；压力放置120建筑并运行多个游戏月，再自动执行教学、胜利、两类失败与重启冒烟测试。",
+      "evidence": [
+        { "path": "src/composition/CityGameRuntime.ts", "symbols": ["update", "advanceSimulationFixedStep", "bootstrapCityGame"] },
+        { "path": "src/scenes/PlayScene.ts", "symbols": ["CityGameScene", "CityGameRuntime"] }
+      ]
+    }
+  ]
+}

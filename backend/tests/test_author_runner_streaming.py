@@ -119,6 +119,12 @@ def test_streamed_run_retries_terminal_failure_before_output(monkeypatch):
     )
     runner = _Runner([first, second])
     session = _Session()
+    ledger = []
+    monkeypatch.setattr(
+        author_runner.llm,
+        "record_response_usage",
+        lambda **kwargs: ledger.append(kwargs),
+    )
 
     result = _run(runner, session)
 
@@ -127,6 +133,9 @@ def test_streamed_run_retries_terminal_failure_before_output(monkeypatch):
     assert session.turns[0][0] == "retrying"
     assert session.turns[0][2]["stream_event"] == "response.failed"
     assert session.turns[0][2]["error_code"] == "server_error"
+    assert len(ledger) == 1
+    assert ledger[0]["provider_response_id"] == "resp-2"
+    assert ledger[0]["retried"] is True
 
 
 def test_streamed_retry_uses_real_session_without_event_type_collision(monkeypatch):
@@ -329,6 +338,7 @@ def test_streamed_run_emits_cumulative_usage_progress(monkeypatch):
     assert [row["prompt_tokens"] for row in ledger] == [80, 150]
     assert [row["completion_tokens"] for row in ledger] == [20, 50]
     assert [row["cache_write_tokens"] for row in ledger] == [30, 20]
+    assert [row["retried"] for row in ledger] == [False, False]
     assert {row["run_id"] for row in ledger} == {"execution-test"}
     assert {row["agent"] for row in ledger} == {"GameProjectAuthor"}
     assert {row["workflow_name"] for row in ledger} == {"stream-test"}
@@ -436,11 +446,13 @@ def test_fallback_response_ledger_forwards_cache_write_tokens(monkeypatch):
         agent_name="GameProjectAuthor",
         workflow_name="stream-test",
         step_id="step-test",
+        retried=True,
     )
 
     assert total == 100
     assert len(ledger) == 1
     assert ledger[0]["cache_write_tokens"] == 50
+    assert ledger[0]["retried"] is True
 
 
 def test_streamed_run_stops_at_deadline_before_start(monkeypatch):

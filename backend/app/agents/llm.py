@@ -1,161 +1,40 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-import re
 import time
-import uuid
-from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
 
-from openai import OpenAI
-from sqlalchemy import func
-from sqlalchemy.exc import IntegrityError, OperationalError
-
-from app.agents import detailed_trace
+from app.agents import detailed_trace, llm_accounting, llm_cache, llm_provider
+from app.agents.llm_accounting import LLMResult
+from app.agents.llm_provider import LLMResponseError
 from app.core.config import settings
 from app.core.telemetry import get_context
 from app.db.session import SessionLocal
-from app.models import AgentLog, AgentStep, GenerationTask, LLMCall
 from app.services.task_events import publish_task_event
 
+# Compatibility facade: callers keep importing ``app.agents.llm`` while the
+# provider, cache, and accounting implementations live in focused modules.
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL_PRICING = {
-    "gpt-5.5": {"in": 1.25, "out": 10.0},
-}
-_TRANSIENT_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504, 520, 522, 524}
-_TRANSIENT_ERROR_CODES = {
-    "internal_server_error",
-    "rate_limit_exceeded",
-    "server_error",
-    "vector_store_timeout",
-}
-_TRANSIENT_ERROR_MESSAGES = (
-    "retry your request",
-    "temporarily unavailable",
-    "temporary error",
-    "internal server error",
-    "server error",
-    "service unavailable",
-    "rate limit",
-    "overloaded",
-)
-_STREAM_PROGRESS_INTERVAL_SECONDS = 1.0
-_LEDGER_IDEMPOTENCY_CONSTRAINTS = {
-    "uq_llm_calls_provider_response_id",
-    "uq_llm_calls_run_request",
-}
+_STREAM_PROGRESS_INTERVAL_SECONDS = llm_provider.STREAM_PROGRESS_INTERVAL_SECONDS
+_client = llm_provider.client
+_status_code = llm_provider.status_code
+_retryable = llm_provider.retryable
+_retry_delay = llm_provider.retry_delay
+_close_sync_resource = llm_provider.close_sync_resource
+_stream_failure_payload = llm_provider.stream_failure_payload
+_extract_response_text = llm_provider.extract_response_text
+_event_error = llm_provider.event_error
 
+_estimate_tokens = llm_accounting.estimate_tokens
+_estimate_prompt_tokens = llm_accounting.estimate_prompt_tokens
+_pricing = llm_accounting._pricing
+_price_for = llm_accounting.price_for
+_ledger_idempotency_constraint = llm_accounting.ledger_idempotency_constraint
 
-class LLMResponseError(RuntimeError):
-    def __init__(self, message: str, *, code: str | None = None):
-        super().__init__(message)
-        self.code = code
-
-
-@dataclass(frozen=True)
-class LLMResult:
-    text: str
-    prompt_tokens: int
-    completion_tokens: int
-    total_tokens: int
-    model: str
-    latency_ms: int
-    cost_usd: Decimal | None = None
-    partial: bool = False
-    cached_tokens: int = 0
-    cache_write_tokens: int = 0
-    provider_response_id: str | None = None
-
-    def __iter__(self):
-        # Backward compatible with existing `raw, tokens = llm.chat(...)` calls.
-        yield self.text
-        yield self.total_tokens
-
-
-def _client(*, timeout: int | None = None) -> OpenAI:
-    return OpenAI(
-        api_key=settings.OPENAI_API_KEY,
-        base_url=settings.OPENAI_BASE_URL,
-        timeout=timeout or settings.OPENAI_TIMEOUT,
-        default_headers={"User-Agent": "GameWeave/1.0"},
-        max_retries=0,
-    )
-
-
-def _status_code(exc: Exception) -> int | None:
-    raw = getattr(exc, "status_code", None)
-    if raw is None:
-        response = getattr(exc, "response", None)
-        raw = getattr(response, "status_code", None)
-    try:
-        return int(raw) if raw is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _retryable(exc: Exception) -> bool:
-    status = _status_code(exc)
-    if status in _TRANSIENT_STATUS_CODES:
-        return True
-    code = str(getattr(exc, "code", "") or "").lower()
-    if code in _TRANSIENT_ERROR_CODES:
-        return True
-    message = str(exc).lower()
-    return any(
-        marker in message
-        for marker in ("timeout", "timed out", "connection", *_TRANSIENT_ERROR_MESSAGES)
-    )
-
-
-def _retry_delay(attempt: int) -> float:
-    base = max(0.1, float(settings.OPENAI_RETRY_BACKOFF_SECONDS or 1.5))
-    return min(10.0, base * (2 ** attempt))
-
-
-def _close_sync_resource(resource: object | None, *, label: str) -> None:
-    """Close SDK streams/clients without hiding the request's real outcome."""
-    close = getattr(resource, "close", None)
-    if not callable(close):
-        return
-    try:
-        close()
-    except Exception:  # noqa: BLE001 - cleanup must not replace the provider result
-        logger.warning("failed to close OpenAI %s", label, exc_info=True)
-
-
-def _stream_failure_payload(
-    exc: BaseException,
-    *,
-    attempt: int,
-    elapsed_ms: int,
-    partial_chars: int,
-    will_retry: bool,
-) -> dict:
-    cause = exc.__cause__ or exc.__context__
-    return {
-        "type": "llm_stream_error",
-        "attempt": attempt,
-        "elapsed_ms": max(0, int(elapsed_ms)),
-        "partial_chars": max(0, int(partial_chars)),
-        "will_retry": bool(will_retry),
-        "exception_type": type(exc).__name__,
-        "message": str(exc)[:500],
-        "status_code": _status_code(exc),
-        "code": str(getattr(exc, "code", "") or "")[:120] or None,
-        "cause_type": type(cause).__name__ if cause is not None else None,
-        "cause_message": str(cause)[:500] if cause is not None else None,
-    }
-
-
-def _estimate_tokens(text_chars: int) -> int:
-    return max(1, round(max(0, text_chars) / 4))
-
-
-def _estimate_prompt_tokens(system: str, user: str) -> int:
-    return _estimate_tokens(len(system or "") + len(user or ""))
+prompt_cache_key = llm_cache.prompt_cache_key
+_supports_explicit_prompt_cache = llm_cache.supports_explicit_prompt_cache
+_explicit_cache_input = llm_cache.explicit_cache_input
 
 
 def _complete_json_object(text: str) -> str | None:
@@ -176,80 +55,6 @@ def _complete_json_object(text: str) -> str | None:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def _pricing() -> dict:
-    raw = (settings.MODEL_PRICING_JSON or "").strip()
-    if not raw:
-        return _DEFAULT_MODEL_PRICING
-    try:
-        data = json.loads(raw)
-        return data if isinstance(data, dict) else _DEFAULT_MODEL_PRICING
-    except json.JSONDecodeError:
-        return _DEFAULT_MODEL_PRICING
-
-
-def _price_for(
-    model: str,
-    prompt_tokens: int,
-    completion_tokens: int,
-    *,
-    cached_tokens: int = 0,
-    cache_write_tokens: int = 0,
-) -> Decimal | None:
-    table = _pricing()
-    price = table.get(model) or table.get(model.split(":")[0])
-    if not isinstance(price, dict):
-        return None
-    try:
-        input_per_million = Decimal(str(price["in"]))
-        output_per_million = Decimal(str(price["out"]))
-    except (KeyError, InvalidOperation):
-        return None
-    cached_tokens = min(max(0, int(cached_tokens or 0)), max(0, int(prompt_tokens or 0)))
-    uncached_tokens = max(0, int(prompt_tokens or 0) - cached_tokens)
-    cache_write_tokens = min(max(0, int(cache_write_tokens or 0)), uncached_tokens)
-    regular_uncached_tokens = max(0, uncached_tokens - cache_write_tokens)
-    # Providers do not all publish the same cache discount.  Apply one only when
-    # deployment pricing explicitly supplies it; otherwise keep the old,
-    # conservative input price instead of inventing a discount.
-    try:
-        cached_input_per_million = Decimal(str(price.get("cached_in", price["in"])))
-    except (KeyError, InvalidOperation):
-        cached_input_per_million = input_per_million
-    try:
-        cache_write_per_million = Decimal(str(price.get("cache_write_in", price["in"])))
-    except (KeyError, InvalidOperation):
-        cache_write_per_million = input_per_million
-    cost = (
-        Decimal(regular_uncached_tokens) * input_per_million
-        + Decimal(cache_write_tokens) * cache_write_per_million
-        + Decimal(cached_tokens) * cached_input_per_million
-        + Decimal(completion_tokens) * output_per_million
-    ) / Decimal(1_000_000)
-    return cost.quantize(Decimal("0.000001"))
-
-
-def _ledger_idempotency_constraint(exc: IntegrityError) -> str | None:
-    """Identify only the two duplicate-response constraints as safe replay hits."""
-    original = getattr(exc, "orig", None)
-    diagnostic = getattr(original, "diag", None)
-    constraint = getattr(diagnostic, "constraint_name", None)
-    if constraint in _LEDGER_IDEMPOTENCY_CONSTRAINTS:
-        return str(constraint)
-
-    message = str(original or exc).lower()
-    for name in _LEDGER_IDEMPOTENCY_CONSTRAINTS:
-        if name.lower() in message:
-            return name
-    if "unique constraint failed: llm_calls.provider_response_id" in message:
-        return "uq_llm_calls_provider_response_id"
-    if (
-        "unique constraint failed: llm_calls.run_id, llm_calls.request_index"
-        in message
-    ):
-        return "uq_llm_calls_run_request"
-    return None
-
-
 def _persist_call(
     result: LLMResult,
     *,
@@ -260,97 +65,39 @@ def _persist_call(
     agent: str | None = None,
     workflow_name: str | None = None,
     provider_response_id: str | None = None,
+    previous_response_id: str | None = None,
     request_index: int | None = None,
     status: str = "completed",
     error_code: str | None = None,
 ) -> bool:
-    ctx = get_context()
-    task_id = task_id or ctx.get("task_id")
-    step_id = step_id or ctx.get("step_id")
-    if not task_id and not step_id:
-        return False
-    prompt_tokens = max(0, int(result.prompt_tokens or 0))
-    completion_tokens = max(0, int(result.completion_tokens or 0))
-    total_tokens = prompt_tokens + completion_tokens
-    cached_tokens = min(max(0, int(result.cached_tokens or 0)), prompt_tokens)
-    cache_write_tokens = min(
-        max(0, int(result.cache_write_tokens or 0)),
-        max(0, prompt_tokens - cached_tokens),
+    return llm_accounting.persist_call(
+        result,
+        session_factory=SessionLocal,
+        context=get_context(),
+        logger=logger,
+        retried=retried,
+        task_id=task_id,
+        step_id=step_id,
+        run_id=run_id,
+        agent=agent,
+        workflow_name=workflow_name,
+        provider_response_id=provider_response_id,
+        previous_response_id=previous_response_id,
+        request_index=request_index,
+        status=status,
+        error_code=error_code,
     )
-    provider_response_id = provider_response_id or result.provider_response_id
-    db = SessionLocal()
-    try:
-        if step_id and not task_id:
-            step = db.get(AgentStep, step_id)
-            task_id = step.task_id if step else None
-        call = LLMCall(
-            task_id=task_id,
-            step_id=step_id,
-            run_id=run_id,
-            agent=agent or ctx.get("agent"),
-            workflow_name=workflow_name,
-            provider_response_id=provider_response_id,
-            request_index=request_index,
-            status=status,
-            error_code=error_code,
-            model=result.model,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-            cached_tokens=cached_tokens,
-            cache_write_tokens=cache_write_tokens,
-            latency_ms=max(0, int(result.latency_ms or 0)),
-            retried=retried,
-            cost_usd=result.cost_usd,
-        )
-        db.add(call)
-        # Flush before counters: a duplicate replay trips the unique ledger key
-        # and therefore cannot increment task/step totals twice.
-        db.flush()
-        if step_id:
-            db.query(AgentStep).filter(AgentStep.id == step_id).update(
-                {AgentStep.tokens: func.coalesce(AgentStep.tokens, 0) + total_tokens},
-                synchronize_session=False,
-            )
-        if task_id:
-            values = {
-                GenerationTask.tokens_used: func.coalesce(GenerationTask.tokens_used, 0)
-                + total_tokens
-            }
-            if result.cost_usd is not None:
-                values[GenerationTask.cost_usd] = (
-                    func.coalesce(GenerationTask.cost_usd, Decimal("0")) + result.cost_usd
-                )
-            db.query(GenerationTask).filter(GenerationTask.id == task_id).update(
-                values,
-                synchronize_session=False,
-            )
-        db.commit()
-        return True
-    except IntegrityError as exc:
-        db.rollback()
-        if _ledger_idempotency_constraint(exc):
-            # response.completed can be replayed after reconnect; the ledger key
-            # is the idempotency boundary and the existing row is authoritative.
-            return False
-        logger.exception(
-            "unexpected llm usage ledger integrity failure",
-            extra={"generation_task_id": task_id, "step_id": step_id, "run_id": run_id},
-        )
-        return False
-    except Exception:  # noqa: BLE001
-        db.rollback()
-        logger.exception(
-            "llm usage ledger persistence failed",
-            extra={"generation_task_id": task_id, "step_id": step_id, "run_id": run_id},
-        )
-        return False
-    finally:
-        db.close()
 
 
-def _record_call(result: LLMResult, *, retried: bool = False) -> bool:
-    return _persist_call(result, retried=retried)
+def _record_call(
+    result: LLMResult,
+    *,
+    retried: bool = False,
+    previous_response_id: str | None = None,
+) -> bool:
+    return _persist_call(
+        result, retried=retried, previous_response_id=previous_response_id
+    )
 
 
 def record_response_usage(
@@ -367,39 +114,27 @@ def record_response_usage(
     agent: str,
     workflow_name: str,
     provider_response_id: str | None,
+    previous_response_id: str | None = None,
     request_index: int,
     status: str = "completed",
     error_code: str | None = None,
+    retried: bool = False,
 ) -> LLMResult:
     """Persist exactly one Agents SDK provider response.
 
     Unlike the legacy aggregate-at-run-end path, this survives MaxTurns and is
     safe when a streamed event is replayed.  ``llm_calls`` is the usage ledger;
     task and step counters are updated only if the ledger insert succeeds.
+    ``retried`` marks a response that completed after a stream retry; failed
+    attempts without provider usage remain represented by retry trace events.
     """
-    prompt_tokens = max(0, int(prompt_tokens or 0))
-    completion_tokens = max(0, int(completion_tokens or 0))
-    cached_tokens = min(max(0, int(cached_tokens or 0)), prompt_tokens)
-    cache_write_tokens = min(
-        max(0, int(cache_write_tokens or 0)),
-        max(0, prompt_tokens - cached_tokens),
-    )
-    result = LLMResult(
-        text="",
+    result = llm_accounting.response_usage_result(
+        model=model,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
-        total_tokens=prompt_tokens + completion_tokens,
-        model=model,
-        latency_ms=max(0, int(latency_ms or 0)),
-        cost_usd=_price_for(
-            model,
-            prompt_tokens,
-            completion_tokens,
-            cached_tokens=cached_tokens,
-            cache_write_tokens=cache_write_tokens,
-        ),
         cached_tokens=cached_tokens,
         cache_write_tokens=cache_write_tokens,
+        latency_ms=latency_ms,
         provider_response_id=provider_response_id,
     )
     _persist_call(
@@ -410,140 +145,25 @@ def record_response_usage(
         agent=agent,
         workflow_name=workflow_name,
         provider_response_id=provider_response_id,
+        previous_response_id=previous_response_id,
         request_index=request_index,
         status=status,
         error_code=error_code,
+        retried=retried,
     )
     return result
 
 
-def prompt_cache_key(namespace: str, *, task_scoped: bool = True) -> str | None:
-    """Return a stable routing key accepted by the Responses API.
-
-    The provider combines this key with the exact prompt-prefix hash.  A task
-    scope keeps author/retry runs isolated. Low-volume planning calls may opt
-    into a shared versioned key so a new task's first node can reuse the same
-    immutable planning constitution. Worker concurrency and task rate limits
-    keep that shared key below the provider's recommended request rate.
-    """
-    prefix = str(settings.CODE_AGENT_PROMPT_CACHE_KEY_PREFIX or "").strip().rstrip(":")
-    if not prefix:
-        return None
-    namespace = str(namespace or "default").strip() or "default"
-    if not task_scoped:
-        raw = f"{prefix}:{namespace}"
-        if len(raw) <= 64:
-            return raw
-        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
-        namespace_budget = max(1, 64 - len(prefix[:32]) - len(digest) - 2)
-        return f"{prefix[:32]}:{namespace[:namespace_budget]}:{digest}"
-    task_scope = str(get_context().get("task_id") or "").replace("-", "")[:12]
-    scope = task_scope or uuid.uuid4().hex[:12]
-    raw = f"{prefix}:{namespace}:{scope}"
-    if len(raw) <= 64:
-        return raw
-    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
-    prefix_part = prefix[:16]
-    fixed = len(prefix_part) + len(scope) + len(digest) + 3
-    namespace_budget = max(1, 64 - fixed)
-    return f"{prefix_part}:{namespace[:namespace_budget]}:{scope}:{digest}"
-
-
-def _supports_explicit_prompt_cache(model: str) -> bool:
-    match = re.search(r"gpt-(\d+)(?:\.(\d+))?", str(model or "").lower())
-    if not match:
-        return False
-    return (int(match.group(1)), int(match.group(2) or 0)) >= (5, 6)
-
-
-def _explicit_cache_input(system: str, input_text: str, cache_prefix: str) -> list[dict]:
-    if not cache_prefix:
-        raise ValueError("cache_prefix must not be empty")
-    if not system.startswith(cache_prefix):
-        raise ValueError("system prompt must begin with the exact cache_prefix")
-    node_instructions = system[len(cache_prefix) :].lstrip()
-    if not node_instructions:
-        raise ValueError("node-specific instructions must follow cache_prefix")
-    return [
-        {
-            "type": "message",
-            "role": "developer",
-            "content": [
-                {
-                    "type": "input_text",
-                    "text": cache_prefix,
-                    "prompt_cache_breakpoint": {"mode": "explicit"},
-                }
-            ],
-        },
-        {
-            "type": "message",
-            "role": "developer",
-            "content": [{"type": "input_text", "text": node_instructions}],
-        },
-        {
-            "type": "message",
-            "role": "user",
-            "content": [{"type": "input_text", "text": input_text}],
-        },
-    ]
-
-
 def _record_stream_progress(line: str, payload: dict | None = None) -> None:
-    ctx = get_context()
-    task_id = ctx.get("task_id")
-    step_id = ctx.get("step_id")
-    if not step_id:
-        return
-    # Serialize allocators on the parent step row.  COUNT was racy when model
-    # progress and heartbeat/tool threads committed at the same time.
-    last_error: Exception | None = None
-    for attempt in range(3):
-        db = SessionLocal()
-        try:
-            step = (
-                db.query(AgentStep)
-                .filter(AgentStep.id == step_id)
-                .with_for_update()
-                .one_or_none()
-            )
-            if step is None:
-                return
-            seq = (
-                db.query(func.max(AgentLog.seq))
-                .filter(AgentLog.step_id == step_id)
-                .scalar()
-            )
-            db.add(
-                AgentLog(
-                    step_id=step_id,
-                    seq=int(seq if seq is not None else -1) + 1,
-                    line=line,
-                    payload_json=json.dumps(payload, ensure_ascii=False) if payload else None,
-                )
-            )
-            db.commit()
-            publish_task_event(task_id or step.task_id, "log_appended")
-            return
-        except IntegrityError as exc:
-            db.rollback()
-            last_error = exc
-        except OperationalError as exc:
-            db.rollback()
-            if "locked" not in str(exc).lower():
-                logger.exception("model progress log write failed")
-                return
-            last_error = exc
-        except Exception:  # noqa: BLE001
-            db.rollback()
-            logger.exception("model progress log write failed")
-            return
-        finally:
-            db.close()
-        if attempt < 2:
-            time.sleep(0.01 * (attempt + 1))
-    if last_error is not None:
-        logger.warning("model progress log write exhausted retries: %s", last_error)
+    llm_accounting.record_stream_progress(
+        line,
+        payload,
+        session_factory=SessionLocal,
+        context=get_context(),
+        publish_task_event=publish_task_event,
+        logger=logger,
+        sleep=time.sleep,
+    )
 
 
 def record_usage(
@@ -561,58 +181,16 @@ def record_usage(
     Agents SDK 的工具循环（code_agent.py）自带 OpenAI client，不经过下面的
     chat()；此入口补齐相同的落库路径，保证 ops 查询与成本核算口径一致。
     """
-    prompt_tokens = int(prompt_tokens or 0)
-    completion_tokens = int(completion_tokens or 0)
-    result = LLMResult(
-        text="",
+    result = llm_accounting.usage_result(
+        model,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
-        total_tokens=prompt_tokens + completion_tokens,
-        model=model,
-        latency_ms=int(latency_ms or 0),
-        cost_usd=_price_for(
-            model,
-            prompt_tokens,
-            completion_tokens,
-            cached_tokens=cached_tokens,
-            cache_write_tokens=cache_write_tokens,
-        ),
-        cached_tokens=int(cached_tokens or 0),
-        cache_write_tokens=int(cache_write_tokens or 0),
+        latency_ms=latency_ms,
+        cached_tokens=cached_tokens,
+        cache_write_tokens=cache_write_tokens,
     )
     _record_call(result, retried=retried)
     return result
-
-
-def _extract_response_text(response: object | None) -> str:
-    chunks: list[str] = []
-    for item in getattr(response, "output", []) or []:
-        for part in getattr(item, "content", []) or []:
-            text = getattr(part, "text", None)
-            if text:
-                chunks.append(str(text))
-    return "".join(chunks)
-
-
-def _event_error(event: object) -> LLMResponseError:
-    error = getattr(event, "error", None)
-    if error is None:
-        response = getattr(event, "response", None)
-        error = getattr(response, "error", None)
-    if error is None and (
-        getattr(event, "code", None) is not None
-        or getattr(event, "message", None) is not None
-    ):
-        # The Responses SDK's top-level `error` stream event is itself a
-        # ResponseErrorEvent (code/message live directly on the event).  Losing
-        # that code turns transient internal_server_error events into permanent
-        # failures and skips the configured retry loop.
-        error = event
-    if error is None:
-        return LLMResponseError(str(event))
-    message = getattr(error, "message", None) or getattr(error, "code", None) or str(error)
-    code = getattr(error, "code", None)
-    return LLMResponseError(str(message), code=str(code) if code else None)
 
 
 def _partial_stream_result(
@@ -623,9 +201,13 @@ def _partial_stream_result(
     input_text: str,
     start: float,
     retried: bool,
+    context_chars: int = 0,
+    previous_response_id: str | None = None,
 ) -> LLMResult:
     latency_ms = int((time.perf_counter() - start) * 1000)
-    prompt_tokens = _estimate_prompt_tokens(system, input_text)
+    prompt_tokens = _estimate_prompt_tokens(system, input_text) + (
+        _estimate_tokens(context_chars) if context_chars else 0
+    )
     completion_tokens = _estimate_tokens(len(text))
     result = LLMResult(
         text=text.strip(),
@@ -638,8 +220,46 @@ def _partial_stream_result(
         partial=True,
     )
     _record_stream_progress(f"stream_tokens={completion_tokens}")
-    _record_call(result, retried=retried)
+    _record_call(result, retried=retried, previous_response_id=previous_response_id)
     return result
+
+
+def _verify_provider_echo(kwargs: dict, completed_response: object) -> None:
+    """Warn when the provider silently drops conversation-state parameters.
+
+    The production gateway proved able to strip ``store``/``previous_response_id``
+    without any error, which turned server-side chaining into an invisible
+    no-op for weeks. The response echoes both fields, so one comparison per
+    call makes that drift observable in task logs the day it happens.
+    """
+    sent_previous = kwargs.get("previous_response_id")
+    echoed_previous = getattr(completed_response, "previous_response_id", None)
+    echoed_store = getattr(completed_response, "store", None)
+    problems = []
+    if sent_previous and echoed_previous != sent_previous:
+        problems.append(
+            f"previous_response_id sent={sent_previous} echoed={echoed_previous or 'null'}"
+        )
+    if kwargs.get("store") and echoed_store is False:
+        problems.append("store=true refused (response echoed store=false)")
+    if not problems:
+        return
+    line = (
+        "WARNING provider dropped conversation state: "
+        + "; ".join(problems)
+        + " — server-side chaining is a no-op on this gateway"
+    )
+    logger.warning(line)
+    _record_stream_progress(
+        line,
+        payload={
+            "type": "chain_echo_mismatch",
+            "sent_previous_response_id": sent_previous,
+            "echoed_previous_response_id": echoed_previous,
+            "sent_store": bool(kwargs.get("store")),
+            "echoed_store": echoed_store,
+        },
+    )
 
 
 def chat(
@@ -657,6 +277,10 @@ def chat(
     cache_prefix: str | None = None,
     cache_task_scoped: bool = True,
     images_b64: list[str] | None = None,
+    previous_response_id: str | None = None,
+    store: bool = False,
+    context_items: list[dict] | None = None,
+    chained_from_response_id: str | None = None,
 ) -> LLMResult:
     requested_model = model or settings.MODEL_NAME
     input_text = user
@@ -686,13 +310,48 @@ def chat(
                 ],
             }
         ]
+    if context_items:
+        # Client-side conversation chaining: the prior turns are replayed as
+        # explicit input items because the gateway silently drops server-side
+        # state (store/previous_response_id). Mixing both would double the
+        # context on any provider that honors previous_response_id.
+        if previous_response_id:
+            raise ValueError(
+                "context_items and previous_response_id are mutually exclusive"
+            )
+        if cache_prefix is not None:
+            raise ValueError(
+                "context_items cannot be combined with explicit cache_prefix input"
+            )
+        prior = [
+            {"role": str(item["role"]), "content": str(item["content"])}
+            for item in context_items
+        ]
+        new_turn = (
+            model_input
+            if isinstance(model_input, list)
+            else [{"role": "user", "content": input_text}]
+        )
+        model_input = [*prior, *new_turn]
+    context_chars = sum(
+        len(str(item.get("content") or "")) for item in (context_items or [])
+    )
+    # Conversation predecessor for the usage ledger: explicit lineage from
+    # client-side chaining, or the server-side chaining parameter itself.
+    chain_lineage_id = chained_from_response_id or previous_response_id
     kwargs: dict = {
         "model": requested_model,
         "instructions": system,
         "input": model_input,
         "stream": True,
-        "store": False,
+        "store": bool(store),
     }
+    if previous_response_id:
+        # Responses API conversation chaining requires the preceding response
+        # to remain addressable. Callers that provide an id therefore always
+        # opt into stored responses, even if they omitted ``store=True``.
+        kwargs["previous_response_id"] = previous_response_id
+        kwargs["store"] = True
     cache_key = (
         prompt_cache_key(cache_namespace, task_scoped=cache_task_scoped)
         if cache_namespace
@@ -721,11 +380,15 @@ def chat(
         kwargs["text"] = {"format": response_format}
 
     context = get_context()
+    # require_code_context=False: planning/QA calls must be traceable too —
+    # the chain rebuild was unverifiable while stages 1-3 never reached
+    # agent_trace_events (request kwargs are the only place the replayed
+    # transcript and chain ids are recorded verbatim).
     trace_recorder = detailed_trace.create_recorder(
         source="responses_api",
         agent=context.get("agent") or "GameCodeAgent",
         model=requested_model,
-        require_code_context=True,
+        require_code_context=False,
     )
     if trace_recorder:
         trace_recorder.record(
@@ -790,6 +453,8 @@ def chat(
                         input_text=input_text,
                         start=start,
                         retried=retried,
+                        context_chars=context_chars,
+                        previous_response_id=chain_lineage_id,
                     )
                     if trace_recorder:
                         trace_recorder.record(
@@ -822,6 +487,8 @@ def chat(
                     input_text=input_text,
                     start=start,
                     retried=retried,
+                    context_chars=context_chars,
+                    previous_response_id=chain_lineage_id,
                 )
                 if trace_recorder:
                     trace_recorder.record(
@@ -891,6 +558,8 @@ def chat(
                         input_text=input_text,
                         start=best_partial_started_at,
                         retried=retried,
+                        context_chars=context_chars,
+                        previous_response_id=chain_lineage_id,
                     )
                     if trace_recorder:
                         trace_recorder.record(
@@ -942,12 +611,17 @@ def chat(
     if latency_ms >= int(_STREAM_PROGRESS_INTERVAL_SECONDS * 1000):
         _record_stream_progress(f"stream_tokens={completion_tokens or _estimate_tokens(len(text))}")
     actual_model = str(getattr(completed_response, "model", None) or requested_model)
+    _verify_provider_echo(kwargs, completed_response)
     if prompt_tokens:
         # 0% 也要落一行：一次性调用的命中率此前无人观测，"零"与"没测"必须可区分。
         cache_pct = cached_tokens * 100 // prompt_tokens
         cache_line = f"prompt cache: {cached_tokens}/{prompt_tokens} read ({cache_pct}%)"
         if cache_write_tokens:
             cache_line += f", {cache_write_tokens} written"
+        if chain_lineage_id:
+            cache_line += f"; chained from {chain_lineage_id}"
+            if context_items:
+                cache_line += f" ({len(context_items)} replayed message(s))"
         _record_stream_progress(
             cache_line,
             payload={
@@ -964,6 +638,8 @@ def chat(
                 "prompt_cache_mode": (
                     "explicit" if "prompt_cache_options" in kwargs else "implicit"
                 ) if cache_key else None,
+                "previous_response_id": chain_lineage_id,
+                "context_messages": len(context_items or []),
             },
         )
     result = LLMResult(
@@ -996,7 +672,7 @@ def chat(
             },
             model=actual_model,
         )
-    _record_call(result, retried=retried)
+    _record_call(result, retried=retried, previous_response_id=chain_lineage_id)
     if trace_recorder:
         trace_recorder.record(
             "run_end",

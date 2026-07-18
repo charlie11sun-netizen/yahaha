@@ -195,6 +195,7 @@ def run_project_author_team(
     team_token_budget: int | None = None,
     team_changed_file_budget: int | None = None,
     deadline_at: float | None = None,
+    planning_context: dict | None = None,
     _execute_agent_fn=None,
     _tracing=None,
 ) -> RepairOutcome | None:
@@ -263,23 +264,34 @@ def run_project_author_team(
         turns_limit=plan.planner,
         status="running",
     )
-    architect = execute_agent(
-        architect_session,
-        agent_name="DesignContractAgent",
-        instructions=_DESIGN_CONTRACT_INSTRUCTIONS,
-        author_tools=False,
-        tool_policy=_READ_ONLY_POLICY,
-        task_input=_contract_input(spec, design, runtime, dimension, qa_feedback),
-        turns_limit=plan.planner,
-        workflow_name="gameweave-author-design-contract",
-        final_output_limit=_CONTRACT_CAPTURE_LIMIT,
-        operation="authoring",
-        output_type=_DesignContractOutput,
-        deadline_at=budget.deadline_at,
-        terminal_completion=False,
-            safe_partial_stream_retry=True,
-            workspace_tools=False,
-        )
+    planning_items = list((planning_context or {}).get("items") or [])
+    architect_kwargs = {
+        "agent_name": "DesignContractAgent",
+        "instructions": _DESIGN_CONTRACT_INSTRUCTIONS,
+        "author_tools": False,
+        "tool_policy": _READ_ONLY_POLICY,
+        "task_input": _contract_input(
+            spec, design, runtime, dimension, qa_feedback,
+            chained=bool(planning_items),
+        ),
+        "turns_limit": plan.planner,
+        "workflow_name": "gameweave-author-design-contract",
+        "final_output_limit": _CONTRACT_CAPTURE_LIMIT,
+        "operation": "authoring",
+        "output_type": _DesignContractOutput,
+        "deadline_at": budget.deadline_at,
+        "terminal_completion": False,
+        "safe_partial_stream_retry": True,
+        "workspace_tools": False,
+    }
+    if planning_items:
+        # Replay the planning conversation ahead of the contract prompt so the
+        # architect inherits the brief/mechanic/design rationale verbatim.
+        architect_kwargs["context_items"] = planning_items
+        architect_kwargs["chained_from_response_id"] = (
+            planning_context or {}
+        ).get("response_id")
+    architect = execute_agent(architect_session, **architect_kwargs)
     budget.observe(architect)
     if architect is None:
         budget.turns_used += plan.planner
@@ -635,6 +647,60 @@ def run_project_author_team(
     if integrated is None:
         budget.turns_used += integration_turns
     _emit_role_result(live_step_id, "IntegrationAgent", integrated)
+    # 集成是把作者产出接进玩法的唯一环节,又恰好是网关抖动的单点(c28261d1:
+    # 流重试 3/3 耗尽后 21 个已接受的作者文件全部没接线,树摇丢弃,发布了兜底
+    # 玩法)。传输层死亡时用全新会话整体重试一次——种子工作区重建自干净的
+    # 合并结果,重放安全;预算/截止时间照常约束重试。
+    if (
+        (integrated is None or integrated.stop_reason == "stream_error")
+        and budget.remaining_turns >= 2
+        and not budget.expired
+    ):
+        retry_turns = budget.remaining_turns
+        _emit(
+            live_step_id,
+            "role_retry",
+            "integration agent hit a transport failure; retrying once with a fresh session",
+            role="IntegrationAgent",
+            turns_limit=retry_turns,
+            status="running",
+        )
+        retry_session = RepairSession.from_files(merge.files, live_step_id=live_step_id)
+        retry_session.changed = set(seeded_changes)
+        retry_session.log_lines = list(team_logs)
+        retried = execute_agent(
+            retry_session,
+            agent_name="IntegrationAgent",
+            instructions=_INTEGRATION_INSTRUCTIONS,
+            author_tools=True,
+            tool_policy=_INTEGRATION_POLICY,
+            task_input=integration_input,
+            turns_limit=retry_turns,
+            workflow_name="gameweave-author-integration",
+            operation="authoring",
+            deadline_at=budget.deadline_at,
+            preserve_partial_on_error=True,
+        )
+        budget.observe(retried)
+        if retried is None:
+            budget.turns_used += retry_turns
+        _emit_role_result(live_step_id, "IntegrationAgent", retried)
+
+        def _wired_composition(outcome) -> bool:
+            return bool(
+                outcome
+                and any(
+                    _runtime_wiring_path(path)
+                    for path in set(outcome.changed) - seeded_changes
+                )
+            )
+
+        if retried is not None and (
+            integrated is None
+            or _wired_composition(retried)
+            or not _wired_composition(integrated)
+        ):
+            integrated = retried
     if integrated is None:
         _emit(
             live_step_id,

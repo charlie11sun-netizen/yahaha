@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "generated-game-e7ee0742",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8734", "--directory", "artifacts/e7ee0742-source/dist"],
+      "port": 8734
+    },
+    {
+      "name": "forensic-mayor",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["qa/forensic-mayor/serve.py"],
+      "port": 8735
+    }
+  ]
+}

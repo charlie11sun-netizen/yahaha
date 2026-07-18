@@ -51,6 +51,42 @@ def _with_planning_cache_prefix(node_prompt: str) -> str:
         f"{node_prompt.strip()}"
     )
 
+
+# The gateway is stateless (store/previous_response_id are silently dropped),
+# so the gameplay-planning -> game-design chain replays its own transcript
+# client-side.  For the replayed prefix to stay cache-valid, every request in
+# the chain must serialize with the exact same instructions: the constitution
+# alone is the system prompt, and each stage's role directive moves into its
+# user turn.
+PLANNING_CHAIN_SYSTEM_PROMPT = PLANNING_SHARED_CACHE_PREFIX
+
+
+def _role_directive(node_prompt: str) -> str:
+    return f"NODE-SPECIFIC RESPONSIBILITY:\n{node_prompt.strip()}"
+
+
+def build_planning_chain_input(transcript: list, next_prompt: str) -> str:
+    """Serialize the planning conversation as ONE growing user string.
+
+    Probes against the production gateway showed its upstream only prefix-
+    caches string-form ``input``; every message-array form (EasyInput dicts,
+    typed items) caps at the instructions head.  A later stage therefore
+    extends the previous stage's user string byte-for-byte instead of sending
+    message items: stage N+1's input starts with stage N's exact input, so the
+    whole prior request stays one cacheable prefix.
+    """
+    parts: list[str] = []
+    for index, item in enumerate(transcript):
+        content = str(item.get("content") or "")
+        if item.get("role") == "assistant":
+            parts.append("=== YOUR PREVIOUS REPLY ===\n" + content)
+        elif index == 0:
+            parts.append(content)
+        else:
+            parts.append("=== NEXT TASK ===\n" + content)
+    parts.append("=== NEXT TASK ===\n" + next_prompt)
+    return "\n\n".join(parts)
+
 INTENT_SPEC_SYSTEM_PROMPT = """You are IntentSpecAgent. Convert the user's game idea into a strict JSON GameSpec for a modular Phaser 3.90 browser game.
 Rules:
 - Output valid JSON only, no markdown, no code.
@@ -68,17 +104,29 @@ Be specific and ambitious — name every entity and its visuals, movement, and a
 Do NOT flatten the idea into a generic collect-and-dodge arena unless the player asked for one — realize the actual genre (platformers get gravity and jumps, tower defense gets paths and build slots, breakout gets bricks and a ball...).
 JSON keys:
   screen{width,height},
-  palette{bg,surface,primary,accent,danger — "#rrggbb" colors that fit the theme; this is the game's visual identity},
-  background(describe parallax / scrolling layers / depth),
+  palette{bg,surface,primary,accent,danger — "#rrggbb" colors that fit the theme; this is the game's visual identity. Pick a READABLE identity: the bg color is a base the player must see gameplay on, so avoid near-black (#000-#101820-class) backgrounds unless the genre truly demands night — and even then keep surfaces/mid-tones distinguishable},
+  background(describe the SAME place as level_layout below — its rooms/areas in prose, plus lighting and depth; this text art-directs the painted backdrop),
+  level_layout{grid{cols,rows}, regions[{id,name,cells:[c0,r0,c1,r1],kind}], walls[[c0,r0,c1,r1]], cover[[c,r]], paths[{id,points:[[c,r]]}], points[{id,kind,at:[c,r]}]}
+      (THE playable floor plan on a coarse cell grid — recommended 24x14. It is the single source of truth used THREE ways: the painted background is composed from it, the game builds its solid collision geometry from it, and enemies route along it. Make it match the genre:
+       regions = 2-6 named areas/rooms/zones the player recognizes on screen; walls = solid blocking rectangles in cell spans (room dividers, arena cover lines, platforms); cover = single blocking cells (crates, pillars);
+       paths = ordered waypoint routes — guard patrols for stealth, creep lanes for tower defense, platform routes for runners; points = named markers with kind spawn|objective|exit|hazard|item (always include a player spawn point, keep it and every path OFF the walls).
+       Keep corridors at least one cell wide and every objective reachable),
   player{visual,controls,abilities},
-  entities[{name,role,visual,movement,behavior,hp?}]    (role MUST START with exactly one lowercase English tag even when the rest of the design is written in another language — pick the closest by FUNCTION:
+  entities[{name,role,visual,movement,behavior,hp?,connects?}]    (role MUST START with exactly one lowercase English tag even when the rest of the design is written in another language — pick the closest by FUNCTION:
       hostile → enemy|boss|hazard;  solid blocking scenery → obstacle|wall|platform|barrier|block|terrain;  collectable → pickup|item|powerup|collectible;  neutral → npc|ally|structure|projectile|objective|decoration;  the controlled character → player.
       A short free-language qualifier may follow, e.g. "enemy 近战追击单位" or "platform moving vertically". The pipeline buckets entities by this leading tag; unknown or missing tags are treated as neutral scenery.
-      Arena / gun-battle / top-down shooter genres MUST include 2-4 obstacle-tag entities: crates, barricades, cover walls that block movement AND bullets, placed to create cover tactics),
+      Arena / gun-battle / top-down shooter genres MUST include 2-4 obstacle-tag entities: crates, barricades, cover walls that block movement AND bullets, placed to create cover tactics.
+      An entity the player extends into a connected network (roads, pipes, rails, conveyor belts, fences) MUST set "connects": true — the art pipeline then draws its straight/end/corner/junction/crossing tile variants instead of a single sprite),
   waves[{t,spawn,note}],
   powerups[{name,effect}],
   boss{name,visual,phases,attacks,hp}    (include when the genre has a climax, e.g. shooter),
-  rules{win,lose,survive_seconds,score — score MUST encode risk-reward: combo multipliers, proximity bonuses, or costs for safe play},
+  rules{win, lose, survive_seconds, score — score MUST encode risk-reward: combo multipliers, proximity bonuses, or costs for safe play,
+      win_feasibility — REQUIRED whenever win/lose depends on numeric thresholds, and it must close THREE separate checks:
+      (1) capacity: arithmetic proving each threshold is comfortably reachable FROM YOUR OWN content numbers (e.g. "population 500 needs 13 homes x 40 capacity; the map fits 20 homes -> 54% headroom") with >=30% headroom between the theoretical maximum and the threshold;
+      (2) bootstrap: the day-by-day opening — starting funds minus the tutorial-order build costs, and the day daily net income turns positive for a first-time player who follows the tutorial; income must be able to START from that opening state (beware chicken-and-egg gates: if residents only arrive when serviced and satisfaction only rises when residents are serviced, the tutorial layout must produce a serviced home immediately), and the net must turn positive well before any bankruptcy countdown can complete;
+      (3) range-vs-layout: if ANY mechanic has a range/radius/distance limit (service coverage radius, tower range, aura, commute), compute the actual distances between the placements the design itself prescribes (region assignments, tutorial focus points, "put X in the east") and show they fit within the limit — a 10-step service radius with housing and utilities pinned to opposite map corners is a self-contradiction that makes the game unwinnable; if the numbers do not fit, change the radius or the prescribed layout HERE, in the design.
+      If any check fails, fix the design now rather than shipping the contradiction. Every threshold the player must reach is shown on the HUD as current/target},
+      (numeric balance discipline: every income/cost/capacity states its basis inside its description — "per building per day", "per resident per day", "per second" — and downstream code must settle with that exact basis; a per-building number silently multiplied per-resident is a 40x economy break. Management/economy genres MUST include at least one recurring or scaling money sink — rising maintenance, upgrades, taxes/disasters — so currency stays meaningful in the late game),
   signature_twist(ONE concrete rule or mechanic that makes THIS game distinct from the genre default; it must be implementable and visible during play),
   juice[list of feedback effects],
   sfx_events[named gameplay events that get a sound, e.g. "pickup","shoot","boss_phase"],
@@ -88,7 +136,7 @@ Output valid JSON only, no markdown."""
 REPLAN_SYSTEM_PROMPT = """You are GameDesignAgentReplan. The previous design failed to build or run.
 Produce a more ROBUST GameDesign JSON that STILL honors the player's genre and core fun, but is easier to implement reliably with the available Phaser scenes, entities, systems, and UI modules.
 Keep the signature mechanics (a shooter keeps shooting, enemies, power-ups, and a boss) and keep the signature_twist unless it is itself the fragile part; simplify only what's fragile — fewer simultaneous entity types, simpler boss phases, defensive spawn caps. Do NOT turn it into a different, blander game.
-Output valid JSON only (same shape as GameDesign, including palette, signature_twist, and every entity role KEEPING its leading lowercase function tag, e.g. enemy/obstacle/pickup/npc)."""
+Output valid JSON only (same shape as GameDesign, including palette, signature_twist, rules.win_feasibility with its threshold arithmetic re-verified against the simplified content, and every entity role KEEPING its leading lowercase function tag, e.g. enemy/obstacle/pickup/npc)."""
 
 FEEDBACK_UNDERSTANDING_SYSTEM_PROMPT = """You are FeedbackUnderstandingAgent. Interpret a player's feedback about a game they just previewed.
 Return a concise natural-language change brief in the same language as the player. Do not return JSON.
@@ -131,6 +179,13 @@ Produce a more ROBUST GameDesign JSON that STILL honors the player's genre and c
 Keep the signature mechanics (an fps_arena keeps first-person shooting and enemy waves); simplify only what's fragile — fewer simultaneous entity types, simpler boss phases, defensive spawn caps, a simpler camera. Do NOT turn it into 2D or a blander game.
 Output valid JSON only (same shape as the 3D GameDesign)."""
 
+
+# Chain members send the constitution as their entire system prompt; the role
+# text below travels in the user turn so the serialized prefix of stage N+1 is
+# exactly stage N's request plus its reply.
+GAMEPLAY_PLANNING_ROLE_DIRECTIVE = _role_directive(GAMEPLAY_PLANNING_SYSTEM_PROMPT)
+GAME_DESIGN_ROLE_DIRECTIVE = _role_directive(GAME_DESIGN_SYSTEM_PROMPT)
+GAME_DESIGN_ROLE_DIRECTIVE_3D = _role_directive(GAME_DESIGN_SYSTEM_PROMPT_3D)
 
 # These planning calls all use the exact same first content block and cache key.
 # Their role-specific instructions remain after the explicit cache breakpoint.
@@ -217,6 +272,25 @@ def build_intent_spec_prompt(normalized_prompt: str, asset_count: int = 0, memor
     )
 
 
+def build_gameplay_planning_prompt(normalized_prompt: str, game_spec: dict) -> str:
+    """Gameplay-planning user turn: role directive plus the dynamic task state.
+
+    This message opens the planning conversation transcript, so the directive
+    lives here (not in the system prompt) — see PLANNING_CHAIN_SYSTEM_PROMPT.
+    """
+    return (
+        f"{GAMEPLAY_PLANNING_ROLE_DIRECTIVE}\n\n"
+        "Return JSON with exactly two top-level objects. expanded_brief keys: player_fantasy, "
+        "objective, core_verbs, mechanic_requirements, reward_loop, difficulty_beats, feedback, "
+        "keywords, minimum_content. mechanic_plan keys: primary_action, "
+        "secondary_action, signature_twist, risk_model, reward_model, enemy_behaviors, reward_items, "
+        "powerups, feedback, skill_tests. Make mechanic_plan realize expanded_brief without "
+        "contradicting the GameSpec. Do not choose or force a template/archetype; preserve the "
+        "GameSpec genre and describe its actual mechanics directly. "
+        f"Prompt: {normalized_prompt}\nSpec: {json.dumps(game_spec, ensure_ascii=False)}"
+    )
+
+
 def build_game_design_prompt(
     game_spec: dict,
     asset_manifest: dict | None,
@@ -224,16 +298,28 @@ def build_game_design_prompt(
     mechanic_plan: dict | None = None,
     player_idea: str | None = None,
     memory_context: str | None = None,
+    dimension: str = "2d",
+    chained: bool = False,
 ) -> str:
     """GameDesign 模型的上下文。
 
     设计模型是整条链里最有创造性的一步，过去只拿到 GameSpec + AssetManifest，看不到前面
-    brief / mechanic 的规划，等于从 spec 重新构思。这里把规划层产物和用户原话一并带上，让
-    设计真正承接 brief 的玩家幻想/难度节拍与 mechanic 的敌人/道具，并保持类型忠实。
-    mechanic_plan 的 archetype_hint 被夹回 2D 集合、对当前运行时可能矛盾（3D 尤甚），不喂给
-    设计模型——原型以 game_spec.archetype 为准。
+    brief / mechanic 的规划，等于从 spec 重新构思。链式模式（chained=True）下 brief 与
+    mechanic plan 就是上一条 assistant 消息，不再重复序列化；独立模式（规划阶段走了启发式
+    兜底、没有可复用的对话）才把二者内嵌。mechanic_plan 的 archetype_hint 被夹回 2D 集合、
+    对当前运行时可能矛盾（3D 尤甚），不喂给设计模型——原型以 game_spec.archetype 为准。
     """
-    parts: list[str] = []
+    directive = (
+        GAME_DESIGN_ROLE_DIRECTIVE_3D if dimension == "3d" else GAME_DESIGN_ROLE_DIRECTIVE
+    )
+    parts: list[str] = [directive]
+    if chained:
+        parts.append(
+            "Ground the design in the expanded_brief and mechanic_plan from the "
+            "'YOUR PREVIOUS REPLY' section earlier in this message. Ignore any "
+            "archetype_hint there; the GameSpec below (updated after archetype "
+            "routing) is authoritative."
+        )
     if player_idea:
         parts.append(f"Player's original idea (honor its genre and concrete details):\n{player_idea}")
     if memory_context:
@@ -244,12 +330,12 @@ def build_game_design_prompt(
             "The player's current idea and GameSpec win on conflict."
         )
     parts.append(f"GameSpec:\n{json.dumps(game_spec, ensure_ascii=False)}")
-    if expanded_brief:
+    if expanded_brief and not chained:
         parts.append(
             "Playable brief — realize this player fantasy, core verbs, difficulty beats, "
             f"feedback, and minimum content:\n{json.dumps(expanded_brief, ensure_ascii=False)}"
         )
-    if mechanic_plan:
+    if mechanic_plan and not chained:
         mech = {k: v for k, v in mechanic_plan.items() if k != "archetype_hint"}
         parts.append(
             "Mechanic plan — implement these concrete enemies, rewards, power-ups, and "
@@ -257,8 +343,9 @@ def build_game_design_prompt(
         )
     parts.append(f"AssetManifest:\n{json.dumps(asset_manifest or {}, ensure_ascii=False)}")
     parts.append(
-        "Output the GameDesign JSON that faithfully realizes the brief and mechanic plan above "
-        "for the player's idea."
+        "Output the GameDesign JSON that faithfully realizes the brief and mechanic plan "
+        + ("from this conversation " if chained else "above ")
+        + "for the player's idea."
     )
     return "\n\n".join(parts)
 

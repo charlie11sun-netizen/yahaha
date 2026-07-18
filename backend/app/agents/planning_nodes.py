@@ -1,7 +1,5 @@
 """LangGraph node adapters for the pure planning services."""
 
-import json
-
 from app.agents.nodes_common import (
     MAX_GAMEPLAY_REPAIR,
     MAX_REPAIR,
@@ -62,7 +60,11 @@ def intent_spec_node(state: dict) -> dict:
                 recover_partial_json=True,
                 cache_namespace=prompts.PLANNING_PROMPT_CACHE_NAMESPACE,
                 cache_prefix=prompts.PLANNING_SHARED_CACHE_PREFIX,
-                cache_task_scoped=False,
+                # Task-scoped bucket: the upstream ignores writes to the shared
+                # global key (all tasks' divergent tails churn it); a per-task
+                # key is the only bucket where planning prefixes reliably hit.
+                # This first call warms the constitution head for the chain.
+                cache_task_scoped=True,
             )
             raw, tokens = result
             spec = _coerce_spec(_parse_json(raw), prompt)
@@ -85,23 +87,18 @@ def gameplay_planning_node(state: dict) -> dict:
     spec = state.get("game_spec") or {}
     if state.get("use_real"):
         try:
+            # The gateway strips store/previous_response_id, so the chain to the
+            # design stage is carried client-side: this user turn plus the reply
+            # become the transcript the next stage replays verbatim (as one
+            # growing string — the upstream only prefix-caches string input).
+            user_prompt = prompts.build_gameplay_planning_prompt(prompt, spec)
             result = llm.chat(
-                prompts.GAMEPLAY_PLANNING_SYSTEM_PROMPT,
-                (
-                    "Return JSON with exactly two top-level objects. expanded_brief keys: player_fantasy, "
-                    "objective, core_verbs, mechanic_requirements, reward_loop, difficulty_beats, feedback, "
-                    "keywords, minimum_content. mechanic_plan keys: primary_action, "
-                    "secondary_action, signature_twist, risk_model, reward_model, enemy_behaviors, reward_items, "
-                    "powerups, feedback, skill_tests. Make mechanic_plan realize expanded_brief without "
-                    "contradicting the GameSpec. Do not choose or force a template/archetype; preserve the "
-                    "GameSpec genre and describe its actual mechanics directly. "
-                    f"Prompt: {prompt}\nSpec: {json.dumps(spec, ensure_ascii=False)}"
-                ),
+                prompts.PLANNING_CHAIN_SYSTEM_PROMPT,
+                user_prompt,
                 timeout=max(30, int(settings.OPENAI_PLANNING_STREAM_IDLE_TIMEOUT or 180)),
                 recover_partial_json=True,
                 cache_namespace=prompts.PLANNING_PROMPT_CACHE_NAMESPACE,
-                cache_prefix=prompts.PLANNING_SHARED_CACHE_PREFIX,
-                cache_task_scoped=False,
+                cache_task_scoped=True,
             )
             raw, tokens = result
             parsed = _parse_json(raw)
@@ -110,6 +107,11 @@ def gameplay_planning_node(state: dict) -> dict:
             return {
                 "expanded_brief": brief,
                 "mechanic_plan": plan,
+                "planning_transcript": [
+                    {"role": "user", "content": user_prompt},
+                    {"role": "assistant", "content": raw},
+                ],
+                "planning_response_id": getattr(result, "provider_response_id", None),
                 "_agent": "GameplayPlanningAgent",
                 "_tokens_delta": tokens,
                 "_logs": _brief_log_lines(
@@ -132,6 +134,8 @@ def gameplay_planning_node(state: dict) -> dict:
             return {
                 "expanded_brief": brief,
                 "mechanic_plan": plan,
+                "planning_transcript": None,
+                "planning_response_id": None,
                 "_agent": "GameplayPlanningAgent",
                 "_logs": [f"model failed: {_clip(exc, 120)}"]
                 + _brief_log_lines(brief, "heuristic fallback")
@@ -142,6 +146,8 @@ def gameplay_planning_node(state: dict) -> dict:
     return {
         "expanded_brief": brief,
         "mechanic_plan": plan,
+        "planning_transcript": None,
+        "planning_response_id": None,
         "_agent": "GameplayPlanningAgent",
         "_logs": _brief_log_lines(brief, "offline heuristic")
         + _mechanic_log_lines(plan, "offline heuristic"),
@@ -210,7 +216,19 @@ def asset_processing_node(state: dict) -> dict:
         finally:
             db.close()
     spec = state.get("game_spec") or {}
-    asset_manifest = {"cover": _theme_cover(spec.get("theme")), "assets": uploaded}
+    from app.services.sprite_pipeline import build_sprite_demand_manifest
+
+    # Asset processing freezes the semantic demand before any image request is
+    # made.  Generation later enriches it with actual sheet/frame coordinates.
+    demand_manifest = build_sprite_demand_manifest(
+        state.get("game_design") or {},
+        state.get("runtime_consumers"),
+    ).to_dict()
+    asset_manifest = {
+        "cover": _theme_cover(spec.get("theme")),
+        "assets": uploaded,
+        "sprite_demand_manifest": demand_manifest,
+    }
     return {"uploaded_assets": uploaded, "asset_manifest": asset_manifest, "_agent": "AssetAgent", "_logs": _asset_log_lines(uploaded, asset_manifest, spec)}
 
 
@@ -219,29 +237,50 @@ def game_design_node(state: dict) -> dict:
     is_3d = state.get("dimension") == "3d"
     if state.get("use_real"):
         try:
-            sys_prompt = prompts.GAME_DESIGN_SYSTEM_PROMPT_3D if is_3d else prompts.GAME_DESIGN_SYSTEM_PROMPT
+            transcript = list(state.get("planning_transcript") or [])
+            chained = bool(transcript)
+            design_prompt = prompts.build_game_design_prompt(
+                spec,
+                state.get("asset_manifest"),
+                expanded_brief=state.get("expanded_brief"),
+                mechanic_plan=state.get("mechanic_plan"),
+                player_idea=state.get("normalized_prompt") or state.get("prompt"),
+                memory_context=state.get("memory_context") or "",
+                dimension="3d" if is_3d else "2d",
+                chained=chained,
+            )
+            # Chained mode extends the gameplay-planning user string byte-for-
+            # byte (upstream only prefix-caches string input; message arrays
+            # cap at the instructions head).
+            user_prompt = (
+                prompts.build_planning_chain_input(transcript, design_prompt)
+                if chained
+                else design_prompt
+            )
             result = llm.chat(
-                sys_prompt,
-                prompts.build_game_design_prompt(
-                    spec,
-                    state.get("asset_manifest"),
-                    expanded_brief=state.get("expanded_brief"),
-                    mechanic_plan=state.get("mechanic_plan"),
-                    player_idea=state.get("normalized_prompt") or state.get("prompt"),
-                    memory_context=state.get("memory_context") or "",
-                ),
+                prompts.PLANNING_CHAIN_SYSTEM_PROMPT,
+                user_prompt,
                 timeout=max(30, int(settings.OPENAI_PLANNING_STREAM_IDLE_TIMEOUT or 180)),
                 recover_partial_json=True,
                 cache_namespace=prompts.PLANNING_PROMPT_CACHE_NAMESPACE,
-                cache_prefix=prompts.PLANNING_SHARED_CACHE_PREFIX,
-                cache_task_scoped=False,
+                cache_task_scoped=True,
+                chained_from_response_id=state.get("planning_response_id") if chained else None,
             )
             raw, tokens = result
             design = _coerce_design(_parse_json(raw), spec)
-            fed = [k for k, v in (("brief", state.get("expanded_brief")), ("mechanic_plan", state.get("mechanic_plan")), ("player_idea", state.get("normalized_prompt"))) if v]
-            out = {"game_design": design, "_agent": "GameDesignAgent", "_tokens_delta": tokens,
+            fed = [k for k, v in (("planning_transcript", chained or None), ("brief", state.get("expanded_brief")), ("mechanic_plan", state.get("mechanic_plan")), ("player_idea", state.get("normalized_prompt"))) if v]
+            out = {"game_design": design,
+                   "planning_transcript": transcript
+                   + [{"role": "user", "content": design_prompt}, {"role": "assistant", "content": raw}],
+                   "planning_response_id": getattr(result, "provider_response_id", None),
+                   "_agent": "GameDesignAgent", "_tokens_delta": tokens,
                    "_logs": [f"source: {'recovered complete model GameDesign JSON after interrupted stream' if getattr(result, 'partial', False) else 'model GameDesign JSON'} ({'3D' if is_3d else '2D'})",
-                             "design context fed: " + (", ".join(fed) or "spec only")] + _design_log_lines(design)}
+                             "design context fed: " + (", ".join(fed) or "spec only"),
+                             (
+                                 f"conversation chain: replayed {len(transcript)} planning message(s) from {state.get('planning_response_id')}"
+                                 if chained
+                                 else "conversation chain: standalone (no reusable planning transcript)"
+                             )] + _design_log_lines(design)}
             if is_3d:
                 new_arch = _reconcile_archetype_3d(spec, design)
                 if new_arch != spec.get("archetype"):
@@ -252,7 +291,8 @@ def game_design_node(state: dict) -> dict:
         except Exception as exc:  # noqa: BLE001
             _real_model_fallback_or_raise("GameDesignAgent", exc, exc)
             design = _heuristic_design(spec)
-            return {"game_design": design, "_agent": "GameDesignAgent", "_logs": [f"model failed: {_clip(exc, 120)}", "source: heuristic fallback"] + _design_log_lines(design)}
+            return {"game_design": design, "planning_transcript": None, "planning_response_id": None,
+                    "_agent": "GameDesignAgent", "_logs": [f"model failed: {_clip(exc, 120)}", "source: heuristic fallback"] + _design_log_lines(design)}
     design = _heuristic_design(spec)
     return {"game_design": design, "_agent": "GameDesignAgent", "_logs": ["source: offline heuristic"] + _design_log_lines(design)}
 

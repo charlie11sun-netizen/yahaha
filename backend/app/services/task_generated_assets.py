@@ -42,6 +42,7 @@ def generated_image_previews(task_id: str) -> list[dict]:
             continue
         entry = by_path.get(runtime_path) or {}
         key = str(entry.get("key") or PurePosixPath(runtime_path).stem)
+        semantic_frames = entry.get("semantic_frames") or {}
         previews.append(
             {
                 "key": key,
@@ -49,6 +50,8 @@ def generated_image_previews(task_id: str) -> list[dict]:
                 "kind": str(entry.get("kind") or "image"),
                 "content_type": content_type,
                 "bytes": len(raw),
+                "semantic_ids": list(semantic_frames.keys()) if isinstance(semantic_frames, dict) else [],
+                "frame_audit": entry.get("frame_audit") or {},
                 "data_url": f"data:{content_type};base64,{base64.b64encode(raw).decode('ascii')}",
             }
         )

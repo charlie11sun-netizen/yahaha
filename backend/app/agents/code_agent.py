@@ -34,37 +34,47 @@ def run_author(
     qa_feedback: list | None = None,
     max_turns: int | None = None,
     deadline_at: float | None = None,
+    planning_context: dict | None = None,
 ) -> RepairOutcome | None:
-    """Route project authoring through the public team facade when needed."""
+    """Route project authoring through the public team facade when needed.
+
+    ``planning_context`` = {"items": [...], "response_id": str | None} — the
+    gameplay-planning/game-design transcript replayed into DesignContractAgent
+    as explicit input items (the gateway drops server-side chaining).
+    """
     if not files:
         return None
     from app.services.vite_projects import is_vite_project
 
     if not is_vite_project(files):
-        return author_runner.run_author(
-            files,
-            spec=spec,
-            design=design,
-            runtime=runtime,
-            dimension=dimension,
-            qa_feedback=qa_feedback,
-            max_turns=max_turns,
-            deadline_at=deadline_at,
-        )
+        author_kwargs = {
+            "spec": spec,
+            "design": design,
+            "runtime": runtime,
+            "dimension": dimension,
+            "qa_feedback": qa_feedback,
+            "max_turns": max_turns,
+            "deadline_at": deadline_at,
+        }
+        if planning_context:
+            author_kwargs["planning_context"] = planning_context
+        return author_runner.run_author(files, **author_kwargs)
 
     from app.agents import author_team
 
-    return author_team.run_project_author_team(
-        files,
-        spec=spec,
-        design=design,
-        runtime=runtime,
-        dimension=dimension,
-        qa_feedback=qa_feedback,
-        max_turns=max_turns or settings.CODE_AGENT_AUTHOR_MAX_TURNS,
-        live_step_id=tracing.current_step_id(),
-        deadline_at=deadline_at,
-    )
+    team_kwargs = {
+        "spec": spec,
+        "design": design,
+        "runtime": runtime,
+        "dimension": dimension,
+        "qa_feedback": qa_feedback,
+        "max_turns": max_turns or settings.CODE_AGENT_AUTHOR_MAX_TURNS,
+        "live_step_id": tracing.current_step_id(),
+        "deadline_at": deadline_at,
+    }
+    if planning_context:
+        team_kwargs["planning_context"] = planning_context
+    return author_team.run_project_author_team(files, **team_kwargs)
 
 
 _LEGACY_PRIVATE_ATTRS = {

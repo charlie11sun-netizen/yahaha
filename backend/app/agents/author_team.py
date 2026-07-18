@@ -41,6 +41,7 @@ def run_project_author_team(
     team_token_budget: int | None = None,
     team_changed_file_budget: int | None = None,
     deadline_at: float | None = None,
+    planning_context: dict | None = None,
 ):
     # A direct assignment is honored for old callers that monkeypatch the
     # runner.  Normal application code uses the public runner entry point.
@@ -50,6 +51,7 @@ def run_project_author_team(
         qa_feedback=qa_feedback, max_turns=max_turns, live_step_id=live_step_id,
         team_deadline_seconds=team_deadline_seconds, team_token_budget=team_token_budget,
         team_changed_file_budget=team_changed_file_budget, deadline_at=deadline_at,
+        planning_context=planning_context,
         _execute_agent_fn=execute_agent, _tracing=tracing,
     )
 

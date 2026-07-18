@@ -604,6 +604,174 @@ def test_scaffold_wires_scene_background_variants():
     assert "swap(" in backdrop and "key ?? gameConfig.assetKeys.background" in backdrop
 
 
+# ---------------------------------------------------------------------------
+# 建造/经营类:可连接图块族、帧语义 frame_meta、空地形背景
+# (2026-07-17 像素都市计划回归:单十字路/作者顺序瞎猜错位/背景画成建成城)。
+# ---------------------------------------------------------------------------
+
+_CITY_BUILDER_STATE = {
+    "prompt": "简化的城市建设模拟游戏",
+    "game_spec": {
+        "title": "像素都市",
+        "theme": "sunny riverside city",
+        "visual_style": "pixel art",
+        "genre": "simulation",
+        "archetype": "simulation",
+    },
+    "game_design": {
+        "archetype": "simulation",
+        "player": {"visual": "白色像素规划光标与半透明蓝图预览", "abilities": ["网格建设"]},
+        "entities": [
+            {"name": "规划光标", "role": "player 城市规划控制器", "visual": "白色角标框"},
+            {
+                "name": "城市道路",
+                "role": "structure 交通连接",
+                "visual": "深灰像素路面；相邻道路自动选择直线、转角、丁字或十字图块",
+                "connects": True,
+            },
+            {"name": "绿色屋顶住宅", "role": "structure 人口来源", "visual": "米色墙体、绿色屋顶"},
+            {"name": "蓝牌商业区", "role": "structure 就业来源", "visual": "蓝色遮阳棚与霓虹招牌"},
+            {"name": "橙黑火力电厂", "role": "structure 电力供应", "visual": "2×2橙黑工业建筑"},
+            {"name": "青色水塔", "role": "structure 供水设施", "visual": "2×2青色水塔"},
+            {"name": "河道", "role": "terrain 不可建设水域", "visual": "青蓝水面"},
+        ],
+        "level_layout": {
+            "grid": {"cols": 20, "rows": 12},
+            "regions": [{"id": "west", "name": "河西新区", "cells": [0, 0, 8, 11], "kind": "住宅区"}],
+            "walls": [[9, 0, 10, 11]],
+            "cover": [[3, 3]],
+        },
+    },
+}
+
+
+def test_connectable_structure_gets_tile_family_variants():
+    """可连接结构(道路)不再是单格:直/端/角/丁/十 5 变体同页且不进动画组。
+    单格素材拼不出路网——像素都市计划全城道路都是同一块十字贴图。"""
+    plans = plan_game_assets(dict(_CITY_BUILDER_STATE))
+    sheet_plans = [p for p in plans if p.sheet_cells]
+    names = {cell.name for p in sheet_plans for cell in p.sheet_cells}
+    family = ("entity_1", "entity_1_end", "entity_1_corner", "entity_1_tee", "entity_1_cross")
+    for name in family:
+        assert name in names, f"缺图块族变体 {name}"
+    for plan in sheet_plans:
+        page = {cell.name for cell in plan.sheet_cells}
+        if "entity_1" in page:
+            assert set(family) <= page, "图块族必须同页"
+            assert all("entity_1" not in group for group in plan.sheet_groups), "族不是动画组"
+            assert "SEAMLESS CONNECTABLE TILE" in plan.prompt
+            assert "exact cell edges" in plan.prompt
+    # 非连接建筑仍是单格
+    assert "entity_2_cross" not in names and "entity_3_end" not in names
+
+
+def test_connectable_detection_falls_back_to_visual_vocabulary():
+    """旧设计没有 connects 标记:visual 里的图块变体词表兜底;behavior 里的
+    "必须正交邻接道路"这类规则文本不触发(否则全体建筑误报)。"""
+    state = copy.deepcopy(_CITY_BUILDER_STATE)
+    road = state["game_design"]["entities"][1]
+    del road["connects"]
+    state["game_design"]["entities"][2]["behavior"] = "必须正交邻接连通道路，并获得电力"
+    plans = plan_game_assets(state)
+    names = {cell.name for p in plans if p.sheet_cells for cell in p.sheet_cells}
+    assert "entity_1_cross" in names, "visual 词表应识别道路"
+    assert "entity_2_cross" not in names, "behavior 规则文本不该触发族"
+
+
+def test_sheet_manifest_carries_frame_meta_and_tile_families(monkeypatch):
+    """帧语义直达 manifest:作者靠 frame_meta 对号入座,不再按名字顺序瞎猜
+    (像素都市计划把住/商/电/水整体错位一格);图块族五槽齐全落 manifest。"""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ASSET_GENERATION_ENABLED", True)
+    monkeypatch.setattr(settings, "TILEMAP_GENERATION_ENABLED", False)
+    result = generate_game_assets(dict(_CITY_BUILDER_STATE), router=_StubRouter())
+    sheets = [e for e in result["manifest_entries"] if e.get("kind") == "spritesheet"]
+    assert sheets
+    metas: dict = {}
+    families: dict = {}
+    for entry in sheets:
+        assert set(entry["frame_meta"]) == set(entry["frames"]), "每个帧都要有语义描述"
+        metas.update(entry["frame_meta"])
+        families.update(entry.get("tile_families") or {})
+    assert "城市道路" in metas["entity_1"]
+    assert "绿色屋顶住宅" in metas["entity_2"]
+    assert "青色水塔" in metas["entity_5"]
+    assert families["entity_1"] == {
+        "straight": "entity_1",
+        "end": "entity_1_end",
+        "corner": "entity_1_corner",
+        "tee": "entity_1_tee",
+        "cross": "entity_1_cross",
+    }
+
+
+def test_builder_background_prompt_is_empty_terrain():
+    """建造/经营类背景必须是纯空地形:玩家的建筑不能预先画进背景
+    (像素都市计划:背景整座建成城市,玩家放置物全被淹没)。"""
+    plans = plan_game_assets(dict(_CITY_BUILDER_STATE))
+    bgs = [p for p in plans if p.key.startswith("background")]
+    assert bgs
+    for plan in bgs:
+        assert "EMPTY BUILDABLE TERRAIN" in plan.prompt
+        assert "NO buildings" in plan.prompt
+        assert "EMPTY STAGE" not in plan.prompt
+    # 布局简报换地形措辞:分区=地面色调差异,墙=天然屏障,不引导画建成区
+    assert "natural ground tone" in bgs[0].prompt
+    assert "natural barriers" in bgs[0].prompt
+    # 战斗类背景规则不变
+    shooter_bgs = [p for p in plan_game_assets(dict(_SHOOTER_STATE)) if p.key.startswith("background")]
+    assert all("EMPTY STAGE" in p.prompt for p in shooter_bgs)
+
+
+def test_scaffold_exposes_frame_meta_and_tile_variant():
+    files = create_modular_phaser_project(
+        {"title": "Tiled City"},
+        {},
+        {},
+        {
+            "assets": [
+                {
+                    "key": "sheet",
+                    "kind": "spritesheet",
+                    "path": "assets/sheet.png",
+                    "frame_width": 256,
+                    "frame_height": 256,
+                    "frames": {
+                        "entity_1": 0,
+                        "entity_1_end": 1,
+                        "entity_1_corner": 2,
+                        "entity_1_tee": 3,
+                        "entity_1_cross": 4,
+                        "entity_2": 5,
+                    },
+                    "animations": {},
+                    "frame_meta": {"entity_1": "城市道路 — straight piece", "entity_2": "绿色屋顶住宅"},
+                    "tile_families": {
+                        "entity_1": {
+                            "straight": "entity_1",
+                            "end": "entity_1_end",
+                            "corner": "entity_1_corner",
+                            "tee": "entity_1_tee",
+                            "cross": "entity_1_cross",
+                        }
+                    },
+                }
+            ]
+        },
+    )
+    by_path = {item["path"]: item["content"] for item in files}
+    config = by_path["src/config/gameConfig.ts"]
+    # 帧语义与图块族穿透进 gameConfig;作者据 frameMeta 对号入座
+    assert '"frameMeta"' in config and "绿色屋顶住宅" in config
+    assert '"tileFamilies"' in config and '"entity_1_tee"' in config
+    assert "frameMeta: Record<string, string>" in config
+    assert "tileFamilies: Record<string, TileFamily>" in config
+    # 邻接掩码 → 帧+旋转 的标准助手,作者不用自己发明旋转表
+    assert "export function tileVariant" in config
+    assert "export function tileFamily" in config
+
+
 _PAD = "// pad\n" * 80
 
 

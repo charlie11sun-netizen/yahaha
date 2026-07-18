@@ -8,6 +8,15 @@ from app.db.session import SessionLocal
 from app.models import AgentTraceEvent
 
 
+def _json_or_none(value):
+    if value is None:
+        return None
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return value
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("task_id", help="generation_tasks.id to export")
@@ -42,6 +51,30 @@ def main(argv: list[str] | None = None) -> int:
                 "event_type": row.event_type,
                 "agent": row.agent,
                 "model": row.model,
+                "provider": row.provider,
+                "contract_version": row.contract_version,
+                "prompt_version": row.prompt_version,
+                "input_artifact_id": row.input_artifact_id,
+                "output_artifact_id": row.output_artifact_id,
+                "input_artifact_ids": _json_or_none(row.input_artifact_ids_json),
+                "output_artifact_ids": _json_or_none(row.output_artifact_ids_json),
+                "adopted_plan": _json_or_none(row.adopted_plan),
+                "rejected_plans": _json_or_none(row.rejected_plans_json),
+                "asset_request_count": row.asset_request_count,
+                "qa_result": _json_or_none(row.qa_result_json),
+                "repair_reason": _json_or_none(row.repair_reason),
+                "impact_scope": _json_or_none(row.impact_scope_json),
+                "latency_ms": row.latency_ms,
+                "cost_usd": float(row.cost_usd) if row.cost_usd is not None else None,
+                "runtime_consumed": row.runtime_consumed,
+                "asset_id": row.asset_id,
+                "prompt_hash": row.prompt_hash,
+                "requested_states": _json_or_none(row.requested_states_json),
+                "returned_dimensions": _json_or_none(row.returned_dimensions),
+                "postprocess_checks": _json_or_none(row.postprocess_checks_json),
+                "frame_count": row.frame_count,
+                "consumer_refs": _json_or_none(row.consumer_refs_json),
+                "coverage_result": _json_or_none(row.coverage_result),
                 "payload_chars": row.payload_chars,
                 "created_at": row.created_at.isoformat(),
                 "payload": json.loads(row.payload_json),

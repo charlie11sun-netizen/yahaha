@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>像素都市规划师</title>
+    <style>
+      /* Critical sizing stays inline: the built bundle's deferred script can
+         execute before the external stylesheet applies, and Phaser's FIT scale
+         reads the parent size exactly once at boot — external CSS timing must
+         never decide whether the canvas gets a size (a lost race renders the
+         whole game 0x0). */
+      html, body, #game-container { width: 100%; height: 100%; margin: 0; }
+    </style>
+  </head>
+  <body>
+    <main id="game-container" aria-label="Generated game"></main>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

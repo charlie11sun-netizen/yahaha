@@ -15,7 +15,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
 
 from app.db.base import Base
 from app.models.common import AssetKind, PkMixin, StepStatus, TaskStatus, TimestampMixin, now_utc
@@ -120,6 +120,34 @@ class AgentStep(PkMixin, TimestampMixin, Base):
     tokens: Mapped[int] = mapped_column(BigInteger, default=0)
     attempt: Mapped[int] = mapped_column(Integer, default=1)
     caused_by_step_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    # Decision-chain fields.  JSON fields intentionally remain text so the
+    # trace works on both PostgreSQL and the SQLite test database while still
+    # allowing callers to evolve the shape without another migration.
+    contract_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    input_artifact_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    output_artifact_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    input_artifact_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output_artifact_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    adopted_plan: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rejected_plans_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    asset_request_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    qa_result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    repair_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    impact_scope_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 6), nullable=True)
+    runtime_consumed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    decision_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Friendly aliases used by trace consumers that do not need to know the
+    # storage suffix chosen for JSON columns.
+    input_artifact_ids = synonym("input_artifact_ids_json")
+    output_artifact_ids = synonym("output_artifact_ids_json")
+    rejected_plans = synonym("rejected_plans_json")
+    qa_result = synonym("qa_result_json")
+    impact_scope = synonym("impact_scope_json")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -152,6 +180,7 @@ class AgentTraceEvent(PkMixin, TimestampMixin, Base):
 
     __tablename__ = "agent_trace_events"
     __table_args__ = (
+        Index("ix_agent_trace_events_created_at", "created_at"),
         Index("ix_agent_trace_events_step_id_seq", "step_id", "seq"),
         Index("ix_agent_trace_events_task_id_created_at", "task_id", "created_at"),
         Index("ix_agent_trace_events_run_id_seq", "run_id", "seq"),
@@ -169,6 +198,42 @@ class AgentTraceEvent(PkMixin, TimestampMixin, Base):
     event_type: Mapped[str] = mapped_column(String(40))
     agent: Mapped[str] = mapped_column(String(120))
     model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    contract_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    input_artifact_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    output_artifact_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    input_artifact_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output_artifact_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    adopted_plan: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rejected_plans_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    asset_request_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    qa_result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    repair_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    impact_scope_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 6), nullable=True)
+    runtime_consumed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Asset-generation events use these columns so the reason for an image
+    # and the reason it was (or was not) consumed remain queryable without
+    # parsing the potentially truncated payload preview.
+    asset_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    prompt_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    requested_states_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    returned_dimensions: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    postprocess_checks_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    frame_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    consumer_refs_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    coverage_result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decision_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    input_artifact_ids = synonym("input_artifact_ids_json")
+    output_artifact_ids = synonym("output_artifact_ids_json")
+    rejected_plans = synonym("rejected_plans_json")
+    qa_result = synonym("qa_result_json")
+    impact_scope = synonym("impact_scope_json")
+    requested_states = synonym("requested_states_json")
+    postprocess_checks = synonym("postprocess_checks_json")
+    consumer_refs = synonym("consumer_refs_json")
     payload_json: Mapped[str] = mapped_column(Text)
     payload_chars: Mapped[int] = mapped_column(BigInteger, default=0)
 
@@ -192,6 +257,9 @@ class LLMCall(PkMixin, TimestampMixin, Base):
     agent: Mapped[str | None] = mapped_column(String(120), nullable=True)
     workflow_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     provider_response_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    # 本次调用继承的上下文来自哪个响应：客户端重放 transcript 时记血缘来源，
+    # 走服务端 previous_response_id 时记实际发送值。用于对账"链是否真的接上"。
+    previous_response_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     request_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(24), default="completed", server_default="completed")
     error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)

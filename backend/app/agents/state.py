@@ -40,6 +40,10 @@ class GenerationState(TypedDict, total=False):
     use_real: bool
     dimension: str  # "2d" | "3d"
     task_kind: str  # "generation" | "revision" | "remix"
+    contract_version: str
+    prompt_version: str
+    model: str
+    provider: str
 
     status: str
     prompt: str
@@ -57,13 +61,25 @@ class GenerationState(TypedDict, total=False):
     asset_ids: list
     uploaded_assets: list
     generated_assets: list
+    asset_trace: list
 
     safety_result: dict
     game_spec: dict
     expanded_brief: dict
     mechanic_plan: dict
+    # Client-side conversation chain gameplay-planning -> game-design ->
+    # design-contract: the gateway strips store/previous_response_id, so the
+    # raw user/assistant messages are replayed as explicit input items.
+    planning_transcript: Optional[list]
+    # Provider id of the latest chain member; ledger lineage only, never sent.
+    planning_response_id: Optional[str]
     archetype_result: dict
     asset_manifest: dict
+    # Semantic sprite contract: design states -> runtime consumers -> atlas
+    # frame bindings.  Kept separate from the legacy `assets` list so older
+    # clients can still read their manifest unchanged.
+    sprite_demand_manifest: dict
+    runtime_consumers: dict
     game_design: dict
     content_plan: dict
     balance_config: dict

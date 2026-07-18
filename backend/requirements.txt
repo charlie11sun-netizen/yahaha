@@ -40,6 +40,7 @@ openai-agents>=0.18.2        # GPT-5.6 usage details + native repair/author tool
 httpx>=0.27
 
 # Observability
+opik==2.1.32
 sentry-sdk[fastapi,celery]>=2.13
 structlog>=24.4
 opentelemetry-sdk>=1.27

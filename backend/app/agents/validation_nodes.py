@@ -12,6 +12,8 @@ _STOCK_KIT_FILES = {
     "src/systems/Sfx.ts",
     "src/systems/Bounds.ts",
     "src/systems/Backdrop.ts",
+    "src/systems/InputRouter.ts",
+    "src/systems/LevelLayout.ts",
     "src/systems/Probe.ts",
     "src/systems/GameWeaveBridge.ts",
 }
@@ -95,6 +97,76 @@ def _dead_runtime_exports(source_files: list[dict]) -> list[tuple[str, str]]:
             if not used:
                 dead.append((symbol, path))
     return dead
+
+
+_IMPORT_SPEC_RE = re.compile(r"""(?:import|export)\s(?:[^;'"]*?from\s*)?["']([^"']+)["']""")
+
+
+def _resolve_relative_import(base_path: str, spec: str, paths: set[str]) -> str | None:
+    if not spec.startswith("."):
+        return None
+    base_dir = base_path.rsplit("/", 1)[0] if "/" in base_path else ""
+    raw = f"{base_dir}/{spec}" if base_dir else spec
+    parts: list[str] = []
+    for token in raw.replace("\\", "/").split("/"):
+        if token in ("", "."):
+            continue
+        if token == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(token)
+    joined = "/".join(parts)
+    for candidate in (joined, f"{joined}.ts", f"{joined}.tsx", f"{joined}.js", f"{joined}/index.ts"):
+        if candidate in paths:
+            return candidate
+    return None
+
+
+def _entry_reachable_paths(files_map: dict[str, str], entry: str = "src/main.ts") -> set[str]:
+    reachable: set[str] = set()
+    queue = [entry] if entry in files_map else []
+    all_paths = set(files_map)
+    while queue:
+        current = queue.pop()
+        if current in reachable:
+            continue
+        reachable.add(current)
+        for match in _IMPORT_SPEC_RE.finditer(files_map.get(current, "")):
+            resolved = _resolve_relative_import(current, match.group(1), all_paths)
+            if resolved and resolved not in reachable:
+                queue.append(resolved)
+    return reachable
+
+
+def _orphan_author_modules(source_files: list[dict]) -> list[str]:
+    """Author-added source modules unreachable from the entry import graph.
+
+    Vite 树摇会把没被入口 import 的模块整体丢出产物:c28261d1(2026-07-17
+    暗影档案)集成 agent 网络故障后,21 个已接受的作者文件 19 个不可达,
+    发布产物里 GuardController/MissionDefinition 出现次数为 0——玩家拿到的
+    是兜底玩法。这是纯静态检查,比"死导出"更硬:整文件不可达 = 必然丢弃。
+    """
+    from app.services.phaser_projects import scaffold_source_paths
+
+    files_map = {
+        str(item.get("path") or "").replace("\\", "/"): str(item.get("content") or "")
+        for item in source_files
+        if str(item.get("path") or "").endswith((".ts", ".tsx"))
+        and item.get("content_b64") is None
+    }
+    if "src/main.ts" not in files_map:
+        return []
+    scaffold = scaffold_source_paths()
+    reachable = _entry_reachable_paths(files_map)
+    return sorted(
+        path
+        for path in files_map
+        if path not in scaffold
+        and not path.startswith("src/contracts/")
+        and not path.endswith(".d.ts")
+        and path not in reachable
+    )
 
 
 def _sandbox_files_for_qa(files: list[dict], dimension: str | None = None) -> list[dict]:
@@ -667,8 +739,19 @@ def _gameplay_qa(state: dict) -> dict:
                         if visual_verdict is None:
                             warnings.append("visual review unavailable; screenshot not judged")
                         else:
+                            # readability 2/5 只在"还有最小 patch 预算的生成任务"里
+                            # 升级为 issue("visual review:" 前缀 → quality 最小 patch
+                            # 路径);预算耗尽或 revision/remix 回落 warning,主观分
+                            # 永远到不了 replan/failed(像素都市计划 2026-07-17:
+                            # 2/5 评审说中全部可读性问题却被 warning 档丢弃)。
+                            escalate = (
+                                str(state.get("task_kind") or "generation")
+                                not in {"revision", "remix"}
+                                and state.get("gameplay_repair_attempts", 0) < MAX_GAMEPLAY_REPAIR
+                            )
                             visual_issues, visual_warnings = visual_review.verdict_findings(
-                                visual_verdict
+                                visual_verdict,
+                                escalate_marginal_readability=escalate,
                             )
                             issues.extend(visual_issues)
                             warnings.extend(visual_warnings)
@@ -702,6 +785,33 @@ def _gameplay_qa(state: dict) -> dict:
             primary_play_source = _primary_play_source(source_files)
             primary_play_low = primary_play_source.lower()
 
+            # 孤儿模块门禁:作者团队被接受的模块若从入口 import 图不可达,Vite
+            # 构建会整体树摇丢弃——玩家实际拿到兜底玩法。>=3 个孤儿视为接线事故
+            # (修复应当去接线,而不是围着占位玩法打补丁);1-2 个只提示。
+            if authored_code:
+                orphan_modules = _orphan_author_modules(source_files)
+                if len(orphan_modules) >= 3:
+                    preview = ", ".join(orphan_modules[:12]) + (" …" if len(orphan_modules) > 12 else "")
+                    issues.append(
+                        f"authored gameplay modules are never imported by the running game: {preview}. "
+                        "Wire these accepted modules into the scene composition (import and drive them "
+                        "from PlayScene or its systems per src/contracts/AuthorContract.ts) instead of "
+                        "rewriting placeholder gameplay"
+                    )
+                elif orphan_modules:
+                    warnings.append(
+                        "authored modules not yet imported by the running game: "
+                        + ", ".join(orphan_modules)
+                    )
+                # 布局契约:设计给了 level_layout(背景图按它构图),玩法却完全
+                # 不消费——画面与关卡几何必然脱节(地图沦为无关贴图)。
+                if (state.get("game_design") or {}).get("level_layout") and "levellayout" not in gameplay_low:
+                    issues.append(
+                        "design provides a structured level_layout but gameplay never consumes it: build the "
+                        "level geometry from gameConfig.levelLayout (LevelLayout.buildStatics / paths / points) "
+                        "so the stage matches the painted backdrop instead of inventing ad-hoc coordinates"
+                    )
+
             # 运行时行为对账（Probe）：脚手架探针报告"实际发生了什么"。探针缺失
             # (旧包/模板回退)或模拟输入没到 gameplay 场景时一律不硬失败——QA 误报
             # 在作者模式下是百万 token 级重生成死循环(2026-07-13 教训)。
@@ -733,6 +843,93 @@ def _gameplay_qa(state: dict) -> dict:
                     "simulated input never reached a gameplay scene (scenes started: "
                     + ", ".join(scene_starts[:6])
                     + ") — the start flow may need a clearer advertised input"
+                )
+
+            # 交互探针对账(像素市长 2026-07-17 三类"按钮点不动"的机械化门禁)。
+            # 旧包的 Probe 没有这些计数器 → 条件自动短路,零误报。
+            # ① 输入管线死亡:注入的指针事件到达页面(dom:down|pointer)但没有任何
+            #    场景处理过(input:down=0) —— 输入接到了错误的事件层或被禁用。
+            dom_pointer_downs = probe_counts.get("dom:down|pointer", 0)
+            pointer_injected = any(
+                str(item).startswith("pointer:")
+                for item in (
+                    []
+                    if browser_result is None
+                    else list(getattr(browser_result, "inputs_sent", []) or [])
+                )
+            )
+            if (
+                probe_ready
+                and pointer_injected
+                and dom_pointer_downs >= 1
+                and _probe_total("input:down") == 0
+            ):
+                input_dead_msg = (
+                    "browser input probe: injected pointer presses reached the page but no scene ever "
+                    f"processed them (dom:down|pointer={dom_pointer_downs}, input:down=0) — pointer input "
+                    "is wired to the wrong layer or scene input is disabled; drive world input through "
+                    "scene pointer events (InputRouter.worldPointer) and UI through interactive objects"
+                )
+                if authored_code:
+                    issues.append(input_dead_msg)
+                else:
+                    warnings.append(input_dead_msg)
+            # ② UI 每帧重建:安静观察尾窗内 interactive 注册数仍持续增长。这样的
+            #    按钮每帧被销毁重建,永远进不了输入命中列表(渲染正常但点不动),
+            #    对象还会无界泄漏。尾窗采样从 probes_start 开始,建场高峰已排除。
+            tail_start_probes = (
+                {}
+                if browser_result is None
+                else dict(getattr(browser_result, "probes_start", {}) or {})
+            )
+            tail_frames = (
+                0
+                if browser_result is None
+                else int(browser_result.frames_observed or 0)
+                - int(getattr(browser_result, "frames_start", 0) or 0)
+            )
+            interactive_churn = probe_counts.get("ui:interactive", 0) - tail_start_probes.get(
+                "ui:interactive", 0
+            )
+            if (
+                probe_ready
+                and tail_start_probes
+                and tail_frames >= 30
+                and interactive_churn >= 60
+                and interactive_churn >= tail_frames * 0.5
+            ):
+                churn_msg = (
+                    "gameplay UI is rebuilt every frame: "
+                    f"{interactive_churn} interactive objects were re-registered across {tail_frames} "
+                    "quiet frames — destroy+recreate per tick keeps buttons out of input hit-testing "
+                    "(they render but never respond) and leaks objects; create panels once, update their "
+                    "text/visibility in place, and rebuild only when the content set actually changes"
+                )
+                if authored_code:
+                    issues.append(churn_msg)
+                else:
+                    warnings.append(churn_msg)
+            # ③ 死键注册:addKey 解析不出 keycode(如 KeyCodes["2"] 而非 KeyCodes.TWO)
+            #    —— 注册成功但永远不触发的快捷键。
+            invalid_keys = probe_counts.get("key:invalid", 0)
+            if probe_ready and invalid_keys > 0:
+                invalid_key_msg = (
+                    "keyboard keys registered with invalid key codes: "
+                    f"{invalid_keys} addKey() call(s) resolved to no key code (for example "
+                    'KeyCodes["2"] instead of KeyCodes.TWO for the 2 key) — these hotkeys can never fire; '
+                    "resolve every binding through Phaser.Input.Keyboard.KeyCodes constants and mind the "
+                    "Digit (ONE/TWO/…), Space, and Arrow names"
+                )
+                if authored_code:
+                    issues.append(invalid_key_msg)
+                else:
+                    warnings.append(invalid_key_msg)
+            # ④ 画布 0×0:游戏在跑但完全不可见(样式竞态/尺寸接线) —— 独立打开
+            #    发布包时的隐形黑屏。脚手架已内联关键尺寸样式,此探针是回归哨兵。
+            if probe_counts.get("canvas:zerosize", 0) > 0:
+                warnings.append(
+                    "game canvas measured 0x0 after load — the page runs but renders invisible "
+                    "(stylesheet race or scale wiring); keep the inline critical sizing in index.html"
                 )
             capability_sources = [
                 (
@@ -958,6 +1155,30 @@ def _gameplay_qa(state: dict) -> dict:
                 isinstance(a, dict) and str(a.get("kind")) == "spritesheet" and a.get("frames")
                 for a in manifest_assets
             )
+            semantic_sprite_manifest = (state.get("asset_manifest") or {}).get("sprite_demand_manifest") or {}
+            semantic_runtime_manifest = semantic_sprite_manifest.get("runtime_manifest") or {}
+            semantic_metrics = semantic_sprite_manifest.get("metrics") or {}
+            if semantic_runtime_manifest:
+                semantic_tokens = ("spriteframe", "semanticframe", "semantic_frames", "semanticframes")
+                if not any(token in gameplay_low for token in semantic_tokens):
+                    semantic_msg = (
+                        "semantic sprite manifest is available but gameplay never resolves semantic IDs; "
+                        "use spriteFrame()/semanticFrame() instead of sheet indices or positional frame names"
+                    )
+                    if authored_code:
+                        issues.append(semantic_msg)
+                    else:
+                        warnings.append(semantic_msg)
+                unused_required = int(semantic_metrics.get("unused_required_frame") or 0)
+                if unused_required:
+                    coverage_msg = (
+                        f"sprite demand manifest has {unused_required} unused required frame(s); "
+                        "remove unconsumed demands or add the missing runtime consumer before publishing"
+                    )
+                    if authored_code:
+                        issues.append(coverage_msg)
+                    else:
+                        warnings.append(coverage_msg)
             has_bg_asset = any(
                 isinstance(a, dict) and str(a.get("kind")) == "image" and "background" in str(a.get("key") or "")
                 for a in manifest_assets
@@ -1056,12 +1277,24 @@ def _gameplay_qa(state: dict) -> dict:
                 and _probe_total("spawn:enemy") == 0
                 and _probe_total("spawn:boss") == 0
             ):
-                warnings.append(
+                roster_msg = (
                     f"declared enemy roster never spawned during the sandbox replay: the design lists "
                     f"{len(enemy_roster)} enemy/boss archetypes but no spawn:enemy/spawn:boss probes fired — "
                     "either combat never starts in the first seconds or actor spawn points are missing "
                     'Probe.spawn("enemy", id) instrumentation'
                 )
+                # design_driven(自由 archetype)的对手就是游戏的核心机制——名册
+                # 全灭说明玩法退化成了别的游戏,升级为可修复 issue;模板类保持
+                # 软告警(沙箱窗口短,波次可能真的没开打)。
+                requires_genre_fidelity = bool(
+                    (((state.get("game_design") or {}).get("balance") or {}).get("qa") or {}).get(
+                        "requires_genre_fidelity"
+                    )
+                )
+                if authored_code and requires_genre_fidelity:
+                    issues.append(roster_msg)
+                else:
+                    warnings.append(roster_msg)
             # 阻挡类实体防线:设计声明了 obstacle 桶实体(掩体/墙/平台/砖块...),
             # 玩法代码却毫无对应痕迹 —— 枪战没掩体就退化成空场对枪(2026-07-12
             # 用户实测反馈)。作者产物走修复回环,模板/修订只提示。token 词表须
@@ -1134,6 +1367,9 @@ def _gameplay_qa(state: dict) -> dict:
             else dict(
                 sorted((getattr(browser_result, "probes", {}) or {}).items())[:60]
             ),
+            "sandbox_frames_start": None
+            if browser_result is None
+            else int(getattr(browser_result, "frames_start", 0) or 0),
             "visual_review": visual_verdict,
             ("uses_three_webgl" if is_3d else "uses_gradient_or_glow"): depth_metric,
         },
@@ -1190,6 +1426,13 @@ def _gameplay_qa_log_lines(result: dict) -> list[str]:
                     f"backdrop_draws={_total('backdrop:draw')}, anims_plays={_total('anims:play')}, "
                     f"enemy_spawns={_total('spawn:enemy') + _total('spawn:boss')}, "
                     f"projectiles={_total('projectile:spawn')}"
+                )
+                lines.append(
+                    "input probes: "
+                    f"dom_pointer={probes.get('dom:down|pointer', 0)}, "
+                    f"processed_downs={_total('input:down')}, "
+                    f"interactive_regs={probes.get('ui:interactive', 0)}, "
+                    f"invalid_keys={probes.get('key:invalid', 0)}"
                 )
     review = m.get("visual_review")
     if review:

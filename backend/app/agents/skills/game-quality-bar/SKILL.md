@@ -36,9 +36,12 @@ Passing the DOM string through unchanged compiles and animates normally while
 all keyboard controls remain inert.
 
 ```ts
+const DIGIT_NAMES = ["ZERO", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE"];
 const phaserKeyName = (code: string): string => {
   if (code.startsWith("Key")) return code.slice(3).toUpperCase();
-  if (code.startsWith("Digit")) return code.slice(5);
+  // Digit keys resolve by NAME: KeyCodes.TWO exists, KeyCodes["2"] does NOT —
+  // addKey("2") silently registers a key that can never fire.
+  if (code.startsWith("Digit")) return DIGIT_NAMES[Number(code.slice(5))] ?? code;
   return ({
     ArrowUp: "UP", ArrowDown: "DOWN", ArrowLeft: "LEFT", ArrowRight: "RIGHT",
     Space: "SPACE", Escape: "ESC", Enter: "ENTER", Tab: "TAB",
@@ -48,9 +51,54 @@ const phaserKeyName = (code: string): string => {
 keyboard.addKey(phaserKeyName(savedDomCode), false, false);
 ```
 
+After registering, sanity-check the resolved code: `Phaser.Input.Keyboard.KeyCodes[name]`
+must be a number for every binding you registered. QA runs a runtime probe that
+fails the build when any `addKey` resolved to no key code.
+
 Keep capture/storage and runtime registration separate. Before declaring input
 complete, exercise every advertised primary control and confirm it changes a
 rules-owned state or visible actor, not just that `addKey` appears in source.
+
+## UI panels & world input — build once, layer correctly
+
+Four interaction defects reliably reach players and are all QA-gated at runtime:
+
+1. **Never rebuild UI per frame.** A panel or button that is destroyed and
+   recreated inside an update path renders normally but NEVER becomes
+   clickable: `setInteractive` queues the object for input insertion on the
+   next frame, and a per-tick rebuild kills it before that frame arrives (it
+   also leaks objects). Build every toolbar/panel/modal once; update its
+   text/visibility/fill in place; rebuild only when the content SET changes,
+   keyed on a state change signal (day counter, version), never on raw tick.
+   A fixed-timestep simulation that returns a fresh state object every call
+   must expose a cheap `version`/`day` field so presentation can compare.
+2. **Separate UI clicks from world input.** A raw
+   `scene.input.on("pointerdown", ...)` world handler also fires when the
+   player presses a HUD button — placing buildings or attacking underneath the
+   UI (and behind opaque HUD bars where the result is invisible but still
+   charged). Register stage handlers through `InputRouter.worldPointer(scene,
+   {down, move, up})` (skips presses over ANY interactive object, keeps a drag
+   that started on the stage alive across UI) and `InputRouter.shield(panel)`
+   every opaque panel rectangle so it swallows presses in its area.
+3. **Toggle visuals derive from state.** After a click handler toggles
+   something (overlay, speed, pause), read the resulting state to set the
+   button highlight; never hardcode "selected" in the handler. Keep one
+   open/visible flag per panel and update it on EVERY close path (the panel's
+   own close button included), or the opener dead-clicks on the next press.
+4. **Thresholds are visible and actionable.** Show current/target on the HUD
+   for every numeric win/lose threshold ("population 200/500"), and explain
+   blocked progress with its cause (for example a building's road network has
+   no power plant) instead of a bare warning icon. For placement/builder
+   games: apply the valid cells of a multi-cell drag instead of rejecting the
+   whole batch over one blocked cell, and preview per-cell legality.
+5. **Range mechanics must match the taught layout, and failures must say so.**
+   If services have a range limit (power within N road steps, tower radius),
+   check the distances of the layout your tutorial/regions actually prescribe —
+   a 10-step service radius with homes and utilities pinned to opposite corners
+   makes the opening unwinnable while the aggregate supply/demand HUD still
+   looks healthy. Give every non-operating building a badge naming the missing
+   prerequisite ("no road" / "out of power range" / "no water"): income sits at
+   zero forever exactly when players cannot see why.
 
 ## Design for the embedded play surface
 
@@ -241,5 +289,10 @@ Show the multiplier in the HUD and celebrate milestones with `floatText` + `puls
 - Hard fail: no feedback effects anywhere in gameplay code (no Juice usage, no
   tweens/particles/shake), or authored games that still contain
   GW_PLACEHOLDER_GAMEPLAY.
+- Hard fail (runtime input probes): pointer presses reach the page but no scene
+  processes them; interactive objects re-registered every frame during the quiet
+  observation window (UI rebuilt per tick = unclickable buttons); any `addKey`
+  call that resolved to no key code.
 - Warnings that reviewers read: no audio usage, flat art (no glow/gradient/tint),
-  shooters without projectiles or a boss climax.
+  shooters without projectiles or a boss climax, a canvas measuring 0x0 after
+  load (stylesheet race), animation groups that never play, dead exports.

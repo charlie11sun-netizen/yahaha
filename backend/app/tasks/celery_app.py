@@ -1,5 +1,5 @@
 from celery import Celery
-from celery.signals import task_postrun, task_prerun
+from celery.signals import setup_logging, task_postrun, task_prerun
 
 from app.core.config import settings
 from app.core.telemetry import (
@@ -17,12 +17,18 @@ celery = Celery(
     "gameweave",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
-    include=["app.tasks.generate", "app.tasks.memory", "app.tasks.outbox"],
+    include=[
+        "app.tasks.generate",
+        "app.tasks.memory",
+        "app.tasks.outbox",
+        "app.tasks.traces",
+    ],
 )
 celery.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     task_track_started=True,
+    worker_hijack_root_logger=False,
     worker_prefetch_multiplier=1,
     worker_max_memory_per_child=settings.WORKER_MAX_MEMORY_PER_CHILD,
     # Must be greater than generate_game's hard time limit. With acks_late,
@@ -37,6 +43,10 @@ celery.conf.update(
             "task": "purge_expired_memories",
             "schedule": 24 * 60 * 60,
         },
+        "purge-expired-agent-traces-daily": {
+            "task": "purge_expired_agent_traces",
+            "schedule": 24 * 60 * 60,
+        },
         "dispatch-generation-outbox": {
             "task": "dispatch_generation_outbox",
             "schedule": settings.GENERATION_OUTBOX_SCAN_INTERVAL_SECONDS,
@@ -44,6 +54,13 @@ celery.conf.update(
     },
 )
 init_otel(service_name="gameweave-worker")
+
+
+@setup_logging.connect
+def _configure_worker_logging(**_kwargs):
+    # A setup_logging receiver prevents Celery from replacing the root handlers.
+    # Force a reinstall in case another bootstrap hook mutated them after import.
+    configure_logging(force=True)
 
 
 @task_prerun.connect

@@ -15,10 +15,16 @@ def asset_generation_node(state: dict) -> dict:
     assets = list(current.get("assets") or [])
     assets.extend(result["manifest_entries"])
     current["assets"] = assets
+    current["asset_trace"] = list(current.get("asset_trace") or []) + list(result.get("asset_trace") or [])
+    if result.get("sprite_demand_manifest"):
+        current["sprite_demand_manifest"] = result["sprite_demand_manifest"]
     logs = result["logs"] or ["generated assets: disabled or no eligible requests"]
     return {
         "asset_manifest": current,
         "generated_assets": result["artifacts"],
+        "asset_trace": result.get("asset_trace") or [],
+        "sprite_demand_manifest": result.get("sprite_demand_manifest") or {},
+        "asset_request_count": result.get("asset_request_count", len(result.get("manifest_entries") or [])),
         "_agent": "GameAssetGenerationAgent",
         "_logs": logs + [f"generated artifact files: {len(result['artifacts'])}"],
     }

@@ -809,12 +809,18 @@ def _with_contract_file(
 
 
 def _compact_brief(spec: dict, design: dict) -> dict:
-    return {
+    brief = {
         "title": spec.get("title"),
         "genre": spec.get("genre") or design.get("archetype"),
         "core_loop": spec.get("core_loop"),
         "signature_twist": design.get("signature_twist"),
     }
+    # 实现作者看不到完整 design,但关卡几何不能少:level_layout 是"画出来的
+    # 背景 = 碰撞几何 = 敌人路线"的共同事实源(gameConfig.levelLayout 里有
+    # 换算好的像素版,LevelLayout.ts 直接消费)。
+    if design.get("level_layout"):
+        brief["level_layout"] = design["level_layout"]
+    return brief
 
 
 def _contract_input(
@@ -823,6 +829,7 @@ def _contract_input(
     runtime: str,
     dimension: str,
     qa_feedback: list | None,
+    chained: bool = False,
 ) -> str:
     parts = [
         "Produce the frozen architecture contract for this generated game project.",
@@ -831,9 +838,18 @@ def _contract_input(
         f"Runtime: {runtime}; dimension: {dimension}",
         "Do not inspect workspace files or call tools; use the supplied scaffold context and return JSON only.",
     ]
+    if chained:
+        # The replayed planning conversation contains the raw pre-merge design
+        # draft; the JSON in this message has balance/content plans merged in.
+        parts.insert(
+            1,
+            "The planning conversation above explains the intent behind this design. "
+            "Where the GameSpec/GameDesign JSON below differs from any earlier draft "
+            "in that conversation, the JSON below is canonical and wins.",
+        )
     if qa_feedback:
         parts.insert(
-            3,
+            4 if chained else 3,
             "Previous gameplay QA findings:\n"
             + "\n".join(f"- {item}" for item in qa_feedback),
         )

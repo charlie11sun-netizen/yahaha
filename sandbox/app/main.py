@@ -80,6 +80,12 @@ class RunResponse(BaseModel):
     # Aggregated runtime behavior probes reported by the game's scaffold
     # (window.__GW_PROBES__.counts): "scene:start|PlayScene" -> 3 etc.
     probes: dict[str, int] = Field(default_factory=dict)
+    # Probe counters sampled at the START of the quiet observation tail (after
+    # load + input simulation settle). The delta to `probes` covers a window
+    # with no scene transitions, so a large `ui:interactive` delta there means
+    # UI is being rebuilt every frame rather than built once.
+    probes_start: dict[str, int] = Field(default_factory=dict)
+    frames_start: int = 0
 
 
 class ViteBuildRequest(BaseModel):
@@ -160,7 +166,18 @@ def _decode_files(files: list[BundleFile]) -> dict[str, bytes]:
 async def _launch_browser() -> Browser:
     if state.playwright is None:
         state.playwright = await async_playwright().start()
-    launch_args: list[str] = ["--disable-dev-shm-usage", "--disable-crash-reporter"]
+    launch_args: list[str] = [
+        "--disable-dev-shm-usage",
+        "--disable-crash-reporter",
+        # Keep rAF/timers running even when Chromium considers the page hidden
+        # or occluded. A throttled page freezes WebGL games mid-run: frames stop,
+        # every compositor screenshot waits forever, and the input→visual-change
+        # probe silently dies (像素市长 2026-07-17: both QA visual checks skipped
+        # because the first screenshot timed out).
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+    ]
     if settings.chromium_no_sandbox:
         launch_args.append("--no-sandbox")
     return await state.playwright.chromium.launch(headless=True, args=launch_args)  # type: ignore[union-attr]
@@ -223,14 +240,16 @@ _INIT_SCRIPT = r"""
 """
 
 
-def _visual_metrics(before: bytes | None, after: bytes | None) -> dict[str, object]:
+def _visual_metrics(
+    before: bytes | None, after: bytes | None, method: str = "page-screenshot"
+) -> dict[str, object]:
     if before is None or after is None:
         return {}
     size = max(len(before), len(after))
     mismatches = abs(len(before) - len(after))
     mismatches += sum(left != right for left, right in zip(before, after, strict=False))
     return {
-        "visual_probe": "page-screenshot-png-byte-diff",
+        "visual_probe": f"{method or 'page-screenshot'}-png-byte-diff",
         "visual_before_sha256": hashlib.sha256(before).hexdigest(),
         "visual_after_sha256": hashlib.sha256(after).hexdigest(),
         "visual_changed": before != after,
@@ -238,31 +257,77 @@ def _visual_metrics(before: bytes | None, after: bytes | None) -> dict[str, obje
     }
 
 
-async def _capture_page(page: Page) -> tuple[bytes | None, str]:
-    # CDP first: Page.captureScreenshot does not wait for document.fonts.ready,
-    # which never resolves on some generated bundles (a registered FontFace that
-    # never loads) and made page.screenshot() time out forever.
-    try:
-        session = await page.context.new_cdp_session(page)
+# Reads the last rendered WebGL buffer directly, so it works even when the
+# compositor never produces a frame (hidden/occluded/GPU-starved pages make
+# CDP screenshots time out). Capturing inside a rAF callback keeps the grab in
+# the same animation-frame task as the game's render, where the drawing buffer
+# (preserveDrawingBuffer:false) is still valid; the timeout fallback covers
+# pages whose rAF is stalled entirely.
+_CANVAS_CAPTURE_JS = """() => new Promise((resolve) => {
+  const canvas = document.querySelector("canvas");
+  if (!canvas) { resolve(null); return; }
+  let settled = false;
+  const grab = () => {
+    if (settled) return;
+    settled = true;
+    try { resolve(canvas.toDataURL("image/png")); } catch (error) { resolve(null); }
+  };
+  try { requestAnimationFrame(() => grab()); } catch (error) { grab(); }
+  setTimeout(grab, 1200);
+})"""
+
+
+async def _capture_page(page: Page, prefer: str | None = None) -> tuple[bytes | None, str, str]:
+    """Capture the page as PNG. Returns (bytes, error, method). `prefer` pins
+    the method that produced the before-shot so before/after byte diffs stay
+    comparable."""
+    errors: list[str] = []
+
+    async def _cdp() -> bytes | None:
+        # CDP first: Page.captureScreenshot does not wait for
+        # document.fonts.ready, which never resolves on some generated bundles
+        # and made page.screenshot() time out forever.
         try:
-            data = await asyncio.wait_for(
-                session.send("Page.captureScreenshot", {"format": "png"}),
-                timeout=2.5,
-            )
-            raw = base64.b64decode(data.get("data") or "")
-            if raw:
-                return raw, ""
-        finally:
+            session = await page.context.new_cdp_session(page)
             try:
-                await session.detach()
-            except PlaywrightError:
-                pass
-    except (PlaywrightError, TimeoutError, ValueError, KeyError):
-        pass
-    try:
-        return await page.screenshot(type="png", timeout=2500), ""
-    except PlaywrightError as exc:
-        return None, " ".join(str(exc).split())[:300]
+                data = await asyncio.wait_for(
+                    session.send("Page.captureScreenshot", {"format": "png"}),
+                    timeout=4.0,
+                )
+                return base64.b64decode(data.get("data") or "") or None
+            finally:
+                try:
+                    await session.detach()
+                except PlaywrightError:
+                    pass
+        except (PlaywrightError, TimeoutError, ValueError, KeyError) as exc:
+            errors.append(f"cdp: {' '.join(str(exc).split())[:160]}")
+            return None
+
+    async def _canvas() -> bytes | None:
+        try:
+            data_url = await asyncio.wait_for(page.evaluate(_CANVAS_CAPTURE_JS), timeout=3.0)
+        except (PlaywrightError, TimeoutError) as exc:
+            errors.append(f"canvas: {' '.join(str(exc).split())[:160]}")
+            return None
+        if isinstance(data_url, str) and data_url.startswith("data:image/png;base64,"):
+            try:
+                return base64.b64decode(data_url.split(",", 1)[1]) or None
+            except ValueError:
+                return None
+        return None
+
+    methods: list[tuple[str, object]] = [
+        ("cdp-screenshot", _cdp),
+        ("canvas-todataurl", _canvas),
+    ]
+    if prefer:
+        methods.sort(key=lambda item: 0 if item[0] == prefer else 1)
+    for name, capture in methods:
+        raw = await capture()  # type: ignore[operator]
+        if raw:
+            return raw, "", name
+    return None, "; ".join(errors)[:300], ""
 
 
 async def _simulate_game_inputs(page: Page) -> tuple[list[str], list[str], list[str]]:
@@ -370,13 +435,25 @@ async def _drive_page(
                 break
             await page.wait_for_timeout(250)
         await page.wait_for_timeout(min(180, max(60, timeout_ms // 30)))
-        before_screenshot, before_error = await _capture_page(page)
+        before_screenshot, before_error, capture_method = await _capture_page(page)
         if before_error:
             visual_probe_errors.append(f"before: {before_error}")
         if simulate_input:
             inputs_sent, start_attempts, input_errors = await _simulate_game_inputs(page)
-        await page.wait_for_timeout(min(500, max(120, timeout_ms // 10)))
-        after_screenshot, after_error = await _capture_page(page)
+        # Let input effects finish (scene starts, one-time UI builds), then
+        # sample probes and observe a quiet tail: interactive registrations
+        # accumulating DURING the tail expose per-frame UI rebuild churn
+        # without misreading a legitimate scene-build burst.
+        await page.wait_for_timeout(min(700, max(120, timeout_ms // 10)))
+        probes_start = await _collect_probes(page)
+        try:
+            frames_start = int(await page.evaluate("window.__sandboxFrameCount || 0"))
+        except PlaywrightError:
+            frames_start = 0
+        await page.wait_for_timeout(min(1400, max(600, timeout_ms // 16)))
+        after_screenshot, after_error, _after_method = await _capture_page(
+            page, prefer=capture_method or None
+        )
         if after_error:
             visual_probe_errors.append(f"after: {after_error}")
         try:
@@ -394,7 +471,7 @@ async def _drive_page(
             raw = after_screenshot or before_screenshot
             if raw is not None:
                 screenshot_b64 = base64.b64encode(raw).decode("ascii")
-        visual_metrics = _visual_metrics(before_screenshot, after_screenshot)
+        visual_metrics = _visual_metrics(before_screenshot, after_screenshot, capture_method)
         return RunResponse(
             ok=ok,
             page_errors=page_errors,
@@ -411,6 +488,8 @@ async def _drive_page(
             input_errors=input_errors,
             visual_probe_error="; ".join(visual_probe_errors),
             probes=probes,
+            probes_start=probes_start,
+            frames_start=frames_start,
             **visual_metrics,
         )
     finally:
@@ -425,9 +504,9 @@ async def _run_with_timeout(payload: RunRequest) -> RunResponse:
     timeout_ms = payload.timeout_ms or settings.default_timeout_ms
     browser = await _ensure_browser()
     try:
-        # Post-load work (input simulation, two screenshots, settle waits) can
-        # take several seconds on WebGL pages; the old +2.5s headroom flagged
-        # slow-but-successful loads as timeouts.
+        # Post-load work (input simulation, two screenshot fallback chains, the
+        # churn-observation tail) can take ~10s on WebGL pages; a tight headroom
+        # flagged slow-but-successful loads as timeouts.
         result = await asyncio.wait_for(
             _drive_page(
                 browser,
@@ -437,7 +516,7 @@ async def _run_with_timeout(payload: RunRequest) -> RunResponse:
                 payload.simulate_input,
                 payload.screenshot_always,
             ),
-            timeout=(timeout_ms + 8_000) / 1000,
+            timeout=(timeout_ms + 12_000) / 1000,
         )
     except TimeoutError:
         result = RunResponse(

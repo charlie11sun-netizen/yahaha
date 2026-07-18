@@ -1,5 +1,6 @@
 """ORM → 前端 DTO 序列化（字段对齐 GameWeave 设计稿 + Create 生成控制台）。"""
 import json
+from collections import defaultdict
 from datetime import datetime, timezone
 
 from app import schemas
@@ -57,6 +58,8 @@ _PROGRESS = {"safety_intake": 10, "intent_spec": 18, "gameplay_planning": 30,
              "feedback_understanding": 25, "code_revision": 55, "revision_repair": 65,
              "publish_revision": 96, "publish_remix": 96, "memory_retrieval": 14, "memory_update": 98}
 _ST = {"done": "completed", "running": "running", "failed": "failed"}
+DEFAULT_TASK_LOG_PAGE_SIZE = 200
+MAX_TASK_LOG_PAGE_SIZE = 500
 
 
 def fmt(n: int) -> str:
@@ -163,9 +166,30 @@ def _parse(raw):
     if not raw:
         return {}
     try:
-        return json.loads(raw)
+        value = json.loads(raw)
+        return value if isinstance(value, dict) else {}
     except Exception:
         return {}
+
+
+def _parse_value(raw):
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return raw
+
+
+def _trace_preview(raw, limit: int = 4000):
+    value = _parse_value(raw)
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+    except Exception:
+        return value
+    if len(encoded) <= limit:
+        return value
+    return {"_trace_truncated": True, "chars": len(encoded), "preview": encoded[:limit]}
 
 
 def _parse_log_payload(raw):
@@ -254,8 +278,8 @@ def _agent_log_entry_out(log) -> dict:
     }
 
 
-def _agent_log_item_out(step) -> dict:
-    logs = list(step.logs or [])
+def _agent_log_item_out(step, logs_override: list | None = None) -> dict:
+    logs = list(step.logs or []) if logs_override is None else logs_override
     return {
         "step_id": step.id,
         "agent_name": step.agent,
@@ -266,6 +290,49 @@ def _agent_log_item_out(step) -> dict:
         "status": _ST.get(step.status, "pending"),
         "lines": [log.line for log in logs],
         "entries": [_agent_log_entry_out(log) for log in logs],
+    }
+
+
+def _log_id(log) -> int:
+    try:
+        return int(getattr(log, "id", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _task_log_page(t, *, limit: int | None, before: int | None) -> tuple[dict[str, list], dict]:
+    """Select a bounded task-log page while retaining per-step DTO shape."""
+
+    all_pairs = [
+        (step, log)
+        for step in t.steps
+        for log in (step.logs or [])
+    ]
+    all_pairs.sort(key=lambda pair: (_log_id(pair[1]), pair[0].seq, pair[1].seq))
+    total = len(all_pairs)
+    candidates = (
+        [pair for pair in all_pairs if _log_id(pair[1]) < before]
+        if before is not None
+        else all_pairs
+    )
+    if limit is None:
+        selected = candidates
+        normalized_limit = None
+    else:
+        normalized_limit = max(1, min(int(limit), MAX_TASK_LOG_PAGE_SIZE))
+        selected = candidates[-normalized_limit:]
+    has_more = len(candidates) > len(selected)
+    next_before = _log_id(selected[0][1]) if has_more and selected else None
+    by_step: dict[str, list] = defaultdict(list)
+    for step, log in selected:
+        by_step[step.id].append(log)
+    return by_step, {
+        "limit": normalized_limit,
+        "before": before,
+        "next_before": next_before,
+        "has_more": has_more,
+        "total": total,
+        "returned": len(selected),
     }
 
 
@@ -299,10 +366,17 @@ def task_event_delta_out(t, rows: list[tuple[object, object]], cursor: int) -> d
     return {"cursor": int(cursor), "task": summary, "logs": logs, "steps": steps}
 
 
-def task_out(t, include_details: bool = True) -> dict:
+def task_out(
+    t,
+    include_details: bool = True,
+    *,
+    logs_limit: int | None = DEFAULT_TASK_LOG_PAGE_SIZE,
+    logs_before: int | None = None,
+) -> dict:
     """完整任务 DTO。include_details=False 产出列表用的轻量 summary：
     跳过 logs / steps / design / assets 与逐步日志行 —— 任务详情由 SSE 实时更新，
-    列表只做 30s 低频兜底刷新，避免全量 payload 随任务积累线性爆炸。"""
+    列表只做 30s 低频兜底刷新；详情日志默认返回最新一页，避免全量
+    ``logs + entries`` 随任务积累线性爆炸，可用 ``logs_before`` 翻页读取更早日志。"""
     spec, design = _parse(t.spec_json), _parse(t.design_json)
     steps_by_agent = {s.agent: s for s in t.steps}
     latest_event_at = _latest_task_event_at(t, scan_logs=include_details)
@@ -360,18 +434,35 @@ def task_out(t, include_details: bool = True) -> dict:
     if not include_details:
         return out
 
+    logs_by_step, logs_page = _task_log_page(t, limit=logs_limit, before=logs_before)
     out["design"] = _design_preview(spec, design)
     out["assets"] = [
         {"name": a.filename, "type": "uploaded", "status": "已上传",
          "kind": a.kind, "scan_status": a.scan_status, "url": presigned_asset_url(a)}
         for a in t.assets
     ]
-    out["logs"] = [_agent_log_item_out(s) for s in t.steps]
+    out["logs"] = [_agent_log_item_out(s, logs_by_step.get(s.id, [])) for s in t.steps]
     out["steps"] = [
         {"seq": s.seq, "agent": s.agent, "name": s.name, "status": s.status,
          "tokens": getattr(s, "tokens", 0), "attempt": getattr(s, "attempt", 1),
          "caused_by_step_id": getattr(s, "caused_by_step_id", None),
-         "logs": [log.line for log in s.logs]}
+         "contract_version": getattr(s, "contract_version", None),
+         "prompt_version": getattr(s, "prompt_version", None),
+         "model": getattr(s, "model", None),
+         "provider": getattr(s, "provider", None),
+         "input_artifact_ids": _parse_value(getattr(s, "input_artifact_ids_json", None)),
+         "output_artifact_ids": _parse_value(getattr(s, "output_artifact_ids_json", None)),
+         "adopted_plan": _trace_preview(getattr(s, "adopted_plan", None)),
+         "rejected_plans": _trace_preview(getattr(s, "rejected_plans_json", None)),
+         "asset_request_count": getattr(s, "asset_request_count", 0),
+         "qa_result": _trace_preview(getattr(s, "qa_result_json", None)),
+         "repair_reason": _trace_preview(getattr(s, "repair_reason", None)),
+         "impact_scope": _trace_preview(getattr(s, "impact_scope_json", None)),
+         "latency_ms": getattr(s, "latency_ms", 0),
+         "cost_usd": _decimal_float(getattr(s, "cost_usd", None)),
+         "runtime_consumed": getattr(s, "runtime_consumed", None),
+         "logs": [log.line for log in logs_by_step.get(s.id, [])]}
         for s in t.steps
     ]
+    out["logs_page"] = logs_page
     return out

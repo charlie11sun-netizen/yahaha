@@ -70,17 +70,23 @@ def bind_context(**values: str | None) -> None:
         "node_name": _node_name,
     }
     bound: dict[str, str] = {}
+    unbound: list[str] = []
     for key, value in values.items():
         var = mapping.get(key)
         if not var:
             continue
         var.set(value)
-        if value is not None:
+        if value is None:
+            unbound.append(key)
+        else:
             bound[key] = value
     structlog = _maybe_structlog()
-    if structlog and bound:
+    if structlog:
         try:
-            structlog.contextvars.bind_contextvars(**bound)
+            if unbound:
+                structlog.contextvars.unbind_contextvars(*unbound)
+            if bound:
+                structlog.contextvars.bind_contextvars(**bound)
         except Exception:  # noqa: BLE001
             pass
 
@@ -102,15 +108,22 @@ def clear_context() -> None:
             pass
 
 
-def configure_logging() -> None:
+def configure_logging(*, force: bool = False) -> None:
     global _LOGGING_CONFIGURED
-    if _LOGGING_CONFIGURED:
+    if _LOGGING_CONFIGURED and not force:
         return
-    _LOGGING_CONFIGURED = True
+
+    level_name = (settings.LOG_LEVEL or "INFO").strip().upper()
+    level = getattr(logging, level_name, None)
+    if not isinstance(level, int):
+        raise ValueError(
+            f"Invalid LOG_LEVEL {settings.LOG_LEVEL!r}; expected one of "
+            "DEBUG, INFO, WARNING, ERROR, CRITICAL"
+        )
 
     root = logging.getLogger()
     root.handlers.clear()
-    root.setLevel(logging.INFO)
+    root.setLevel(level)
     handler = logging.StreamHandler(sys.stdout)
 
     structlog = _maybe_structlog()
@@ -148,6 +161,7 @@ def configure_logging() -> None:
     else:
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     root.addHandler(handler)
+    _LOGGING_CONFIGURED = True
 
 
 def get_logger(name: str):

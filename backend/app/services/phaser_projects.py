@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from functools import lru_cache
 from html import escape
 
 from app.services.artifacts import text_artifact
@@ -91,12 +92,16 @@ def _free_params(balance: dict | None, design: dict | None) -> dict[str, float]:
     return params
 
 
-def _asset_catalog(asset_manifest: dict | None) -> tuple[list[dict], dict, list[dict], dict | None]:
+def _asset_catalog(
+    asset_manifest: dict | None,
+) -> tuple[list[dict], dict, list[dict], dict | None, dict[str, float], dict]:
     entries: list[dict] = []
     image_keys: list[str] = []
     backgrounds: list[str] = []
     sheets: list[dict] = []
     tilemap: dict | None = None
+    backdrop_dims: dict[str, float] = {}
+    sprite_demand_manifest = dict((asset_manifest or {}).get("sprite_demand_manifest") or {})
     for raw in (asset_manifest or {}).get("assets") or []:
         if not isinstance(raw, dict):
             continue
@@ -118,6 +123,8 @@ def _asset_catalog(asset_manifest: dict | None) -> tuple[list[dict], dict, list[
                 # 设计实体多时图集溢出为多页(sheet, sheet-2...):全部收集,
                 # gameplay 代码经 sheetFrame() 跨页找帧。
                 raw_animations = raw.get("animations")
+                raw_meta = raw.get("frame_meta")
+                raw_families = raw.get("tile_families")
                 sheets.append(
                     {
                         "key": key,
@@ -134,6 +141,40 @@ def _asset_catalog(asset_manifest: dict | None) -> tuple[list[dict], dict, list[
                             str(base)[:64]: [str(name)[:64] for name in names if isinstance(name, str)]
                             for base, names in (raw_animations.items() if isinstance(raw_animations, dict) else ())
                             if isinstance(names, (list, tuple)) and names
+                        },
+                        # 帧语义(素材规划期的格描述):作者绑定实体↔帧的唯一依据。
+                        # 帧名(entity_3)不携带含义,靠顺序猜会整局换皮(2026-07-17)。
+                        "frameMeta": {
+                            str(name)[:64]: str(text)[:120]
+                            for name, text in (raw_meta.items() if isinstance(raw_meta, dict) else ())
+                            if isinstance(text, str) and text
+                        },
+                        "semanticFrames": {
+                            str(semantic_id)[:96]: dict(value)
+                            for semantic_id, value in (raw.get("semantic_frames") or {}).items()
+                            if isinstance(value, dict)
+                        },
+                        "frameAudit": dict(raw.get("frame_audit") or {}),
+                        "frameIds": {
+                            str(name)[:64]: int(index)
+                            for name, index in (raw.get("frame_ids") or {}).items()
+                            if isinstance(index, (int, float)) and not isinstance(index, bool)
+                        },
+                        "frameSemantics": {
+                            str(name)[:64]: str(semantic_id)[:96]
+                            for name, semantic_id in (raw.get("frame_semantics") or {}).items()
+                            if isinstance(semantic_id, str)
+                        },
+                        # 可连接图块族(道路/管道/铁轨):base → {straight/end/corner/
+                        # tee/cross: 帧名},运行时 tileVariant() 按邻接掩码选帧+旋转。
+                        "tileFamilies": {
+                            str(base)[:64]: {
+                                str(slot)[:16]: str(frame)[:64]
+                                for slot, frame in family.items()
+                                if isinstance(frame, str) and frame
+                            }
+                            for base, family in (raw_families.items() if isinstance(raw_families, dict) else ())
+                            if isinstance(family, dict) and family
                         },
                     }
                 )
@@ -156,6 +197,12 @@ def _asset_catalog(asset_manifest: dict | None) -> tuple[list[dict], dict, list[
                 # 场景变体(background, background-2...)全部收集;它们是舞台
                 # 不是演员,一张都不能漏进 player/enemy 回退键。
                 backgrounds.append(key)
+                # 素材管线实测过亮度的背景带 luma(0-255):越暗的图运行时压暗
+                # 蒙版越轻,避免"prompt 暗 + 蒙版再暗"叠出纯黑画面。没有 luma
+                # 的旧 manifest 不进表,运行时用默认 dim。
+                luma = raw.get("luma")
+                if isinstance(luma, (int, float)) and not isinstance(luma, bool):
+                    backdrop_dims[key] = round(max(0.0, min(0.35, (float(luma) - 40.0) / 220.0)), 3)
             elif str(raw.get("role") or "") == "tileset" or "tile" in key:
                 pass  # tileset 图片不是演员,别污染 player/enemy 回退键
             else:
@@ -169,7 +216,74 @@ def _asset_catalog(asset_manifest: dict | None) -> tuple[list[dict], dict, list[
         "enemy": image_keys[1] if len(image_keys) > 1 else "enemy-fallback",
         "reward": "reward-fallback",
     }
-    return entries, keys, sheets, tilemap
+    return entries, keys, sheets, tilemap, backdrop_dims, sprite_demand_manifest
+
+
+def _level_layout_px(design: dict, width: int, height: int) -> dict | None:
+    """design.level_layout (cell grid) → pixel-space geometry for gameConfig.
+
+    规划层已把布局钳成合法网格;这里一次性换算成像素矩形/路点,运行时代码
+    (LevelLayout.ts、作者代码)零网格数学。返回 None = 设计没给布局。
+    """
+    layout = design.get("level_layout") if isinstance(design, dict) else None
+    if not isinstance(layout, dict):
+        return None
+    grid = layout.get("grid") or {}
+    cols = _number(grid.get("cols"), 24, 4, 96)
+    rows = _number(grid.get("rows"), 14, 4, 64)
+    cell_w = width / cols
+    cell_h = height / rows
+
+    def _rect(span) -> dict | None:
+        if not isinstance(span, (list, tuple)) or len(span) < 4:
+            return None
+        c0, r0, c1, r1 = (int(v) for v in span[:4])
+        return {
+            "x": round(c0 * cell_w, 1),
+            "y": round(r0 * cell_h, 1),
+            "width": round((c1 - c0 + 1) * cell_w, 1),
+            "height": round((r1 - r0 + 1) * cell_h, 1),
+        }
+
+    def _center(cell) -> dict | None:
+        if not isinstance(cell, (list, tuple)) or len(cell) < 2:
+            return None
+        return {"x": round((int(cell[0]) + 0.5) * cell_w, 1), "y": round((int(cell[1]) + 0.5) * cell_h, 1)}
+
+    walls = [rect for rect in (_rect(span) for span in layout.get("walls") or []) if rect]
+    cover = [rect for rect in (_rect([c[0], c[1], c[0], c[1]]) for c in layout.get("cover") or [] if isinstance(c, (list, tuple)) and len(c) >= 2) if rect]
+    regions = []
+    for region in layout.get("regions") or []:
+        if not isinstance(region, dict):
+            continue
+        rect = _rect(region.get("cells"))
+        if rect:
+            regions.append({"id": str(region.get("id") or ""), "name": str(region.get("name") or ""), "kind": str(region.get("kind") or "zone"), **rect})
+    paths = []
+    for path in layout.get("paths") or []:
+        if not isinstance(path, dict):
+            continue
+        points = [pt for pt in (_center(cell) for cell in path.get("points") or []) if pt]
+        if len(points) >= 2:
+            paths.append({"id": str(path.get("id") or ""), "points": points})
+    points = []
+    for marker in layout.get("points") or []:
+        if not isinstance(marker, dict):
+            continue
+        at = _center(marker.get("at"))
+        if at:
+            points.append({"id": str(marker.get("id") or ""), "kind": str(marker.get("kind") or "marker"), **at})
+    if not (walls or cover or paths or regions or points):
+        return None
+    return {
+        "cellWidth": round(cell_w, 2),
+        "cellHeight": round(cell_h, 2),
+        "regions": regions,
+        "walls": walls,
+        "cover": cover,
+        "paths": paths,
+        "points": points,
+    }
 
 
 def create_modular_phaser_project(
@@ -186,13 +300,15 @@ def create_modular_phaser_project(
     controls = design.get("controls") if isinstance(design.get("controls"), dict) else {}
     hint = str(controls.get("hint") or "Move with arrows or WASD.")[:240]
     screen = design.get("screen") if isinstance(design.get("screen"), dict) else {}
-    assets, asset_keys, sheets, tilemap = _asset_catalog(asset_manifest)
+    assets, asset_keys, sheets, tilemap, backdrop_dims, sprite_demand_manifest = _asset_catalog(asset_manifest)
     palette = _palette_for(spec, design)
+    width = _number(screen.get("width"), 1152, 640, 1600)
+    height = _number(screen.get("height"), 768, 480, 1000)
     config = {
         "title": title,
         "archetype": archetype,
-        "width": _number(screen.get("width"), 1152, 640, 1600),
-        "height": _number(screen.get("height"), 768, 480, 1000),
+        "width": width,
+        "height": height,
         "palette": palette,
         "hint": hint,
         "lives": _number(balance.get("lives"), 3, 1, 9),
@@ -200,9 +316,12 @@ def create_modular_phaser_project(
         "params": _free_params(balance, design),
         "assets": assets,
         "assetKeys": asset_keys,
+        "backdropDims": backdrop_dims,
         "sheet": sheets[0] if sheets else None,
         "sheets": sheets,
         "tilemap": tilemap,
+        "levelLayout": _level_layout_px(design, width, height),
+        "spriteDemandManifest": sprite_demand_manifest,
     }
     config_json = json.dumps(config, ensure_ascii=False, indent=2)
     package_json = json.dumps(
@@ -251,6 +370,14 @@ def create_modular_phaser_project(
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>__TITLE__</title>
+    <style>
+      /* Critical sizing stays inline: the built bundle's deferred script can
+         execute before the external stylesheet applies, and Phaser's FIT scale
+         reads the parent size exactly once at boot — external CSS timing must
+         never decide whether the canvas gets a size (a lost race renders the
+         whole game 0x0). */
+      html, body, #game-container { width: 100%; height: 100%; margin: 0; }
+    </style>
   </head>
   <body>
     <main id="game-container" aria-label="Generated game"></main>
@@ -275,6 +402,16 @@ export interface AssetEntry {
   frameHeight?: number;
 }
 
+export interface SemanticFrameRef {
+  sheet: string;
+  frame: string;
+  frame_id?: string;
+  frame_index: number;
+  anchor?: [number, number];
+  required?: boolean;
+  consumer_refs?: string[];
+}
+
 /** Per-game color identity. Use these for EVERY color so each game keeps its own look. */
 export interface GamePalette {
   bg: string;
@@ -282,6 +419,18 @@ export interface GamePalette {
   primary: string;
   accent: string;
   danger: string;
+}
+
+/** One connectable structure's tile variants (roads, pipes, rails, fences).
+ * Slot -> frame name on the same sheet. Canonical art orientations:
+ * straight = left-right, end = opens right, corner = right+down,
+ * tee = left+right+down, cross = all four. Pick with tileVariant() below. */
+export interface TileFamily {
+  straight: string;
+  end: string;
+  corner: string;
+  tee: string;
+  cross: string;
 }
 
 /** Generated sprite sheet: one texture, named frame indices (BootScene preloads it).
@@ -294,13 +443,28 @@ export interface GamePalette {
  * action plus player_skill_N / player_hurt when designed), each enemy's idle+attack
  * pair ("grunt" -> ["grunt", "grunt_b"]), boss idle/attack/special trios, and item
  * idle+activated pairs. Same-group frames always share this texture, so wire them
- * straight into anims.create (attack toggles, activation pulses, boss phases). */
+ * straight into anims.create (attack toggles, activation pulses, boss phases).
+ *
+ * `frameMeta` is GROUND TRUTH for what each frame's art actually shows (written by
+ * the asset planner from the design roster). Frame names like "entity_3" carry NO
+ * meaning on their own — ALWAYS bind design entities to frames by reading frameMeta;
+ * guessing by name order mis-skins the whole game (a power plant wearing the water
+ * tower's art). `tileFamilies` lists connectable structures: draw those per-cell via
+ * tileVariant() at EXACTLY the grid cell size (no margins, no shrink factor) so
+ * adjacent pieces join seamlessly, and refresh the 4 orthogonal neighbors of a cell
+ * after every placement/removal. */
 export interface SheetInfo {
   key: string;
   frameWidth: number;
   frameHeight: number;
   frames: Record<string, number>;
   animations: Record<string, string[]>;
+  frameMeta: Record<string, string>;
+  semanticFrames: Record<string, SemanticFrameRef>;
+  frameAudit: Record<string, unknown>;
+  frameIds: Record<string, number>;
+  frameSemantics: Record<string, string>;
+  tileFamilies: Record<string, TileFamily>;
 }
 
 /** Generated Tiled map (BootScene preloads the JSON and the tileset image).
@@ -317,6 +481,30 @@ export interface TilemapInfo {
   tilesetName: string;
   tileSize: number;
   solidGids: number[];
+}
+
+export interface LayoutRect { x: number; y: number; width: number; height: number }
+export interface LayoutRegion extends LayoutRect { id: string; name: string; kind: string }
+export interface LayoutPath { id: string; points: { x: number; y: number }[] }
+export interface LayoutPoint { id: string; kind: string; x: number; y: number }
+
+/** THE designed floor plan, pre-scaled to pixels — the SINGLE SOURCE OF TRUTH
+ * for level geometry. The painted backdrop was composed from this same plan, so
+ * building collision and routes from it makes the picture and the game agree:
+ * - walls/cover: solid blocking rectangles → static physics bodies
+ *   (LevelLayout.buildStatics does this in one call)
+ * - paths: ordered waypoint routes — guard patrols, creep lanes, platform runs
+ * - points: named markers (kind: spawn | objective | exit | hazard | item)
+ * - regions: named areas for zone logic, HUD labels, or camera hints.
+ * Do NOT invent a second, conflicting set of level coordinates. */
+export interface LevelLayoutInfo {
+  cellWidth: number;
+  cellHeight: number;
+  regions: LayoutRegion[];
+  walls: LayoutRect[];
+  cover: LayoutRect[];
+  paths: LayoutPath[];
+  points: LayoutPoint[];
 }
 
 export interface GeneratedGameConfig {
@@ -336,11 +524,21 @@ export interface GeneratedGameConfig {
    * high-intensity / boss phase, alternate zone). Switch stages at runtime with
    * Backdrop.draw(this, dim, gameConfig.assetKeys.backgrounds[i]). */
   assetKeys: { background: string; backgrounds: string[]; player: string; enemy: string; reward: string };
+  /** Measured per-background dim overlay strength (0-0.35). Backdrop.draw uses
+   * this automatically: dark art gets a light overlay, bright art a stronger one. */
+  backdropDims: Record<string, number>;
   /** First generated sheet (kept for compatibility). Prefer sheetFrame() lookups. */
   sheet: SheetInfo | null;
   /** Every generated sheet. Large rosters overflow onto "sheet-2". */
   sheets: SheetInfo[];
   tilemap: TilemapInfo | null;
+  levelLayout: LevelLayoutInfo | null;
+  spriteDemandManifest: {
+    schema_version?: string;
+    demands?: Array<Record<string, unknown>>;
+    runtime_manifest?: Record<string, SemanticFrameRef>;
+    metrics?: Record<string, number>;
+  };
 }
 
 export const gameConfig = __CONFIG__ as GeneratedGameConfig;
@@ -359,6 +557,67 @@ export function sheetFrame(name: string): { key: string; index: number } | null 
     if (typeof index === "number") return { key: sheet.key, index };
   }
   return null;
+}
+
+/** Resolve a semantic sprite state.  Atlas coordinates are deliberately
+ * hidden behind this function so gameplay never depends on `frame index 15`.
+ * `spriteFrame("residential.level_3")` remains stable when packing changes. */
+export function semanticFrame(name: string): SemanticFrameRef | null {
+  const direct = gameConfig.spriteDemandManifest?.runtime_manifest?.[name];
+  if (direct && typeof direct.frame_index === "number") return direct;
+  for (const sheet of gameConfig.sheets) {
+    const frame = sheet.semanticFrames?.[name];
+    if (frame && typeof frame.frame_index === "number") return { ...frame, sheet: frame.sheet || sheet.key };
+  }
+  return null;
+}
+
+export function spriteFrame(name: string): { key: string; index: number } | null {
+  const frame = semanticFrame(name);
+  return frame ? { key: frame.sheet, index: frame.frame_index } : null;
+}
+
+/** Find a connectable structure's tile family across every generated sheet. */
+export function tileFamily(base: string): TileFamily | null {
+  for (const sheet of gameConfig.sheets) {
+    const family = sheet.tileFamilies[base];
+    if (family) return family;
+  }
+  return null;
+}
+
+/** Frame + clockwise rotation (degrees, for sprite.setAngle) for a connectable
+ * tile, from its orthogonal same-family neighbor mask. Matches the canonical
+ * art orientations documented on TileFamily. Re-run this for the 4 neighbors
+ * of any cell the player changes, and draw results at exactly cell size. */
+export function tileVariant(
+  family: TileFamily,
+  up: boolean,
+  right: boolean,
+  down: boolean,
+  left: boolean,
+): { frame: string; angle: number } {
+  const count = (up ? 1 : 0) + (right ? 1 : 0) + (down ? 1 : 0) + (left ? 1 : 0);
+  if (count === 4) return { frame: family.cross, angle: 0 };
+  if (count === 3) {
+    if (!up) return { frame: family.tee, angle: 0 };
+    if (!right) return { frame: family.tee, angle: 90 };
+    if (!down) return { frame: family.tee, angle: 180 };
+    return { frame: family.tee, angle: 270 };
+  }
+  if (count === 2) {
+    if (left && right) return { frame: family.straight, angle: 0 };
+    if (up && down) return { frame: family.straight, angle: 90 };
+    if (right && down) return { frame: family.corner, angle: 0 };
+    if (down && left) return { frame: family.corner, angle: 90 };
+    if (left && up) return { frame: family.corner, angle: 180 };
+    return { frame: family.corner, angle: 270 };
+  }
+  if (right) return { frame: family.end, angle: 0 };
+  if (down) return { frame: family.end, angle: 90 };
+  if (left) return { frame: family.end, angle: 180 };
+  if (up) return { frame: family.end, angle: 270 };
+  return { frame: family.straight, angle: 0 };
 }
 """.replace("__CONFIG__", config_json),
         ),
@@ -381,11 +640,13 @@ export function colorNum(hex: string): number {
  *
  * The QA sandbox reads `window.__GW_PROBES__.counts` after driving the game to
  * verify that declared content actually happens at runtime (scenes reached,
- * backdrops drawn, animations played, actors spawned). Everything here is
- * best-effort and bounded: a probe must never break or slow the game.
+ * backdrops drawn, animations played, actors spawned, input processed).
+ * Everything here is best-effort and bounded: a probe must never break or
+ * slow the game.
  *
  * Scaffold systems report automatically (scene starts, animation playback,
- * Backdrop.draw). Gameplay code adds the calls QA reconciles against the
+ * Backdrop.draw, pointer processing, interactive registrations, key
+ * registrations). Gameplay code adds the calls QA reconciles against the
  * design roster:
  * - `Probe.spawn("enemy", definition.id)` whenever an enemy or boss enters play
  * - `Probe.emit("projectile:spawn", projectileId)` when a projectile is fired
@@ -426,6 +687,16 @@ export const Probe = {
   },
 };
 
+function resolvedKeyCode(key: unknown): number | undefined {
+  if (typeof key === "number") return key;
+  if (typeof key === "string") {
+    const codes = Phaser.Input.Keyboard.KeyCodes as unknown as Record<string, number | undefined>;
+    return codes[key.toUpperCase()];
+  }
+  if (key && typeof key === "object") return (key as { keyCode?: number }).keyCode;
+  return undefined;
+}
+
 function install(): void {
   try {
     const host = window as unknown as { __GW_PROBE_HOOKS__?: boolean };
@@ -451,12 +722,142 @@ function install(): void {
       if (name) Probe.emit("anims:play", name);
       return originalPlay.call(this, key as never, ignoreIfPlaying);
     };
+
+    // Raw input reaching the page at all (QA injects pointer/key events and
+    // compares these against what the game actually processed).
+    window.addEventListener("mousedown", () => Probe.emit("dom:down", "pointer"), { capture: true, passive: true });
+    window.addEventListener("touchstart", () => Probe.emit("dom:down", "pointer"), { capture: true, passive: true });
+    window.addEventListener("keydown", () => Probe.emit("dom:down", "key"), { capture: true, passive: true });
+
+    // Pointer downs processed by scene input plugins. dom:down|pointer > 0
+    // with input:down == 0 means the game's input pipeline is dead.
+    const inputPrototype = Phaser.Input.InputPlugin.prototype as unknown as {
+      processDownEvents: (pointer: Phaser.Input.Pointer) => number;
+    };
+    const originalProcessDown = inputPrototype.processDownEvents;
+    inputPrototype.processDownEvents = function (
+      this: { scene?: Phaser.Scene },
+      pointer: Phaser.Input.Pointer,
+    ): number {
+      const sceneKey = this.scene && this.scene.scene ? this.scene.scene.key : "";
+      Probe.emit("input:down", sceneKey);
+      return originalProcessDown.call(this, pointer);
+    };
+
+    // Interactive registrations. A steady per-frame stream long after load
+    // means UI is destroyed and rebuilt every tick — such buttons never enter
+    // input hit-testing (they read as unclickable) and leak objects.
+    const gameObjectPrototype = Phaser.GameObjects.GameObject.prototype as unknown as {
+      setInteractive: (...args: unknown[]) => unknown;
+    };
+    const originalSetInteractive = gameObjectPrototype.setInteractive;
+    gameObjectPrototype.setInteractive = function (this: unknown, ...args: unknown[]): unknown {
+      Probe.emit("ui:interactive");
+      return originalSetInteractive.apply(this, args);
+    };
+
+    // Dead key registrations: addKey resolving to no key code (for example
+    // KeyCodes["2"] instead of KeyCodes.TWO) registers a key that never fires.
+    const keyboardPrototype = Phaser.Input.Keyboard.KeyboardPlugin.prototype as unknown as {
+      addKey: (key: unknown, enableCapture?: boolean, emitOnRepeat?: boolean) => Phaser.Input.Keyboard.Key;
+    };
+    const originalAddKey = keyboardPrototype.addKey;
+    keyboardPrototype.addKey = function (
+      this: unknown,
+      key: unknown,
+      enableCapture?: boolean,
+      emitOnRepeat?: boolean,
+    ): Phaser.Input.Keyboard.Key {
+      const code = resolvedKeyCode(key);
+      if (!code || Number.isNaN(code)) Probe.emit("key:invalid");
+      return originalAddKey.call(this, key, enableCapture, emitOnRepeat);
+    };
+
+    // A 0x0 canvas after load means the game runs but renders invisible
+    // (stylesheet race or broken scale wiring).
+    window.addEventListener("load", () => {
+      window.setTimeout(() => {
+        try {
+          const canvas = document.querySelector("canvas");
+          if (canvas && canvas.getBoundingClientRect().width === 0) Probe.emit("canvas:zerosize");
+        } catch {
+          /* bounded */
+        }
+      }, 600);
+    });
   } catch {
     /* instrumentation is best-effort */
   }
 }
 
 install();
+""",
+        ),
+        text_artifact(
+            "src/systems/InputRouter.ts",
+            """import Phaser from "phaser";
+
+/** Pointer routing that keeps WORLD input (build/aim/select on the stage)
+ * from firing underneath UI (HUD buttons, toolbars, panels, modals).
+ *
+ * Phaser delivers scene-level pointer events regardless of what was clicked:
+ * a raw `scene.input.on("pointerdown", ...)` world handler ALSO fires when the
+ * player presses a HUD button, placing/attacking/selecting behind the UI.
+ * Register world handlers through `InputRouter.worldPointer` instead — they
+ * are skipped whenever the pointer is over ANY interactive object, while a
+ * drag that started on the stage keeps streaming to the world even if it
+ * crosses UI mid-drag.
+ *
+ * Plain panels (non-interactive rectangles behind HUD text) do not block
+ * clicks by themselves: call `InputRouter.shield(panel)` on every opaque UI
+ * surface so presses on it stop reaching the world layer. */
+export interface WorldPointerHandlers {
+  down?(pointer: Phaser.Input.Pointer): void;
+  move?(pointer: Phaser.Input.Pointer): void;
+  up?(pointer: Phaser.Input.Pointer): void;
+}
+
+export const InputRouter = {
+  /** Route stage-level pointer input, skipping presses that land on UI.
+   * Returns a dispose function (also runs automatically on scene shutdown). */
+  worldPointer(scene: Phaser.Scene, handlers: WorldPointerHandlers): () => void {
+    let worldDrag = false;
+    const onDown = (pointer: Phaser.Input.Pointer, over: Phaser.GameObjects.GameObject[]): void => {
+      if (over.length > 0) return; // pointer is on UI — the world must not react
+      worldDrag = true;
+      handlers.down?.(pointer);
+    };
+    const onMove = (pointer: Phaser.Input.Pointer, over: Phaser.GameObjects.GameObject[]): void => {
+      if (!worldDrag && over.length > 0) return;
+      handlers.move?.(pointer);
+    };
+    const onUp = (pointer: Phaser.Input.Pointer, over: Phaser.GameObjects.GameObject[]): void => {
+      const startedOnWorld = worldDrag;
+      worldDrag = false;
+      if (!startedOnWorld && over.length > 0) return;
+      handlers.up?.(pointer);
+    };
+    scene.input.on("pointerdown", onDown);
+    scene.input.on("pointermove", onMove);
+    scene.input.on("pointerup", onUp);
+    const dispose = (): void => {
+      scene.input.off("pointerdown", onDown);
+      scene.input.off("pointermove", onMove);
+      scene.input.off("pointerup", onUp);
+    };
+    scene.events.once(Phaser.Scenes.Events.SHUTDOWN, dispose);
+    return dispose;
+  },
+
+  /** Make a UI surface swallow pointer input so world handlers skip its area.
+   * Call on every opaque panel/bar rectangle that is not itself a button.
+   * (Containers need an explicit hit area — shield the background rectangle
+   * inside them, not the container.) */
+  shield<T extends Phaser.GameObjects.GameObject>(surface: T): T {
+    if (!surface.input) surface.setInteractive();
+    return surface;
+  },
+};
 """,
         ),
         text_artifact(
@@ -476,7 +877,11 @@ import { Probe } from "./Probe";
  * Backdrop.swap: it crossfades from the current backdrop to the named one —
  * call it on phase changes (boss spawn, new wave tier, level change). */
 export const Backdrop = {
-  draw(scene: Phaser.Scene, dim = 0.35, key?: string): Phaser.GameObjects.Image | null {
+  /** Omit `dim` to use the measured per-image strength (gameConfig.backdropDims):
+   * generated dark art gets a light overlay, bright art a stronger one — never
+   * double-darken an already moody scene. Pass an explicit dim only for special
+   * screens (e.g. the title screen dims harder behind its text). */
+  draw(scene: Phaser.Scene, dim?: number, key?: string): Phaser.GameObjects.Image | null {
     const textureKey = key ?? gameConfig.assetKeys.background;
     if (!textureKey || !scene.textures.exists(textureKey)) return null;
     Probe.emit("backdrop:draw", scene.scene.key);
@@ -484,9 +889,10 @@ export const Backdrop = {
     const image = scene.add.image(width / 2, height / 2, textureKey).setDepth(-20);
     const scale = Math.max(width / image.width, height / image.height);
     image.setScale(scale);
-    if (dim > 0) {
+    const applied = dim ?? gameConfig.backdropDims[textureKey] ?? 0.35;
+    if (applied > 0) {
       scene.add
-        .rectangle(width / 2, height / 2, width, height, colorNum(gameConfig.palette.bg), dim)
+        .rectangle(width / 2, height / 2, width, height, colorNum(gameConfig.palette.bg), applied)
         .setDepth(-19);
     }
     return image;
@@ -516,6 +922,83 @@ export const Backdrop = {
       },
     });
     return next;
+  },
+};
+""",
+        ),
+        text_artifact(
+            "src/systems/LevelLayout.ts",
+            """import Phaser from "phaser";
+import { gameConfig } from "../config/gameConfig";
+import type { LayoutPath, LayoutPoint, LayoutRegion, LevelLayoutInfo } from "../config/gameConfig";
+import { colorNum } from "./Colors";
+import { Probe } from "./Probe";
+
+/** Runtime access to the designed floor plan (gameConfig.levelLayout).
+ *
+ * The painted backdrop was generated FROM this plan, so geometry built here
+ * visually matches the art: walls/cover become solid physics bodies exactly
+ * where the picture shows structure, paths route enemies along designed lanes
+ * and patrols, points place spawns/objectives. Use it instead of inventing
+ * coordinates — it is the single source of truth for the level. */
+export const LevelLayout = {
+  data(): LevelLayoutInfo | null {
+    return gameConfig.levelLayout;
+  },
+
+  /** Build every wall/cover rect as a static physics body in one call.
+   * Blocks are drawn in palette colors (replace or skin them with sheetFrame
+   * art for a richer look) and returned as a StaticGroup ready for
+   * `physics.add.collider(actor, statics)`. Returns null when the design has
+   * no layout. */
+  buildStatics(
+    scene: Phaser.Scene,
+    style?: { fill?: number; alpha?: number; depth?: number },
+  ): Phaser.Physics.Arcade.StaticGroup | null {
+    const layout = gameConfig.levelLayout;
+    if (!layout) return null;
+    const blocks = [...layout.walls, ...layout.cover];
+    if (!blocks.length) return null;
+    const statics = scene.physics.add.staticGroup();
+    const fill = style?.fill ?? colorNum(gameConfig.palette.surface);
+    for (const rect of blocks) {
+      const block = scene.add
+        .rectangle(rect.x + rect.width / 2, rect.y + rect.height / 2, rect.width, rect.height, fill, style?.alpha ?? 0.9)
+        .setStrokeStyle(2, colorNum(gameConfig.palette.primary), 0.3)
+        .setDepth(style?.depth ?? 2);
+      statics.add(block);
+    }
+    Probe.emit("layout:statics", String(blocks.length));
+    return statics;
+  },
+
+  /** Ordered waypoint routes (guard patrols, creep lanes, platform runs). */
+  paths(): LayoutPath[] {
+    return gameConfig.levelLayout?.paths ?? [];
+  },
+
+  path(id: string): LayoutPath | null {
+    return this.paths().find((path) => path.id === id) ?? null;
+  },
+
+  /** Named markers; kind is spawn | objective | exit | hazard | item | marker. */
+  points(kind?: string): LayoutPoint[] {
+    const all = gameConfig.levelLayout?.points ?? [];
+    return kind ? all.filter((point) => point.kind === kind) : all;
+  },
+
+  point(id: string): LayoutPoint | null {
+    return this.points().find((point) => point.id === id) ?? null;
+  },
+
+  /** The designed region containing (x, y), for zone rules and HUD labels. */
+  regionAt(x: number, y: number): LayoutRegion | null {
+    for (const region of gameConfig.levelLayout?.regions ?? []) {
+      if (x >= region.x && x <= region.x + region.width && y >= region.y && y <= region.y + region.height) {
+        return region;
+      }
+    }
+    return null;
   },
 };
 """,
@@ -1146,7 +1629,9 @@ export class TitleScene extends Phaser.Scene {
             """// GW_PLACEHOLDER_GAMEPLAY — this scene is a neutral placeholder stage, NOT the game.
 // The authoring agent must REPLACE this gameplay with the designed game (keep the
 // scene key "PlayScene" and the Boot -> Title -> Play -> GameOver flow). It exists
-// only so the scaffold boots, and to demonstrate the Juice/Sfx quality kit in use.
+// only so the scaffold boots, and to demonstrate the quality kit in use: Juice/Sfx,
+// and — when the design ships a levelLayout — solid geometry and waypoint routes
+// built from LevelLayout (keep THAT pattern: the layout matches the painted art).
 import Phaser from "phaser";
 import { gameConfig, param } from "../config/gameConfig";
 import { Player } from "../entities/Player";
@@ -1154,6 +1639,7 @@ import { Backdrop } from "../systems/Backdrop";
 import { Bounds } from "../systems/Bounds";
 import { GameState } from "../systems/GameState";
 import { Juice } from "../systems/Juice";
+import { LevelLayout } from "../systems/LevelLayout";
 import { Sfx } from "../systems/Sfx";
 import { colorNum } from "../systems/Colors";
 import { Hud } from "../ui/Hud";
@@ -1167,6 +1653,8 @@ export class PlayScene extends Phaser.Scene {
   private juice!: Juice;
   private streak = 0;
   private invulnUntil = 0;
+  private patrolPoints: { x: number; y: number }[] = [];
+  private patrolIndex = 0;
 
   constructor() { super("PlayScene"); }
 
@@ -1177,10 +1665,11 @@ export class PlayScene extends Phaser.Scene {
     this.state = new GameState(gameConfig.lives, gameConfig.targetScore);
     this.juice = new Juice(this);
     this.streak = 0;
+    const spawn = LevelLayout.points("spawn")[0];
     this.player = new Player(
       this,
-      this.scale.width / 2,
-      this.scale.height / 2,
+      spawn?.x ?? this.scale.width / 2,
+      spawn?.y ?? this.scale.height / 2,
       gameConfig.assetKeys.player,
       param("player_speed", 300),
     );
@@ -1194,9 +1683,24 @@ export class PlayScene extends Phaser.Scene {
       gameConfig.assetKeys.enemy,
     );
     this.drifter.setDisplaySize(36, 36).setDepth(8);
-    // Start moving AWAY from the player so the opening seconds are safe.
-    this.drifter.setVelocity(-param("hazard_speed", 120), -param("hazard_speed", 120) * 0.8);
+    // Designed patrol route when the layout ships one; random drift otherwise.
+    const patrol = LevelLayout.paths()[0];
+    if (patrol) {
+      this.patrolPoints = patrol.points;
+      this.patrolIndex = 0;
+      this.drifter.setPosition(patrol.points[0].x, patrol.points[0].y);
+    } else {
+      // Start moving AWAY from the player so the opening seconds are safe.
+      this.drifter.setVelocity(-param("hazard_speed", 120), -param("hazard_speed", 120) * 0.8);
+    }
     Bounds.collideWorld(this.drifter, 1);
+    // The designed floor plan as REAL geometry: the same walls the painted
+    // backdrop shows, as static bodies both actors collide with.
+    const statics = LevelLayout.buildStatics(this);
+    if (statics) {
+      this.physics.add.collider(this.player, statics);
+      this.physics.add.collider(this.drifter, statics);
+    }
     this.invulnUntil = 0;
 
     this.physics.add.overlap(this.player, this.sparks, (_player, rawSpark) => {
@@ -1245,12 +1749,28 @@ export class PlayScene extends Phaser.Scene {
   update(): void {
     if (this.state.status === "playing") {
       this.player.update();
+      this.updatePatrol();
     } else {
       this.physics.pause();
       Sfx.play(this.state.status === "won" ? "win" : "lose");
       this.scene.start("GameOverScene", { score: this.state.score, won: this.state.status === "won" });
     }
     this.hud.update(this.state);
+  }
+
+  /** Steer the drifter along the designed waypoint route (LevelLayout.paths). */
+  private updatePatrol(): void {
+    if (this.patrolPoints.length < 2) return;
+    const target = this.patrolPoints[this.patrolIndex];
+    const dx = target.x - this.drifter.x;
+    const dy = target.y - this.drifter.y;
+    const remaining = Math.hypot(dx, dy);
+    if (remaining < 10) {
+      this.patrolIndex = (this.patrolIndex + 1) % this.patrolPoints.length;
+      return;
+    }
+    const speed = param("hazard_speed", 120);
+    this.drifter.setVelocity((dx / remaining) * speed, (dy / remaining) * speed);
   }
 
   private spawnSpark(): void {
@@ -1381,6 +1901,14 @@ def is_modular_phaser_project(files: list[dict] | None) -> bool:
     return {"package.json", "index.html", "tsconfig.json", "src/main.ts"}.issubset(paths)
 
 
+@lru_cache(maxsize=1)
+def scaffold_source_paths() -> frozenset[str]:
+    """Every path the neutral scaffold ships. Files OUTSIDE this set were added
+    by authoring/repair agents — QA uses that to spot accepted author modules
+    that never got wired into the entry import graph (orphan modules)."""
+    return frozenset(str(item.get("path") or "") for item in create_modular_phaser_project({}, {}))
+
+
 def safe_project_source_path(path: str) -> bool:
     normalized = str(path or "").replace("\\", "/").lstrip("./")
     return bool(
@@ -1392,4 +1920,9 @@ def safe_project_source_path(path: str) -> bool:
     )
 
 
-__all__ = ["create_modular_phaser_project", "is_modular_phaser_project", "safe_project_source_path"]
+__all__ = [
+    "create_modular_phaser_project",
+    "is_modular_phaser_project",
+    "safe_project_source_path",
+    "scaffold_source_paths",
+]

@@ -1,6 +1,6 @@
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -21,7 +21,11 @@ from app.schemas import (
 )
 from app.services import task_actions
 from app.services.errors import ServiceError
-from app.services.serialize import task_event_delta_out, task_out
+from app.services.serialize import (
+    DEFAULT_TASK_LOG_PAGE_SIZE,
+    task_event_delta_out,
+    task_out,
+)
 from app.services.task_events import TaskEventsUnavailable, subscribe_task_events
 from app.tasks.generate import generate_game
 
@@ -63,9 +67,15 @@ def list_tasks(
 
 
 @router.get("/{task_id}", response_model=TaskOut, response_model_exclude_unset=True)
-def get_task(task_id: str, user=Depends(get_current_user), db: Session = Depends(get_db)):
+def get_task(
+    task_id: str,
+    logs_limit: int = Query(DEFAULT_TASK_LOG_PAGE_SIZE, ge=1, le=500),
+    logs_before: int | None = Query(None, ge=1),
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     task = _run(lambda: task_actions.get_task(db, task_id, user))
-    return task_out(task)
+    return task_out(task, logs_limit=logs_limit, logs_before=logs_before)
 
 
 @router.get(

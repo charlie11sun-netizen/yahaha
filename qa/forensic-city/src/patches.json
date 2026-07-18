@@ -1,0 +1,201 @@
+[
+ {
+  "seq": 38,
+  "agent": "GameProjectRepair",
+  "tool": "apply_patch_set",
+  "args": {
+   "operations": [
+    {
+     "operation_type": "update_file",
+     "path": "src/composition/CityGameRuntime.ts",
+     "diff": "@@\n import {\n   toBuildingPresentation, toCityHudSnapshot, toCoverageCells, toDemolitionPreview, toOutcomePresentation,\n } from \"../adapters/CityPresentationAdapter\";\n import { colorNum } from \"../systems/Colors\";\n+import { LevelLayout } from \"../systems/LevelLayout\";\n@@\n   private previousScore = this.state.cityMetrics.score;\n   private previousPower = 0;\n   private previousWater = 0;\n+  private layoutStatics?: Phaser.Physics.Arcade.StaticGroup;\n@@\n   destroy(): void {\n@@\n     this.effects?.destroy();\n+    this.layoutStatics?.clear(true, true);\n+    this.layoutStatics = undefined;\n@@\n   private drawWorld(): void {\n     const g = this.scene.add.graphics().setDepth(-5);\n@@\n-    for (const point of LEVEL_LAYOUT.points.filter((p) => p.kind === \"objective\" || p.kind === \"item\")) {\n-      const p = cellCenter(point); this.scene.add.text(p.x, p.y, point.kind === \"objective\" ? \"★\" : \"!\", { fontSize: \"18px\", color: point.kind === \"objective\" ? \"#ffd34e\" : \"#ffffff\", stroke: \"#17212b\", strokeThickness: 3 }).setOrigin(0.5).setDepth(2).setAlpha(0.7);\n+    this.layoutStatics = LevelLayout.buildStatics(this.scene, {\n+      fill: colorNum(gameConfig.palette.surface), alpha: 0.18, depth: -3,\n+    }) ?? undefined;\n+    for (const path of LevelLayout.paths()) {\n+      if (path.points.length < 2) continue;\n+      g.lineStyle(path.id === \"starting_road\" ? 5 : 3, colorNum(gameConfig.palette.accent), path.id === \"starting_road\" ? 0.42 : 0.24);\n+      g.beginPath(); g.moveTo(path.points[0].x, path.points[0].y);\n+      for (const point of path.points.slice(1)) g.lineTo(point.x, point.y);\n+      g.strokePath();\n+    }\n+    for (const point of LevelLayout.points().filter((p) => p.kind === \"objective\" || p.kind === \"item\")) {\n+      this.scene.add.text(point.x, point.y, point.kind === \"objective\" ? \"★\" : \"!\", { fontSize: \"18px\", color: point.kind === \"objective\" ? \"#ffd34e\" : \"#ffffff\", stroke: \"#17212b\", strokeThickness: 3 }).setOrigin(0.5).setDepth(2).setAlpha(0.7);\n@@\n-        const label = this.scene.add.text(center.x, center.y, visual.icon, { fontFamily: \"Inter, sans-serif\", fontSize: structure.tool === \"road\" ? \"12px\" : \"17px\", color: \"#ffffff\", fontStyle: \"bold\", stroke: \"#17212b\", strokeThickness: 3 }).setOrigin(0.5).setDepth(12);\n+        const label = this.scene.add.text(center.x, center.y, visual.icon, { fontFamily: \"Inter, sans-serif\", fontSize: structure.tool === \"road\" ? \"16px\" : \"18px\", color: \"#ffffff\", fontStyle: \"bold\", stroke: \"#17212b\", strokeThickness: 3 }).setOrigin(0.5).setDepth(12);\n@@\n-    this.tutorialBody = this.scene.add.text(16, 42, \"\", { fontFamily: \"Inter, sans-serif\", fontSize: \"14px\", color: \"#ffffff\", wordWrap: { width: 470 }, lineSpacing: 4 });\n-    const skip = this.scene.add.text(540, 18, \"跳过教学\", { fontFamily: \"Inter, sans-serif\", fontSize: \"14px\", color: \"#17212b\", backgroundColor: \"#f4e7c5\", padding: { x: 8, y: 6 } }).setOrigin(0.5).setInteractive({ useHandCursor: true });\n+    this.tutorialBody = this.scene.add.text(16, 42, \"\", { fontFamily: \"Inter, sans-serif\", fontSize: \"16px\", color: \"#ffffff\", wordWrap: { width: 470 }, lineSpacing: 4 });\n+    const skip = this.scene.add.text(540, 18, \"跳过教学\", { fontFamily: \"Inter, sans-serif\", fontSize: \"16px\", color: \"#17212b\", backgroundColor: \"#f4e7c5\", padding: { x: 8, y: 6 } }).setOrigin(0.5).setInteractive({ useHandCursor: true });\n*** End Patch",
+     "move_to": ""
+    },
+    {
+     "operation_type": "update_file",
+     "path": "src/ui/CityHud.ts",
+     "diff": "@@\n   const label = scene.add.text(0, 0, text, {\n-    fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"14px\", color: \"#17212b\", align: \"center\", fontStyle: \"bold\",\n+    fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"16px\", color: \"#17212b\", align: \"center\", fontStyle: \"bold\",\n@@\n   const metricStyle: Phaser.Types.GameObjects.Text.TextStyle = {\n-    fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"16px\", color: \"#ffffff\", stroke: \"#000000\", strokeThickness: 2,\n+    fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"18px\", color: \"#ffffff\", stroke: \"#000000\", strokeThickness: 2,\n@@\n-  const scoreTitle = scene.add.text(12, 9, \"城市评分约束\", { ...metricStyle, fontSize: \"17px\", color: gameConfig.palette.accent, fontStyle: \"bold\" });\n-  const partText = scene.add.text(12, 38, \"\", { ...metricStyle, fontSize: \"14px\", lineSpacing: 4 });\n-  const reasonText = scene.add.text(12, 158, \"\", { ...metricStyle, fontSize: \"13px\", color: \"#ffd6d2\", wordWrap: { width: 240 } });\n-  const prosperityText = scene.add.text(12, 220, \"\", { ...metricStyle, fontSize: \"12px\", color: \"#ffffff\", wordWrap: { width: 240 } });\n+  const scoreTitle = scene.add.text(12, 9, \"城市评分约束\", { ...metricStyle, color: gameConfig.palette.accent, fontStyle: \"bold\" });\n+  const partText = scene.add.text(12, 38, \"\", { ...metricStyle, fontSize: \"16px\", lineSpacing: 4 });\n+  const reasonText = scene.add.text(12, 158, \"\", { ...metricStyle, fontSize: \"16px\", color: \"#ffd6d2\", wordWrap: { width: 240 } });\n+  const prosperityText = scene.add.text(12, 220, \"\", { ...metricStyle, fontSize: \"16px\", color: \"#ffffff\", wordWrap: { width: 240 } });\n@@\n-  const alertText = scene.add.text(-230, -27, \"\", { ...metricStyle, fontSize: \"15px\", wordWrap: { width: 340 } });\n+  const alertText = scene.add.text(-230, -27, \"\", { ...metricStyle, wordWrap: { width: 340 } });\n*** End Patch",
+     "move_to": ""
+    },
+    {
+     "operation_type": "update_file",
+     "path": "src/ui/BuildingInspector.ts",
+     "diff": "@@\n   const body = scene.add.text(16, 54, \"\", {\n-    fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"15px\", color: \"#ffffff\", lineSpacing: 7,\n+    fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"16px\", color: \"#ffffff\", lineSpacing: 7,\n@@\n-  const demolishText = scene.add.text(143, 356, \"⚒ 预览拆除影响（退款40%）\", { fontFamily: \"Inter, sans-serif\", fontSize: \"14px\", color: \"#ffffff\", fontStyle: \"bold\" }).setOrigin(0.5);\n+  const demolishText = scene.add.text(143, 356, \"⚒ 预览拆除影响（退款40%）\", { fontFamily: \"Inter, sans-serif\", fontSize: \"16px\", color: \"#ffffff\", fontStyle: \"bold\" }).setOrigin(0.5);\n*** End Patch",
+     "move_to": ""
+    },
+    {
+     "operation_type": "update_file",
+     "path": "src/presentation/PlannerController.ts",
+     "diff": "@@\n   const label = scene.add.text(0, 0, \"\", {\n-    fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"15px\", color: \"#ffffff\",\n+    fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"16px\", color: \"#ffffff\",\n*** End Patch",
+     "move_to": ""
+    },
+    {
+     "operation_type": "update_file",
+     "path": "src/ui/OutcomePanels.ts",
+     "diff": "@@\n   const reason = scene.add.text(0, -148, \"\", {\n-    fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"17px\", color: \"#ffffff\", align: \"center\",\n+    fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"18px\", color: \"#ffffff\", align: \"center\",\n*** End Patch",
+     "move_to": ""
+    }
+   ]
+  }
+ },
+ {
+  "seq": 54,
+  "agent": "GameProjectRepair",
+  "tool": "apply_patch_set",
+  "args": {
+   "operations": [
+    {
+     "operation_type": "update_file",
+     "path": "src/composition/CityGameRuntime.ts",
+     "diff": "@@\n import {\n   toBuildingPresentation, toCityHudSnapshot, toCoverageCells, toDemolitionPreview, toOutcomePresentation,\n } from \"../adapters/CityPresentationAdapter\";\n import { colorNum } from \"../systems/Colors\";\n+import { LevelLayout } from \"../systems/LevelLayout\";\n@@\n   private previousScore = this.state.cityMetrics.score;\n   private previousPower = 0;\n   private previousWater = 0;\n+  private layoutStatics?: Phaser.Physics.Arcade.StaticGroup;\n@@\n     this.outcomes?.destroy();\n     this.effects?.destroy();\n+    this.layoutStatics?.clear(true, true);\n+    this.layoutStatics = undefined;\n     this.tutorialRoot?.destroy(true);\n@@\n   private drawWorld(): void {\n     const g = this.scene.add.graphics().setDepth(-5);\n@@\n-    for (const point of LEVEL_LAYOUT.points.filter((p) => p.kind === \"objective\" || p.kind === \"item\")) {\n-      const p = cellCenter(point); this.scene.add.text(p.x, p.y, point.kind === \"objective\" ? \"★\" : \"!\", { fontSize: \"18px\", color: point.kind === \"objective\" ? \"#ffd34e\" : \"#ffffff\", stroke: \"#17212b\", strokeThickness: 3 }).setOrigin(0.5).setDepth(2).setAlpha(0.7);\n+    this.layoutStatics = LevelLayout.buildStatics(this.scene, {\n+      fill: colorNum(gameConfig.palette.surface), alpha: 0.18, depth: -3,\n+    }) ?? undefined;\n+    for (const path of LevelLayout.paths()) {\n+      if (path.points.length < 2) continue;\n+      g.lineStyle(path.id === \"starting_road\" ? 5 : 3, colorNum(gameConfig.palette.accent), path.id === \"starting_road\" ? 0.42 : 0.24);\n+      g.beginPath(); g.moveTo(path.points[0].x, path.points[0].y);\n+      for (const point of path.points.slice(1)) g.lineTo(point.x, point.y);\n+      g.strokePath();\n+    }\n+    for (const point of LevelLayout.points().filter((p) => p.kind === \"objective\" || p.kind === \"item\")) {\n+      this.scene.add.text(point.x, point.y, point.kind === \"objective\" ? \"★\" : \"!\", { fontSize: \"18px\", color: point.kind === \"objective\" ? \"#ffd34e\" : \"#ffffff\", stroke: \"#17212b\", strokeThickness: 3 }).setOrigin(0.5).setDepth(2).setAlpha(0.7);\n@@\n-        const label = this.scene.add.text(center.x, center.y, visual.icon, { fontFamily: \"Inter, sans-serif\", fontSize: structure.tool === \"road\" ? \"12px\" : \"17px\", color: \"#ffffff\", fontStyle: \"bold\", stroke: \"#17212b\", strokeThickness: 3 }).setOrigin(0.5).setDepth(12);\n+        const label = this.scene.add.text(center.x, center.y, visual.icon, { fontFamily: \"Inter, sans-serif\", fontSize: structure.tool === \"road\" ? \"16px\" : \"18px\", color: \"#ffffff\", fontStyle: \"bold\", stroke: \"#17212b\", strokeThickness: 3 }).setOrigin(0.5).setDepth(12);\n@@\n-    this.tutorialBody = this.scene.add.text(16, 42, \"\", { fontFamily: \"Inter, sans-serif\", fontSize: \"14px\", color: \"#ffffff\", wordWrap: { width: 470 }, lineSpacing: 4 });\n-    const skip = this.scene.add.text(540, 18, \"跳过教学\", { fontFamily: \"Inter, sans-serif\", fontSize: \"14px\", color: \"#17212b\", backgroundColor: \"#f4e7c5\", padding: { x: 8, y: 6 } }).setOrigin(0.5).setInteractive({ useHandCursor: true });\n+    this.tutorialBody = this.scene.add.text(16, 42, \"\", { fontFamily: \"Inter, sans-serif\", fontSize: \"16px\", color: \"#ffffff\", wordWrap: { width: 470 }, lineSpacing: 4 });\n+    const skip = this.scene.add.text(540, 18, \"跳过教学\", { fontFamily: \"Inter, sans-serif\", fontSize: \"16px\", color: \"#17212b\", backgroundColor: \"#f4e7c5\", padding: { x: 8, y: 6 } }).setOrigin(0.5).setInteractive({ useHandCursor: true });\n",
+     "move_to": ""
+    },
+    {
+     "operation_type": "update_file",
+     "path": "src/ui/CityHud.ts",
+     "diff": "@@\n   const label = scene.add.text(0, 0, text, {\n-    fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"14px\", color: \"#17212b\", align: \"center\", fontStyle: \"bold\",\n+    fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"16px\", color: \"#17212b\", align: \"center\", fontStyle: \"bold\",\n@@\n   const metricStyle: Phaser.Types.GameObjects.Text.TextStyle = {\n-    fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"16px\", color: \"#ffffff\", stroke: \"#000000\", strokeThickness: 2,\n+    fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"18px\", color: \"#ffffff\", stroke: \"#000000\", strokeThickness: 2,\n@@\n-  const scoreTitle = scene.add.text(12, 9, \"城市评分约束\", { ...metricStyle, fontSize: \"17px\", color: gameConfig.palette.accent, fontStyle: \"bold\" });\n-  const partText = scene.add.text(12, 38, \"\", { ...metricStyle, fontSize: \"14px\", lineSpacing: 4 });\n-  const reasonText = scene.add.text(12, 158, \"\", { ...metricStyle, fontSize: \"13px\", color: \"#ffd6d2\", wordWrap: { width: 240 } });\n-  const prosperityText = scene.add.text(12, 220, \"\", { ...metricStyle, fontSize: \"12px\", color: \"#ffffff\", wordWrap: { width: 240 } });\n+  const scoreTitle = scene.add.text(12, 9, \"城市评分约束\", { ...metricStyle, color: gameConfig.palette.accent, fontStyle: \"bold\" });\n+  const partText = scene.add.text(12, 38, \"\", { ...metricStyle, fontSize: \"16px\", lineSpacing: 4 });\n+  const reasonText = scene.add.text(12, 158, \"\", { ...metricStyle, fontSize: \"16px\", color: \"#ffd6d2\", wordWrap: { width: 240 } });\n+  const prosperityText = scene.add.text(12, 220, \"\", { ...metricStyle, fontSize: \"16px\", color: \"#ffffff\", wordWrap: { width: 240 } });\n@@\n-  const alertText = scene.add.text(-230, -27, \"\", { ...metricStyle, fontSize: \"15px\", wordWrap: { width: 340 } });\n+  const alertText = scene.add.text(-230, -27, \"\", { ...metricStyle, wordWrap: { width: 340 } });\n",
+     "move_to": ""
+    },
+    {
+     "operation_type": "update_file",
+     "path": "src/ui/BuildingInspector.ts",
+     "diff": "@@\n   const body = scene.add.text(16, 54, \"\", {\n-    fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"15px\", color: \"#ffffff\", lineSpacing: 7,\n+    fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"16px\", color: \"#ffffff\", lineSpacing: 7,\n@@\n-  const demolishText = scene.add.text(143, 356, \"⚒ 预览拆除影响（退款40%）\", { fontFamily: \"Inter, sans-serif\", fontSize: \"14px\", color: \"#ffffff\", fontStyle: \"bold\" }).setOrigin(0.5);\n+  const demolishText = scene.add.text(143, 356, \"⚒ 预览拆除影响（退款40%）\", { fontFamily: \"Inter, sans-serif\", fontSize: \"16px\", color: \"#ffffff\", fontStyle: \"bold\" }).setOrigin(0.5);\n",
+     "move_to": ""
+    },
+    {
+     "operation_type": "update_file",
+     "path": "src/presentation/PlannerController.ts",
+     "diff": "@@\n   const label = scene.add.text(0, 0, \"\", {\n-    fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"15px\", color: \"#ffffff\",\n+    fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"16px\", color: \"#ffffff\",\n",
+     "move_to": ""
+    },
+    {
+     "operation_type": "update_file",
+     "path": "src/ui/OutcomePanels.ts",
+     "diff": "@@\n   const reason = scene.add.text(0, -148, \"\", {\n-    fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"17px\", color: \"#ffffff\", align: \"center\",\n+    fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"18px\", color: \"#ffffff\", align: \"center\",\n",
+     "move_to": ""
+    }
+   ]
+  }
+ },
+ {
+  "seq": 59,
+  "agent": "RulesAndSimulationCoder",
+  "tool": "apply_patch",
+  "args": {
+   "operation_type": "update_file",
+   "path": "src/systems/GameState.ts",
+   "diff": "@@\n export type GameStatus = \"playing\" | \"won\" | \"lost\";\n+\n+// Stable integration surface for the frozen city-simulation contract.\n+export {\n+  CITY_SIMULATION_CATALOG,\n+  DEFAULT_SIMULATION_RULES,\n+  advanceSimulationFixedStep,\n+  applyBuildCommand,\n+  continueAfterVictory,\n+  createInitialSimulationState,\n+  demolishStructure,\n+  dispatchEmergency,\n+  evaluateOutcome,\n+  recalculateCityNetworks,\n+  resolveMonthlyLedger,\n+  setSimulationControl,\n+  validateBuildCommand,\n+} from \"../domain/CitySimulation\";\n+export type {\n+  BuildCommand,\n+  BuildTool,\n+  BuildValidation,\n+  CapacitySummary,\n+  CityMetrics,\n+  CommandResult,\n+  DisasterState,\n+  DisasterType,\n+  EconomyState,\n+  NetworkState,\n+  OutcomeState,\n+  PopulationState,\n+  ProgressionState,\n+  ProsperityConditions,\n+  ScoreBreakdown,\n+  SessionState,\n+  SimulationContent,\n+  SimulationEvent,\n+  SimulationSpeed,\n+  SimulationState,\n+  SimulationStepResult,\n+  StructureDefinition,\n+  StructureState,\n+} from \"../domain/CitySimulation\";\n \n export class GameState {\n*** End Patch omitted intentionally? no */\n*** End Patch really omitted */\n*** End Patch nope */\n*** End Patch */\n*** End Patch marker not needed */\n*** End Patch not syntax */\n*** End Patch ignore */\n*** End Patch final */\n*** End Patch remove */\n*** End Patch bogus */\n*** End Patch stop */\n*** End Patch now */\n*** End Patch.",
+   "move_to": ""
+  }
+ },
+ {
+  "seq": 69,
+  "agent": "RulesAndSimulationCoder",
+  "tool": "apply_patch",
+  "args": {
+   "operation_type": "update_file",
+   "path": "src/systems/GameState.ts",
+   "diff": "@@\n export type GameStatus = \"playing\" | \"won\" | \"lost\";\n+\n+// Stable integration surface for the frozen city-simulation contract.\n+export {\n+  CITY_SIMULATION_CATALOG,\n+  DEFAULT_SIMULATION_RULES,\n+  advanceSimulationFixedStep,\n+  applyBuildCommand,\n+  continueAfterVictory,\n+  createInitialSimulationState,\n+  demolishStructure,\n+  dispatchEmergency,\n+  evaluateOutcome,\n+  recalculateCityNetworks,\n+  resolveMonthlyLedger,\n+  setSimulationControl,\n+  validateBuildCommand,\n+} from \"../domain/CitySimulation\";\n+export type {\n+  BuildCommand,\n+  BuildTool,\n+  BuildValidation,\n+  CapacitySummary,\n+  CityMetrics,\n+  CommandResult,\n+  DisasterState,\n+  DisasterType,\n+  EconomyState,\n+  NetworkState,\n+  OutcomeState,\n+  PopulationState,\n+  ProgressionState,\n+  ProsperityConditions,\n+  ScoreBreakdown,\n+  SessionState,\n+  SimulationContent,\n+  SimulationEvent,\n+  SimulationSpeed,\n+  SimulationState,\n+  SimulationStepResult,\n+  StructureDefinition,\n+  StructureState,\n+} from \"../domain/CitySimulation\";\n \n export class GameState {\n",
+   "move_to": ""
+  }
+ },
+ {
+  "seq": 72,
+  "agent": "GameProjectRepair",
+  "tool": "apply_patch",
+  "args": {
+   "operation_type": "update_file",
+   "path": "src/composition/CityGameRuntime.ts",
+   "diff": "@@\n import Phaser from \"phaser\";\n+import { gameConfig } from \"../config/gameConfig\";\n import { CITY_CATALOG, CITY_VISUAL_MANIFEST, TUTORIAL_SEQUENCE } from \"../content/CityContent\";\n",
+   "move_to": ""
+  }
+ },
+ {
+  "seq": 113,
+  "agent": "IntegrationAgent",
+  "tool": "apply_patch",
+  "args": {
+   "operation_type": "update_file",
+   "path": "src/scenes/GameOverScene.ts",
+   "diff": "@@\n-    // Report the final score to the host exactly once. This postMessage is the\n-    // only allowed parent access in the sandbox.\n-    window.parent.postMessage({ type: \"gameweave:score\", points: this.score }, \"*\");\n     const restart = (): void => { this.scene.start(\"PlayScene\"); };\n*** End Patch",
+   "move_to": ""
+  }
+ },
+ {
+  "seq": 117,
+  "agent": "GameProjectRepair",
+  "tool": "apply_patch",
+  "args": {
+   "operation_type": "update_file",
+   "path": "src/presentation/CoverageOverlayView.ts",
+   "diff": "@@\n-  const miniTitle = scene.add.text(12, 8, \"区域小地图  [M关闭]\", { fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"15px\", color: \"#17212b\", fontStyle: \"bold\" });\n+  const miniTitle = scene.add.text(12, 8, \"区域小地图  [M关闭]\", { fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"18px\", color: \"#17212b\", fontStyle: \"bold\" });\n@@\n-    const text = scene.add.text(region.x + 4, region.y + 3, `${region.mark} ${region.name}`, { fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"11px\", color: \"#17212b\" });\n+    const text = scene.add.text(region.x + 4, region.y + 3, `${region.mark} ${region.name}`, { fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"16px\", color: \"#17212b\" });\n",
+   "move_to": ""
+  }
+ },
+ {
+  "seq": 122,
+  "agent": "IntegrationAgent",
+  "tool": "apply_patch",
+  "args": {
+   "operation_type": "update_file",
+   "path": "src/scenes/GameOverScene.ts",
+   "diff": "*** Begin Patch\n*** Update File: src/scenes/GameOverScene.ts\n@@\n-    // Report the final score to the host exactly once. This postMessage is the\n-    // only allowed parent access in the sandbox.\n-    window.parent.postMessage({ type: \"gameweave:score\", points: this.score }, \"*\");\n     const restart = (): void => { this.scene.start(\"PlayScene\"); };\n*** End Patch",
+   "move_to": ""
+  }
+ },
+ {
+  "seq": 159,
+  "agent": "IntegrationAgent",
+  "tool": "apply_patch",
+  "args": {
+   "operation_type": "update_file",
+   "path": "src/content/CityContent.ts",
+   "diff": "*** Begin Patch\n*** Update File: src/content/CityContent.ts\n@@\n-export const TUTORIAL_SEQUENCE: TutorialSequenceDefinition = Object.freeze({\n+export const TUTORIAL_SEQUENCE: TutorialSequenceDefinition = Object.freeze({\n@@\n-  ],\n-});\n+  ],\n+} as const);\n*** End Patch",
+   "move_to": ""
+  }
+ },
+ {
+  "seq": 165,
+  "agent": "PresentationAndInteractionCoder",
+  "tool": "apply_patch",
+  "args": {
+   "operation_type": "update_file",
+   "path": "src/input/GameControls.ts",
+   "diff": "@@\n       for (const key of Object.values(keys)) {\n         key.removeAllListeners();\n-        keyboard.removeKey(key);\n+        keyboard.removeKey(key.keyCode);\n       }\n*** End Patch",
+   "move_to": ""
+  }
+ },
+ {
+  "seq": 168,
+  "agent": "IntegrationAgent",
+  "tool": "apply_patch",
+  "args": {
+   "operation_type": "update_file",
+   "path": "src/levels/CityLevel.ts",
+   "diff": "*** Begin Patch\n*** Update File: src/levels/CityLevel.ts\n@@\n export const LEVEL_LAYOUT: CityLevelDefinition = Object.freeze({\n@@\n-  regions: REGION_DEFINITIONS,\n-});\n+  regions: REGION_DEFINITIONS,\n+} as const);\n*** End Patch",
+   "move_to": ""
+  }
+ },
+ {
+  "seq": 174,
+  "agent": "PresentationAndInteractionCoder",
+  "tool": "apply_patch",
+  "args": {
+   "operation_type": "update_file",
+   "path": "src/input/GameControls.ts",
+   "diff": "*** Begin Patch\n*** Update File: src/input/GameControls.ts\n@@\n       for (const key of Object.values(keys)) {\n         key.removeAllListeners();\n-        keyboard.removeKey(key);\n+        keyboard.removeKey(key.keyCode);\n       }\n*** End Patch",
+   "move_to": ""
+  }
+ },
+ {
+  "seq": 187,
+  "agent": "IntegrationAgent",
+  "tool": "apply_patch",
+  "args": {
+   "operation_type": "update_file",
+   "path": "src/composition/CityGameRuntime.ts",
+   "diff": "*** Begin Patch\n*** Update File: src/composition/CityGameRuntime.ts\n@@\n   private bindPointer(): void {\n-    const move = (pointer: Phaser.Input.Pointer): void => this.planner.pointerMove(pointer.worldX, pointer.worldY, pointer.isDown);\n-    const down = (pointer: Phaser.Input.Pointer): void => this.planner.pointerDown(pointer.worldX, pointer.worldY);\n-    const up = (pointer: Phaser.Input.Pointer): void => this.planner.pointerUp(pointer.worldX, pointer.worldY);\n+    const overUi = (pointer: Phaser.Input.Pointer): boolean => this.scene.input.hitTestPointer(pointer).length > 0;\n+    const move = (pointer: Phaser.Input.Pointer): void => { if (!overUi(pointer)) this.planner.pointerMove(pointer.worldX, pointer.worldY, pointer.isDown); };\n+    const down = (pointer: Phaser.Input.Pointer): void => { if (!overUi(pointer)) this.planner.pointerDown(pointer.worldX, pointer.worldY); };\n+    const up = (pointer: Phaser.Input.Pointer): void => { if (!overUi(pointer)) this.planner.pointerUp(pointer.worldX, pointer.worldY); };\n*** End Patch",
+   "move_to": ""
+  }
+ }
+]

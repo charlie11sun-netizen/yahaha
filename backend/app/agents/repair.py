@@ -104,10 +104,20 @@ _QUALITY_QA_PATCHABLE = (
     "authored project still contains the GW_PLACEHOLDER_GAMEPLAY placeholder",
     "moving physics bodies but no world-edge handling found",
     "design declares obstacle/blocking entities but gameplay code never creates them",
+    # 孤儿模块/布局契约/名册全灭:都是接线级缺陷——作者内容已存在或契约已给
+    # 出几何,最小 patch 把它们接进运行图即可,整包重生成反而会丢掉好内容。
+    "authored gameplay modules are never imported by the running game",
+    "design provides a structured level_layout but gameplay never consumes it",
+    "declared enemy roster never spawned during the sandbox replay",
     # 截图质量层（visual_review）：呈现问题可以用小 patch 修（接 Juice/调 HUD/
     # 画背景），不值得整包重生成。
     "browser screenshot shows an essentially blank play screen",
     "visual review:",
+    # 交互探针门禁(像素市长 2026-07-17):输入接线死亡/每帧重建 UI/死键注册,
+    # 全是局部接线缺陷 —— 最小 patch(改事件层/面板建一次/换 KeyCodes 常量)。
+    "browser input probe: injected pointer presses reached the page",
+    "gameplay UI is rebuilt every frame",
+    "keyboard keys registered with invalid key codes",
 )
 
 
@@ -455,7 +465,9 @@ def replan_game_design_node(state: dict) -> dict:
                 recover_partial_json=True,
                 cache_namespace=prompts.PLANNING_PROMPT_CACHE_NAMESPACE,
                 cache_prefix=prompts.PLANNING_SHARED_CACHE_PREFIX,
-                cache_task_scoped=False,
+                # Same per-task cache bucket as the planning chain: the shared
+                # global key never serves user content on this gateway.
+                cache_task_scoped=True,
             )
             design = _coerce_design(_parse_json(raw), state.get("game_spec"))
             extra = {"_tokens_delta": tokens}
@@ -466,6 +478,10 @@ def replan_game_design_node(state: dict) -> dict:
         design = _simplify_design_3d(state.get("game_design")) if is_3d else _simplify_design(state.get("game_design"))
     out = {
         "game_design": design,
+        # The replan prompt is a fresh conversation. Do not let a later
+        # DesignContractAgent accidentally chain to the superseded design.
+        "planning_transcript": None,
+        "planning_response_id": None,
         "generated_files": [],
         "project_files": [],
         "build_result": {},

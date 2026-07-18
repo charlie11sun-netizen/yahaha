@@ -74,9 +74,13 @@ docker compose up --build
 ### 可选的 GameCodeAgent 完整追踪
 
 - `CODE_AGENT_DETAILED_LOGGING_ENABLED=false` 为默认值；关闭时不会写入任何完整追踪数据。
-- 开启后，每轮模型输入/输出、完整 system/task prompt、工具参数与结果、最终会话历史、生成代码和异常堆栈
-  会写入独立的 `agent_trace_events` 表。该表不进入普通任务详情或 SSE，避免拖慢 Create 页面。
-- 这些数据包含用户内容和大量源代码，且增长很快，只应在受控调试环境短期开启。
+- 开启后，模型输入/输出、system/task prompt、工具参数与结果、生成代码和异常堆栈会写入独立的
+  `agent_trace_events` 表。SDK 首轮输入保存 history 快照，后续轮次只保存新增 delta；async hooks 会把
+  JSON 序列化和同步数据库写入卸载到工作线程。该表不进入普通任务详情或 SSE。
+- `CODE_AGENT_TRACE_PAYLOAD_WARN_CHARS` 控制大事件告警阈值，超过
+  `CODE_AGENT_TRACE_MAX_PAYLOAD_CHARS` 的事件改存带原始长度的截断预览。beat 每日按
+  `CODE_AGENT_TRACE_RETENTION_DAYS`（默认 7 天）分批清理，并通过 `created_at` 索引控制扫描成本。
+- 这些数据仍包含用户内容和大量源代码，只应在受控调试环境短期开启。
 - 按任务导出 JSONL：`docker compose exec api python -m app.tools.export_agent_traces <task-id>`；
   加 `--step-id` / `--run-id` 可缩小范围，`--pretty` 输出一个格式化 JSON 数组。
 

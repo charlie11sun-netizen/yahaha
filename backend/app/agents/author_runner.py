@@ -9,7 +9,7 @@ import time
 import uuid
 from typing import Literal
 
-from app.agents import detailed_trace, llm, tracing
+from app.agents import detailed_trace, llm, opik_integration, tracing
 from app.agents.agent_tools import AgentToolPolicy, _make_tools
 from app.agents.repair_session import RepairOutcome, RepairSession, _bundle_context_text, available_skills
 from app.core.config import settings
@@ -17,6 +17,7 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 _HEARTBEAT_INTERVAL_SECONDS = 12.0
+_STREAM_PROGRESS_INTERVAL_SECONDS = 1.0
 _STREAM_TRACE_INTERVAL_SECONDS = 5.0
 _STREAM_TERMINAL_FAILURE_EVENTS = {
     "error",
@@ -101,6 +102,9 @@ Hard contract:
 - No external URLs, network APIs, direct browser storage APIs, eval, dynamic import, or parent/top access except window.parent.postMessage. The immutable src/systems/GameWeaveBridge.ts is the only allowed persistence capability; do not edit it.
 - Read the reported file and its imported types together in one read_files call before editing. Use the smallest patch that fixes the root cause.
 - If the failure is a gameplay-QA quality issue (missing feedback effects, placeholder gameplay never replaced), read the game-quality-bar skill and wire the scaffold's Juice/Sfx helpers into the offending events instead of inventing new systems.
+- If QA reports authored modules never imported by the running game, the FIX is to WIRE those existing modules into PlayScene/main.ts per src/contracts/AuthorContract.ts — read them first; they usually contain the real designed gameplay. Never delete them and never satisfy the check by writing new placeholder gameplay: the cheapest correct patch is imports plus construction/update calls.
+- If QA reports an unconsumed level_layout, build the stage from gameConfig.levelLayout via src/systems/LevelLayout.ts (buildStatics + colliders, paths() for patrol/lane routes, points() for spawns/objectives) — the painted backdrop matches that plan.
+- If QA reports a visual review readability issue, apply its concrete findings as focused layout patches: raise undersized HUD/instruction text (primary >=18px, secondary >=16px at the embedded size), stop stacked panels from overlapping by measuring dynamic text heights instead of using fixed y offsets, and shrink or reposition panels that cover the play field.
 - If the failure is a top-down humanoid that rolls/spins as it moves or aims, keep the body sprite at rotation 0, use pose frames/flipX for facing, keep aim separate from movement, and rotate only weapons/reticles/projectiles.
 - Use apply_patch_set for fixes spanning imports, types, and callers. Run run_checks after every patch or patch set; it performs source validation, TypeScript checking, and an isolated Vite build.
 - Finish only when checks pass, with: FIXED: <summary>."""
@@ -119,10 +123,13 @@ The stage is deliberately NOT a game yet:
 - src/scenes/PlayScene.ts holds a small placeholder loop marked GW_PLACEHOLDER_GAMEPLAY. REPLACE that gameplay entirely with the designed game (keep the scene key "PlayScene" and the Boot -> Title -> Play -> GameOver flow). Shipping the placeholder, or a thin reskin of it, fails gameplay QA.
 - Implement the design's ACTUAL genre physics: platformers set arcade gravity and jump arcs, top-down games keep zero gravity, grid games move in discrete steps, wave/defense games script escalating spawns along paths. Never flatten the idea into generic collect-and-dodge.
 - Implement the design's signature_twist as real, visible rules — it is the game's identity, not decoration.
+- When gameConfig.levelLayout exists it is the SINGLE SOURCE OF TRUTH for level geometry — the painted backdrop was composed from the same plan, so following it makes the picture and the game agree. Build walls/cover as solid physics bodies from it (LevelLayout.buildStatics, or its walls/cover rects skinned with sheet frames), route enemy patrols/lanes along LevelLayout.paths() waypoints (enemies follow their designed routes — never generic random wandering), and place spawns/objectives/exits on LevelLayout.points(). Do NOT invent a second, conflicting set of level coordinates; gameplay QA fails authored games that ignore a provided levelLayout.
 
 Quality bar (gameplay QA checks this):
 - Every meaningful event gets layered feedback via the scaffold kit: Juice (hitFlash, shake, hitStop, burst, floatText, pulse) and Sfx presets (pickup, hit, shoot, explosion, powerup, jump, select, win, lose; playPitched for rising combo tones). A hit = flash + particles + shake + sound; score gains get floatText.
 - When gameConfig.sheet is present, build sprites and animations from its named frames (BootScene already preloads every spritesheet) instead of procedural circles. Each sheet's `animations` map groups the frames of one actor (first frame name -> all of its frames, guaranteed on the same texture): the player pose set (player_idle, player_move_a/player_move_b walk cycle, player_action, plus player_skill_2..5 per designed ability, player_hurt, player_jump, player_death, player_victory — switch to the matching pose on EVERY matching event: skills while firing, hurt during the invulnerability blink, jump while airborne, death before the game-over transition, victory on win), enemy groups ("grunt" -> ["grunt","grunt_b","grunt_move"]: run base+_move as the walk/patrol anim, flash the _b attack frame while attacking), boss groups (base/_b attack/_c special/_move — telegraph the special phase with the _c frame), and item idle+activated pairs (pulse the _b frame near pickup or on effect). Wire these into anims.create/setFrame so every actor visibly ANIMATES — a roster of static single-frame sprites wastes the generated art. Large rosters ship SEVERAL sheets: gameConfig.sheets lists them all and sheetFrame("name") from src/config/gameConfig.ts resolves any frame to its {key, index} — use it rather than assuming every frame lives on the first sheet. Fall back to procedural textures only when sheet is null. Gameplay QA fails authored games that preload the sheet without using it.
+- Bind design entities through the semantic sprite manifest (`spriteFrame("object.state")` / `semanticFrame(...)`) and then use each sheet's frameMeta map as GROUND TRUTH for what the selected frame actually shows. NEVER bind by guessing from frame-name order or numeric sheet indices (entity_2, entity_3, frame 15): one off-by-one guess re-skins the whole roster with the wrong buildings/characters.
+- When a sheet lists tileFamilies (connectable roads/pipes/rails/fences), draw that structure per grid cell with tileVariant(family, up, right, down, left) from src/config/gameConfig.ts — it returns the frame plus setAngle rotation for the orthogonal neighbor mask. Render tile frames at EXACTLY the grid cell size (no margins, no 0.9 shrink) so adjacent pieces join into a continuous network, and refresh the four neighbors of every cell the player changes. Never stamp one fixed variant (e.g. the crossing) on every cell, and never overlay identifying text labels on sprites as a substitute for the right art.
 - When the design declares obstacle/cover entities (crates, barricades, walls), they are MANDATORY gameplay: spawn them as static (or destructible) Arcade Physics bodies using their sheet frames, colliding with the player, enemies, AND projectiles so they create real cover tactics; place them per the design's arena description with fair spacing around spawns. Gameplay QA fails authored games whose designs declare obstacles that never appear in code.
 - When gameConfig.tilemap is present, draw it as ground decor beneath gameplay (the TilemapInfo doc in gameConfig.ts shows the three-line Phaser recipe; depth -15 keeps it above the Backdrop and below actors). For maze/grid designs its solidGids may double as wall collision via map.setCollision.
 - Keep the generated background visible: Backdrop.draw(this) covers the camera with the generated background image (dimmed for contrast) and falls back to a palette gradient automatically. Do not replace it with a flat fill. Several scene variants usually exist — gameConfig.assetKeys.backgrounds lists them in order (main stage, high-intensity/boss phase, alternate zone). Make the stage visibly EVOLVE: keep the image returned by Backdrop.draw and call Backdrop.swap(this, current, gameConfig.assetKeys.backgrounds[1]) on phase changes (boss spawn, late-game wave tier, level/zone change) for a crossfade; pair the swap with a Juice flash so the transition reads as an event.
@@ -219,11 +226,14 @@ def _build_author_input(
             "src/systems/Juice.ts (hitFlash/shake/hitStop/burst/floatText/pulse), src/systems/Sfx.ts (procedural sound "
             "presets), src/systems/Bounds.ts (world-edge handling: collideWorld/clamp/wrap/despawnOutside — every "
             "moving actor uses one), src/systems/Backdrop.ts (Backdrop.draw shows the generated background image, "
-            "gradient fallback), src/systems/Probe.ts (Probe.spawn('enemy', id) when an actor enters play and "
+            "gradient fallback), src/systems/InputRouter.ts (InputRouter.worldPointer routes stage input so it never "
+            "fires under HUD buttons; InputRouter.shield makes opaque panels swallow clicks — never attach world "
+            "actions to a raw scene-level pointer listener), src/systems/Probe.ts (Probe.spawn('enemy', id) when an actor enters play and "
             "Probe.emit('projectile:spawn', id) when a projectile fires — QA replays the game and reconciles probes "
-            "against the design roster), src/systems/GameWeaveBridge.ts (immutable versioned save/settings bridge when requested), "
+            "against the design roster; it also verifies pointer input is processed, UI is not rebuilt every frame, "
+            "and no addKey call resolves to a dead key code), src/systems/GameWeaveBridge.ts (immutable versioned save/settings bridge when requested), "
             "Sfx.setMasterVolume() (0..1 settings gain), src/config/gameConfig.ts (per-game palette + free-form params + generated sprite-sheet "
-            "frame maps: gameConfig.sheets lists every sheet, sheetFrame(name) resolves a frame across them, and "
+            "frame maps: semanticFrame/spriteFrame resolve semantic IDs first; gameConfig.sheets lists every sheet, sheetFrame(name) remains a legacy compatibility helper, and "
             "gameConfig.tilemap describes the generated ground-decor tilemap when present), and a Boot -> Title -> "
             "Play -> GameOver scene flow. src/scenes/PlayScene.ts is a placeholder marked GW_PLACEHOLDER_GAMEPLAY — "
             "replace its gameplay with the designed game. Preserve the scenes/entities/systems/ui/config boundaries."
@@ -321,6 +331,8 @@ def _record_fallback_response(
     agent_name: str,
     workflow_name: str,
     step_id: str | None,
+    retried: bool = False,
+    chained_from_response_id: str | None = None,
 ) -> int:
     """Persist one aggregate row only when no response.completed event was emitted."""
     if result is None:
@@ -340,7 +352,9 @@ def _record_fallback_response(
             agent=agent_name,
             workflow_name=workflow_name,
             provider_response_id=getattr(result, "last_response_id", None),
+            previous_response_id=chained_from_response_id,
             request_index=1,
+            retried=retried,
         )
     except Exception:  # noqa: BLE001 - accounting cannot abort generation
         logger.exception("fallback author response accounting failed")
@@ -484,6 +498,8 @@ class _StreamActivity:
         self.incomplete_reason: str | None = None
         self.error_message: str | None = None
         self.current_response_output_started = False
+        self.current_response_chars = 0
+        self.last_token_progress_at = now
         self._completed_response_ids: set[str] = set()
         self._response_started_at: dict[str, float] = {}
         self.completed_responses = 0
@@ -507,6 +523,8 @@ class _StreamActivity:
             # A resumed run starts at a model boundary. Previous successful tool turns
             # are carried by RunState and must not block a safe request retry.
             self.current_response_output_started = False
+            self.current_response_chars = 0
+            self.last_token_progress_at = now
 
     def observe(self, event) -> tuple[dict, bool]:
         now = time.perf_counter()
@@ -517,6 +535,9 @@ class _StreamActivity:
         response_id = _field(response, "id") or _field(raw, "response_id")
         sequence_number = _field(raw, "sequence_number")
         response_usage = _response_usage(response) if event_type == "response.completed" else None
+        delta_text = ""
+        if event_type.endswith(".delta") and stream_type == "raw_response_event":
+            delta_text = str(_field(raw, "delta", "") or "")
         is_output_progress = (
             event_type.endswith(".delta")
             or event_type in {"response.output_item.added", "response.content_part.added"}
@@ -531,6 +552,8 @@ class _StreamActivity:
             if event_type == "response.created":
                 self._response_started_at[response_key] = now
                 self.current_response_output_started = False
+                self.current_response_chars = 0
+                self.last_token_progress_at = now
                 self.terminal_failure = None
                 self.error_code = None
                 self.incomplete_reason = None
@@ -541,6 +564,13 @@ class _StreamActivity:
                 # The next model request, if any, is safe to resume until it emits
                 # its own output. Tool history is preserved through RunState.
                 self.current_response_output_started = False
+
+            provisional_tokens = None
+            if delta_text:
+                self.current_response_chars += len(delta_text)
+                if now - self.last_token_progress_at >= _STREAM_PROGRESS_INTERVAL_SECONDS:
+                    provisional_tokens = _estimate_stream_tokens(self.current_response_chars)
+                    self.last_token_progress_at = now
 
             self.last_event_at = now
             if is_output_progress or event_type in {
@@ -610,6 +640,7 @@ class _StreamActivity:
                 "cache_write_tokens": self.cache_write_tokens,
                 "response_count": self.completed_responses,
                 "completed_response": completed_response,
+                "provisional_tokens": provisional_tokens,
             }
         return payload, trace_now
 
@@ -693,6 +724,11 @@ def _deadline_reached(deadline_at: float | None) -> bool:
     return deadline_at is not None and time.monotonic() >= float(deadline_at)
 
 
+def _estimate_stream_tokens(text_chars: int) -> int:
+    """Estimate output tokens while a response is still streaming."""
+    return max(1, round(max(0, text_chars) / 4))
+
+
 async def _run_agent_streamed(
     runner,
     agent,
@@ -709,8 +745,14 @@ async def _run_agent_streamed(
     step_id: str | None = None,
     deadline_at: float | None = None,
     safe_partial_stream_retry: bool = False,
+    chained_from_response_id: str | None = None,
 ):
-    """Consume semantic SDK events and resume only safe failed model turns."""
+    """Consume semantic SDK events and resume only safe failed model turns.
+
+    Upstream planning context arrives replayed inside ``task_input`` (explicit
+    input items) — the gateway drops server-side previous_response_id, so the
+    id here is ledger lineage only and is never sent to the provider.
+    """
     max_retries = max(0, int(settings.OPENAI_MAX_RETRIES or 0))
     execution_run_id = execution_run_id or str(uuid.uuid4())
     retry_input = task_input
@@ -720,7 +762,8 @@ async def _run_agent_streamed(
         attempt = retry_index + 1
         activity.begin_attempt(attempt)
         attempt_changed = set(session.changed)
-        result = runner.run_streamed(agent, retry_input, **run_kwargs)
+        attempt_kwargs = dict(run_kwargs)
+        result = runner.run_streamed(agent, retry_input, **attempt_kwargs)
         try:
             stream = result.stream_events().__aiter__()
             while True:
@@ -768,6 +811,11 @@ async def _run_agent_streamed(
                         f"(last event: {state['event_type']})"
                     ) from exc
                 payload, should_trace = activity.observe(event)
+                if payload.get("provisional_tokens") is not None:
+                    session._log(
+                        f"stream_tokens={payload['provisional_tokens']}",
+                        heartbeat=True,
+                    )
                 completed = payload.get("completed_response")
                 if completed is not None:
                     try:
@@ -783,7 +831,15 @@ async def _run_agent_streamed(
                             agent=agent_name,
                             workflow_name=workflow_name,
                             provider_response_id=completed["provider_response_id"],
+                            # Only the run's first request contains the replayed
+                            # planning transcript; later turns chain run-internally.
+                            previous_response_id=(
+                                chained_from_response_id
+                                if completed["request_index"] == 1
+                                else None
+                            ),
                             request_index=completed["request_index"],
+                            retried=attempt > 1,
                         )
                     except Exception:  # noqa: BLE001 - accounting cannot abort generation
                         logger.exception(
@@ -988,6 +1044,8 @@ def _execute_agent(
     safe_partial_stream_retry: bool = True,
     preserve_partial_on_error: bool = False,
     workspace_tools: bool = True,
+    context_items: list[dict] | None = None,
+    chained_from_response_id: str | None = None,
 ) -> RepairOutcome | None:
     """共享的 SDK 工具循环执行器。返回 None 表示不可用/异常（调用方回落旧路径）。
 
@@ -1074,6 +1132,16 @@ def _execute_agent(
         agent_kwargs["tool_use_behavior"] = tool_use_behavior
     agent = Agent(**agent_kwargs)
 
+    # Replay the upstream conversation as explicit input items ahead of the
+    # task prompt. The stateless gateway ignores previous_response_id, so this
+    # is the only transport that actually carries planning context downstream.
+    run_input: object = task_input
+    if context_items:
+        run_input = [
+            {"role": str(item["role"]), "content": str(item["content"])}
+            for item in context_items
+        ] + [{"role": "user", "content": task_input}]
+
     start = time.perf_counter()
     execution_run_id = str(getattr(trace_recorder, "run_id", None) or uuid.uuid4())
     result = None
@@ -1090,6 +1158,16 @@ def _execute_agent(
         bundle=session.bundle_metadata(),
         status="running",
     )
+    if context_items:
+        session._log(
+            f"{agent_name} chained to prior conversation: {len(context_items)} "
+            "replayed message(s)"
+            + (
+                f", from {chained_from_response_id}"
+                if chained_from_response_id
+                else ""
+            )
+        )
     stream_activity = _StreamActivity()
     heartbeat_stop, heartbeat_thread = _start_heartbeat(
         session,
@@ -1100,9 +1178,10 @@ def _execute_agent(
     try:
         prompt_cache_key = _prompt_cache_key(workflow_name)
         extra_args = {"prompt_cache_key": prompt_cache_key} if prompt_cache_key else None
+        opik_agents_tracing = opik_integration.configure_agents_tracing()
         run_config = RunConfig(
             workflow_name=workflow_name,
-            tracing_disabled=True,
+            tracing_disabled=not opik_agents_tracing,
             model_settings=ModelSettings(
                 parallel_tool_calls=False,
                 include_usage=True,
@@ -1119,6 +1198,8 @@ def _execute_agent(
                     workflow_name=workflow_name,
                     turns_limit=turns_limit,
                     prompt_cache_key=prompt_cache_key,
+                    chained_from_response_id=chained_from_response_id,
+                    context_items=context_items,
                 ),
             )
         run_kwargs = {"max_turns": turns_limit, "run_config": run_config}
@@ -1129,7 +1210,7 @@ def _execute_agent(
             _run_agent_streamed(
                 Runner,
                 agent,
-                task_input,
+                run_input,
                 run_kwargs=run_kwargs,
                 session=session,
                 agent_name=agent_name,
@@ -1141,6 +1222,7 @@ def _execute_agent(
                 step_id=session.live_step_id,
                 deadline_at=deadline_at,
                 safe_partial_stream_retry=safe_partial_stream_retry,
+                chained_from_response_id=chained_from_response_id,
             )
         )
         raw_output = result.final_output
@@ -1214,6 +1296,7 @@ def _execute_agent(
     finally:
         _stop_heartbeat(heartbeat_stop, heartbeat_thread)
         _close_client(client)
+        opik_integration.flush()
 
     latency_ms = int((time.perf_counter() - start) * 1000)
     stream_usage = stream_activity.snapshot()
@@ -1228,6 +1311,8 @@ def _execute_agent(
             agent_name=agent_name,
             workflow_name=workflow_name,
             step_id=session.live_step_id,
+            retried=stream_usage["attempt"] > 1,
+            chained_from_response_id=chained_from_response_id,
         )
     _log_cache_hit(session, result)
     if trace_recorder and result is not None:
@@ -1376,6 +1461,7 @@ def run_author(
     qa_feedback: list | None = None,
     max_turns: int | None = None,
     deadline_at: float | None = None,
+    planning_context: dict | None = None,
 ) -> RepairOutcome | None:
     """作者模式：从骨架 bundle 起步，agent 自定文件结构逐文件写出完整游戏。
 
@@ -1393,19 +1479,21 @@ def run_author(
         # The bounded team owns only the implementation inside GameCodeAgent.
         from app.agents.author_orchestration import run_project_author_team
 
-        return run_project_author_team(
-            files,
-            spec=spec,
-            design=design,
-            runtime=runtime,
-            dimension=dimension,
-            qa_feedback=qa_feedback,
-            max_turns=max_turns or settings.CODE_AGENT_AUTHOR_MAX_TURNS,
-            live_step_id=tracing.current_step_id(),
-            deadline_at=deadline_at,
-            _execute_agent_fn=execute_agent,
-            _tracing=tracing,
-        )
+        team_kwargs = {
+            "spec": spec,
+            "design": design,
+            "runtime": runtime,
+            "dimension": dimension,
+            "qa_feedback": qa_feedback,
+            "max_turns": max_turns or settings.CODE_AGENT_AUTHOR_MAX_TURNS,
+            "live_step_id": tracing.current_step_id(),
+            "deadline_at": deadline_at,
+            "_execute_agent_fn": execute_agent,
+            "_tracing": tracing,
+        }
+        if planning_context:
+            team_kwargs["planning_context"] = planning_context
+        return run_project_author_team(files, **team_kwargs)
 
     session = RepairSession.from_files(files, live_step_id=tracing.current_step_id())
     return _execute_agent(

@@ -47,6 +47,11 @@ class SandboxResult:
     # Runtime behavior counters reported by the game scaffold's Probe system,
     # e.g. {"probe:ready": 1, "scene:start|PlayScene": 1, "anims:play|run": 40}.
     probes: dict[str, int] = field(default_factory=dict)
+    # Probe counters sampled at the start of the runner's quiet observation
+    # tail (after load + input settle). delta(probes - probes_start) over
+    # delta(frames_observed - frames_start) exposes per-frame UI rebuild churn.
+    probes_start: dict[str, int] = field(default_factory=dict)
+    frames_start: int = 0
 
 
 @dataclass
@@ -179,6 +184,8 @@ def run_bundle(
         ),
         visual_probe_error=str(data.get("visual_probe_error") or ""),
         probes=_parse_probes(data.get("probes")),
+        probes_start=_parse_probes(data.get("probes_start")),
+        frames_start=int(data.get("frames_start") or 0),
     )
 
 

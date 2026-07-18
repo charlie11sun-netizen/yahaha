@@ -7,15 +7,17 @@ import json
 import logging
 import time
 
+from app.agents import opik_integration
+from app.agents.decision_trace import build_decision, json_text
 from app.agents.state import STEP_META
 from app.core.config import settings
 from app.core.telemetry import agent_span, bind_context, get_context
 from app.db.session import SessionLocal
 from app.models import AgentLog, AgentStep, GenerationTask, LLMCall
 from app.models.common import StepStatus, TaskStatus, now_utc
+from app.services.agent_logs import append_agent_log
 from app.services.task_events import publish_task_event
 from sqlalchemy import func
-from sqlalchemy.exc import IntegrityError, OperationalError
 
 logger = logging.getLogger(__name__)
 
@@ -154,68 +156,45 @@ def record_step_log(
     payload: dict | None = None,
 ) -> bool:
     target_step_id = step_id or current_step_id()
-    if not target_step_id:
-        return False
-    last_error: Exception | None = None
-    for attempt in range(3):
-        db = SessionLocal()
-        committed_task_id: str | None = None
-        try:
-            # PostgreSQL serializes writers on the parent step row. SQLite
-            # ignores FOR UPDATE, so the unique constraint plus bounded retry is
-            # its concurrency fallback.
-            step = (
-                db.query(AgentStep)
-                .filter(AgentStep.id == target_step_id)
-                .with_for_update()
-                .one_or_none()
-            )
-            if not step:
-                return False
-            latest_seq = (
-                db.query(func.max(AgentLog.seq))
-                .filter(AgentLog.step_id == target_step_id)
-                .scalar()
-            )
-            seq = int(latest_seq) + 1 if latest_seq is not None else 0
-            db.add(
-                AgentLog(
-                    step_id=target_step_id,
-                    seq=int(seq),
-                    line=str(line),
-                    level=level,
-                    payload_json=_payload_json(payload),
-                )
-            )
-            db.commit()
-            committed_task_id = step.task_id
-        except IntegrityError as exc:
-            db.rollback()
-            last_error = exc
-        except OperationalError as exc:
-            db.rollback()
-            if "locked" not in str(exc).lower():
-                logger.exception("agent log write failed")
-                return False
-            last_error = exc
-        except Exception:  # noqa: BLE001
-            db.rollback()
-            logger.exception("agent log write failed")
-            return False
-        finally:
-            db.close()
-        if committed_task_id:
-            publish_task_event(committed_task_id, "log_appended")
-            return True
-        if attempt < 2:
-            time.sleep(0.01 * (attempt + 1))
-    if last_error is not None:
-        logger.warning("agent log write exhausted retries: %s", last_error)
-    return False
+    return append_agent_log(
+        line,
+        step_id=target_step_id,
+        payload=payload,
+        level=level,
+        session_factory=SessionLocal,
+        publish_task_event=publish_task_event,
+        logger=logger,
+        sleep=time.sleep,
+    )
+
+
+def _apply_decision(step: AgentStep, decision: dict | None) -> None:
+    if not decision:
+        return
+    step.contract_version = decision.get("contract_version")
+    step.prompt_version = decision.get("prompt_version")
+    step.model = decision.get("model")
+    step.provider = decision.get("provider")
+    input_ids = decision.get("input_artifact_ids") or []
+    output_ids = decision.get("output_artifact_ids") or []
+    step.input_artifact_id = input_ids[0] if input_ids else None
+    step.output_artifact_id = output_ids[0] if output_ids else None
+    step.input_artifact_ids_json = json_text(input_ids)
+    step.output_artifact_ids_json = json_text(output_ids)
+    step.adopted_plan = json_text(decision.get("adopted_plan"))
+    step.rejected_plans_json = json_text(decision.get("rejected_plans"))
+    step.asset_request_count = int(decision.get("asset_request_count") or 0)
+    step.qa_result_json = json_text(decision.get("qa_result"))
+    step.repair_reason = json_text(decision.get("repair_reason"))
+    step.impact_scope_json = json_text(decision.get("impact_scope"))
+    step.latency_ms = int(decision.get("latency_ms") or 0)
+    step.cost_usd = decision.get("cost_usd")
+    step.runtime_consumed = decision.get("runtime_consumed")
+    step.decision_json = json_text(decision)
 
 
 def finish_step(task_id, step_id, logs, tokens=0, repair=None, replan=None, failed=False,
-                spec=None, design=None) -> None:
+                spec=None, design=None, decision: dict | None = None) -> None:
     db = SessionLocal()
     try:
         if step_id:
@@ -240,8 +219,26 @@ def finish_step(task_id, step_id, logs, tokens=0, repair=None, replan=None, fail
                     if int(llm_call_count or 0) > 0
                     else int(tokens or 0)
                 )
+                llm_cost, llm_latency = (
+                    db.query(func.coalesce(func.sum(LLMCall.cost_usd), 0), func.coalesce(func.sum(LLMCall.latency_ms), 0))
+                    .filter(LLMCall.step_id == step_id)
+                    .one()
+                )
+                if decision is None:
+                    decision = {}
+                if not decision.get("latency_ms"):
+                    decision["latency_ms"] = int(llm_latency or 0)
+                if decision.get("cost_usd") is None and llm_cost:
+                    decision["cost_usd"] = llm_cost
+                _apply_decision(step, decision)
                 step.finished_at = now_utc()
-                existing_lines = {log.line for log in (step.logs or [])}
+                # Live log writes may already contain lines from this step.  Consume
+                # those occurrences one-for-one so finalization does not duplicate
+                # realtime rows while still preserving legitimate repeated lines in
+                # the terminal batch.
+                existing_line_counts: dict[str, int] = {}
+                for log in step.logs or []:
+                    existing_line_counts[log.line] = existing_line_counts.get(log.line, 0) + 1
                 latest_seq = (
                     db.query(func.max(AgentLog.seq))
                     .filter(AgentLog.step_id == step_id)
@@ -250,10 +247,11 @@ def finish_step(task_id, step_id, logs, tokens=0, repair=None, replan=None, fail
                 next_seq = int(latest_seq) + 1 if latest_seq is not None else 0
                 for line in logs or []:
                     text = str(line)
-                    if text in existing_lines:
+                    existing_count = existing_line_counts.get(text, 0)
+                    if existing_count:
+                        existing_line_counts[text] = existing_count - 1
                         continue
                     db.add(AgentLog(step_id=step_id, seq=next_seq, line=text))
-                    existing_lines.add(text)
                     next_seq += 1
         task = db.get(GenerationTask, task_id)
         if task:
@@ -274,6 +272,101 @@ def finish_step(task_id, step_id, logs, tokens=0, repair=None, replan=None, fail
                 task.spec_json = json.dumps(spec, ensure_ascii=False)
             if design is not None:
                 task.design_json = json.dumps(design, ensure_ascii=False)
+        if step_id and step and decision:
+            from app.models import AgentTraceEvent
+
+            decision_payload = dict(decision)
+            decision_payload["event_type"] = "decision"
+            input_ids = decision.get("input_artifact_ids") or []
+            output_ids = decision.get("output_artifact_ids") or []
+            db.add(
+                AgentTraceEvent(
+                    task_id=task_id,
+                    step_id=step_id,
+                    run_id=task_id,
+                    seq=int(step.seq or 0),
+                    source="pipeline",
+                    event_type="decision",
+                    agent=step.agent,
+                    model=decision.get("model"),
+                    provider=decision.get("provider"),
+                    contract_version=decision.get("contract_version"),
+                    prompt_version=decision.get("prompt_version"),
+                    input_artifact_id=input_ids[0] if input_ids else None,
+                    output_artifact_id=output_ids[0] if output_ids else None,
+                    input_artifact_ids_json=json_text(input_ids),
+                    output_artifact_ids_json=json_text(output_ids),
+                    adopted_plan=json_text(decision.get("adopted_plan")),
+                    rejected_plans_json=json_text(decision.get("rejected_plans")),
+                    asset_request_count=int(decision.get("asset_request_count") or 0),
+                    qa_result_json=json_text(decision.get("qa_result")),
+                    repair_reason=json_text(decision.get("repair_reason")),
+                    impact_scope_json=json_text(decision.get("impact_scope")),
+                    latency_ms=int(decision.get("latency_ms") or 0),
+                    cost_usd=decision.get("cost_usd"),
+                    runtime_consumed=decision.get("runtime_consumed"),
+                    decision_json=json_text(decision_payload),
+                    payload_json=json_text(decision_payload) or "{}",
+                    payload_chars=len(json_text(decision_payload) or "{}"),
+                )
+            )
+            for asset in decision.get("asset_trace") or []:
+                if not isinstance(asset, dict):
+                    continue
+                asset_payload = dict(asset)
+                asset_payload["event_type"] = "asset_generation"
+                asset_id = asset.get("asset_id")
+                existing_asset_event = (
+                    db.query(AgentTraceEvent)
+                    .filter(
+                        AgentTraceEvent.task_id == task_id,
+                        AgentTraceEvent.asset_id == asset_id,
+                        AgentTraceEvent.event_type == "asset_generation",
+                    )
+                    .order_by(AgentTraceEvent.created_at.desc())
+                    .first()
+                    if asset_id
+                    else None
+                )
+                if existing_asset_event is not None:
+                    existing_asset_event.consumer_refs_json = json_text(asset.get("consumer_refs"))
+                    existing_asset_event.coverage_result = json_text(asset.get("coverage_result"))
+                    existing_asset_event.runtime_consumed = asset.get("runtime_consumed")
+                    existing_asset_event.decision_json = json_text(asset_payload)
+                    existing_asset_event.payload_json = json_text(asset_payload) or "{}"
+                    existing_asset_event.payload_chars = len(existing_asset_event.payload_json)
+                    continue
+                db.add(
+                    AgentTraceEvent(
+                        task_id=task_id,
+                        step_id=step_id,
+                        run_id=task_id,
+                        seq=int(step.seq or 0) * 1000 + len(asset_payload),
+                        source="pipeline",
+                        event_type="asset_generation",
+                        agent=step.agent,
+                        model=asset.get("model") or decision.get("model"),
+                        provider=asset.get("provider") or decision.get("provider"),
+                        contract_version=decision.get("contract_version"),
+                        prompt_version=decision.get("prompt_version"),
+                        output_artifact_id=asset.get("output_artifact_id"),
+                        output_artifact_ids_json=json_text([asset.get("output_artifact_id")]),
+                        asset_request_count=1,
+                        latency_ms=int(asset.get("latency_ms") or decision.get("latency_ms") or 0),
+                        runtime_consumed=asset.get("runtime_consumed"),
+                        asset_id=asset.get("asset_id"),
+                        prompt_hash=asset.get("prompt_hash"),
+                        requested_states_json=json_text(asset.get("requested_states")),
+                        returned_dimensions=json_text(asset.get("returned_dimensions")),
+                        postprocess_checks_json=json_text(asset.get("postprocess_checks")),
+                        frame_count=asset.get("frame_count"),
+                        consumer_refs_json=json_text(asset.get("consumer_refs")),
+                        coverage_result=json_text(asset.get("coverage_result")),
+                        decision_json=json_text(asset_payload),
+                        payload_json=json_text(asset_payload) or "{}",
+                        payload_chars=len(json_text(asset_payload) or "{}"),
+                    )
+                )
         db.commit()
         publish_task_event(task_id, "step_finished")
     finally:
@@ -288,9 +381,16 @@ def logged(node_name: str):
         def wrapper(state: dict):
             task_id = state.get("task_id")
             sid = begin_step(task_id, agent, display)
+            started = time.perf_counter()
             if not state.get("use_real"):
                 time.sleep(0.45)  # mock 节点太快，停顿让 running 态可见
-            with agent_span(
+            with opik_integration.generation_span(
+                node_name=node_name,
+                task_id=task_id,
+                step_id=sid,
+                agent=agent,
+                display_name=display,
+            ), agent_span(
                 f"agent.{node_name}",
                 {"agent": agent, "task_id": task_id, "step_id": sid},
             ) as span:
@@ -298,7 +398,19 @@ def logged(node_name: str):
                     result = fn(state)
                 except Exception as exc:  # noqa: BLE001
                     span.record_exception(exc)
-                    finish_step(task_id, sid, [f"error: {exc}"], failed=True)
+                    opik_integration.update_generation_span(
+                        output={"status": "failed", "error": str(exc)[:500]},
+                        metadata={"failed": True},
+                        tags=["status:failed"],
+                    )
+                    decision = build_decision(
+                        state,
+                        {"error_message": str(exc), "status": "failed"},
+                        agent=agent,
+                        display_name=display,
+                        latency_ms=int((time.perf_counter() - started) * 1000),
+                    )
+                    finish_step(task_id, sid, [f"error: {exc}"], failed=True, decision=decision)
                     bind_context(step_id=None, agent=None, node_name=None)
                     raise
                 tokens = int(result.get("_tokens_delta", 0) or 0)
@@ -317,11 +429,51 @@ def logged(node_name: str):
                     repair_total = int(rep if rep is not None else state.get("repair_attempts") or 0) + int(
                         gp if gp is not None else state.get("gameplay_repair_attempts") or 0
                     )
+                stage_status = "failed" if failed else "completed"
+                decision = build_decision(
+                    state,
+                    result,
+                    agent=agent,
+                    display_name=display,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                )
+                opik_integration.update_generation_span(
+                    output={
+                        "status": stage_status,
+                        "tokens": tokens,
+                        "repair_attempts": repair_total,
+                        "replan_attempts": result.get("replan_attempts"),
+                        "decision_chain": decision,
+                    },
+                    metadata={
+                        "failed": failed,
+                        "tokens": tokens,
+                        "repair_attempts": repair_total,
+                        "replan_attempts": result.get("replan_attempts"),
+                        "contract_version": decision.get("contract_version"),
+                        "prompt_version": decision.get("prompt_version"),
+                        "model": decision.get("model"),
+                        "provider": decision.get("provider"),
+                        "input_artifact_ids": decision.get("input_artifact_ids"),
+                        "output_artifact_ids": decision.get("output_artifact_ids"),
+                        "adopted_plan": decision.get("adopted_plan"),
+                        "rejected_plans": decision.get("rejected_plans"),
+                        "asset_request_count": decision.get("asset_request_count"),
+                        "qa_result": decision.get("qa_result"),
+                        "repair_reason": decision.get("repair_reason"),
+                        "impact_scope": decision.get("impact_scope"),
+                        "latency_ms": decision.get("latency_ms"),
+                        "cost_usd": decision.get("cost_usd"),
+                        "runtime_consumed": decision.get("runtime_consumed"),
+                    },
+                    tags=[f"status:{stage_status}"],
+                )
                 finish_step(
                     task_id, sid, result.get("_logs"), tokens,
                     repair=repair_total, replan=result.get("replan_attempts"),
                     failed=failed,
                     spec=result.get("game_spec"), design=result.get("game_design"),
+                    decision=decision,
                 )
                 bind_context(step_id=None, agent=None, node_name=None)
                 return result

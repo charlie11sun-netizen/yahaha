@@ -2257,6 +2257,10 @@ export interface components {
             kind: string;
             /** Name */
             name: string;
+            /** Semantic Ids */
+            semantic_ids: string[];
+            /** Frame Audit */
+            frame_audit: Record<string, unknown>;
         };
         /** TaskIdOut */
         TaskIdOut: {
@@ -2367,6 +2371,21 @@ export interface components {
             attempt?: number | null;
             /** Caused By Step Id */
             caused_by_step_id?: string | null;
+            contract_version?: string | null;
+            prompt_version?: string | null;
+            model?: string | null;
+            provider?: string | null;
+            input_artifact_ids?: string[] | null;
+            output_artifact_ids?: string[] | null;
+            adopted_plan?: unknown;
+            rejected_plans?: unknown;
+            asset_request_count?: number | null;
+            qa_result?: unknown;
+            repair_reason?: unknown;
+            impact_scope?: unknown;
+            latency_ms?: number | null;
+            cost_usd?: number | null;
+            runtime_consumed?: boolean | null;
             /** Logs */
             logs: string[];
             /** Name */

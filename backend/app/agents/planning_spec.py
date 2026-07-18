@@ -191,6 +191,111 @@ def _heuristic_design(spec: dict) -> dict:
     }
 
 
+def _coerce_level_layout(data) -> dict | None:
+    """Normalize the model-authored level_layout into a safe, bounded shape.
+
+    坐标全部钳进网格、畸形条目静默丢弃、数量封顶——布局是"背景构图 + 碰撞
+    几何 + 敌人路线"的共同事实源,坏一条脏数据会同时毒三条链路。返回 None
+    表示设计没给出可用布局(管线各消费方都必须容忍缺失)。
+    """
+    if not isinstance(data, dict):
+        return None
+    grid = data.get("grid") if isinstance(data.get("grid"), dict) else {}
+
+    def _dim(value, default: int, lo: int, hi: int) -> int:
+        try:
+            parsed = int(float(value))
+        except (TypeError, ValueError):
+            parsed = default
+        return max(lo, min(hi, parsed))
+
+    cols = _dim(grid.get("cols"), 24, 8, 48)
+    rows = _dim(grid.get("rows"), 14, 6, 32)
+
+    def _cell(raw) -> list[int] | None:
+        if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+            return None
+        try:
+            c, r = int(float(raw[0])), int(float(raw[1]))
+        except (TypeError, ValueError):
+            return None
+        return [max(0, min(cols - 1, c)), max(0, min(rows - 1, r))]
+
+    def _span(raw) -> list[int] | None:
+        if not isinstance(raw, (list, tuple)) or len(raw) < 4:
+            return None
+        try:
+            values = [int(float(v)) for v in raw[:4]]
+        except (TypeError, ValueError):
+            return None
+        c0, r0, c1, r1 = values
+        c0, c1 = sorted((max(0, min(cols - 1, c0)), max(0, min(cols - 1, c1))))
+        r0, r1 = sorted((max(0, min(rows - 1, r0)), max(0, min(rows - 1, r1))))
+        return [c0, r0, c1, r1]
+
+    def _slug(value, fallback: str) -> str:
+        text = " ".join(str(value or "").split())
+        return (text or fallback)[:48]
+
+    walls = [span for span in (_span(raw) for raw in (data.get("walls") or [])[:60]) if span][:40]
+    cover = [cell for cell in (_cell(raw) for raw in (data.get("cover") or [])[:40]) if cell][:24]
+    regions: list[dict] = []
+    for index, raw in enumerate((data.get("regions") or [])[:10]):
+        if not isinstance(raw, dict):
+            continue
+        span = _span(raw.get("cells") or raw.get("rect"))
+        if span is None:
+            continue
+        regions.append(
+            {
+                "id": _slug(raw.get("id"), f"region_{index + 1}"),
+                "name": _slug(raw.get("name") or raw.get("id"), f"Area {index + 1}"),
+                "cells": span,
+                "kind": _slug(raw.get("kind"), "zone"),
+            }
+        )
+        if len(regions) >= 6:
+            break
+    paths: list[dict] = []
+    for index, raw in enumerate((data.get("paths") or [])[:12]):
+        if not isinstance(raw, dict):
+            continue
+        points = [cell for cell in (_cell(p) for p in (raw.get("points") or [])[:24]) if cell][:16]
+        if len(points) < 2:
+            continue
+        paths.append({"id": _slug(raw.get("id"), f"path_{index + 1}"), "points": points})
+        if len(paths) >= 8:
+            break
+    points: list[dict] = []
+    for index, raw in enumerate((data.get("points") or [])[:24]):
+        if not isinstance(raw, dict):
+            continue
+        cell = _cell(raw.get("at") or raw.get("cell"))
+        if cell is None:
+            continue
+        points.append(
+            {
+                "id": _slug(raw.get("id"), f"point_{index + 1}"),
+                "kind": _slug(raw.get("kind"), "marker").lower(),
+                "at": cell,
+            }
+        )
+        if len(points) >= 16:
+            break
+    if not (walls or cover or paths or regions):
+        return None
+    if not any(point.get("kind") == "spawn" for point in points):
+        points.insert(0, {"id": "player_spawn", "kind": "spawn", "at": [cols // 2, rows // 2]})
+    return {
+        "grid": {"cols": cols, "rows": rows},
+        "regions": regions,
+        "walls": walls,
+        "cover": cover,
+        "paths": paths,
+        "points": points,
+    }
+
+
 def _coerce_design(data: dict, spec: dict | None = None) -> dict:
     base = _heuristic_design(spec or {})
     if isinstance(data, dict):
@@ -219,6 +324,9 @@ def _coerce_design(data: dict, spec: dict | None = None) -> dict:
         ):
             if data.get(key):
                 base[key] = data[key]
+        layout = _coerce_level_layout(data.get("level_layout"))
+        if layout:
+            base["level_layout"] = layout
     return base
 
 
@@ -232,6 +340,7 @@ def _simplify_design(design: dict) -> dict:
                 "archetype",
                 "screen",
                 "background",
+                "level_layout",
                 "player",
                 "rules",
                 "ui",

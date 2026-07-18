@@ -240,6 +240,8 @@ class TaskGeneratedAssetOut(BaseModel):
     content_type: str
     bytes: int
     data_url: str
+    semantic_ids: list[str] = Field(default_factory=list)
+    frame_audit: dict = Field(default_factory=dict)
 
 
 class TaskGeneratedAssetListOut(BaseModel):
@@ -520,6 +522,15 @@ class AgentLogItemOut(BaseModel):
     entries: list[AgentLogEntryOut] | None = None
 
 
+class TaskLogPageOut(BaseModel):
+    limit: int | None = None
+    before: int | None = None
+    next_before: int | None = None
+    has_more: bool
+    total: int
+    returned: int
+
+
 class TaskStepOut(BaseModel):
     seq: int
     agent: str
@@ -528,6 +539,21 @@ class TaskStepOut(BaseModel):
     tokens: int | None = None
     attempt: int | None = None
     caused_by_step_id: str | None = None
+    contract_version: str | None = None
+    prompt_version: str | None = None
+    model: str | None = None
+    provider: str | None = None
+    input_artifact_ids: list[str] | None = None
+    output_artifact_ids: list[str] | None = None
+    adopted_plan: Any | None = None
+    rejected_plans: Any | None = None
+    asset_request_count: int | None = None
+    qa_result: Any | None = None
+    repair_reason: Any | None = None
+    impact_scope: Any | None = None
+    latency_ms: int | None = None
+    cost_usd: float | None = None
+    runtime_consumed: bool | None = None
     logs: list[str]
 
 
@@ -566,6 +592,7 @@ class TaskOut(BaseModel):
     assets: list[TaskAssetOut] | None = None
     logs: list[AgentLogItemOut] | None = None
     steps: list[TaskStepOut] | None = None
+    logs_page: TaskLogPageOut | None = None
 
 
 class TaskLogDeltaOut(BaseModel):
