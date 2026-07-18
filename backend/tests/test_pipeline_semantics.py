@@ -8,6 +8,45 @@ from conftest import auth_headers
 import pytest
 
 
+def test_contract_gate_failure_resumes_the_contract_compiler():
+    from types import SimpleNamespace
+
+    from app.agents.pipeline import _failed_resume_node
+    from app.models.common import StepStatus
+
+    steps = [
+        SimpleNamespace(
+            agent="DesignContractCompilerAgent",
+            name="Design Contract",
+            status=StepStatus.FAILED,
+        ),
+        SimpleNamespace(
+            agent="ContractGateAgent",
+            name="Contract Gate",
+            status=StepStatus.FAILED,
+        ),
+    ]
+
+    assert _failed_resume_node(steps) == "design_contract"
+
+
+def test_standalone_failure_still_resumes_its_own_node():
+    from types import SimpleNamespace
+
+    from app.agents.pipeline import _failed_resume_node
+    from app.models.common import StepStatus
+
+    steps = [
+        SimpleNamespace(
+            agent="GameplayQAAgent",
+            name="Gameplay QA",
+            status=StepStatus.FAILED,
+        )
+    ]
+
+    assert _failed_resume_node(steps) == "gameplay_qa"
+
+
 def _make_task(client, headers):
     return client.post("/tasks", json={"idea": "a neon breakout game"}, headers=headers).json()["task_id"]
 

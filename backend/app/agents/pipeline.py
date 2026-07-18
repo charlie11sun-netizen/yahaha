@@ -39,6 +39,28 @@ def _node_for_step(step) -> str | None:
     return None
 
 
+def _failed_resume_node(steps) -> str | None:
+    """Choose the checkpoint node that can actually repair the last failure.
+
+    ``design_contract`` records a failed step by returning ``contract_error``;
+    the graph then visits ``contract_gate``, which records a second failure and
+    terminates.  Resuming the newest failed step would replay the gate against
+    the same stale error forever.  In that paired-failure case the compiler is
+    the true repair boundary and must be replayed first.
+    """
+
+    failed_nodes = [
+        node
+        for step in steps
+        if step.status == StepStatus.FAILED and (node := _node_for_step(step))
+    ]
+    if not failed_nodes:
+        return None
+    if failed_nodes[-1] == "contract_gate" and "design_contract" in failed_nodes:
+        return "design_contract"
+    return failed_nodes[-1]
+
+
 def _checkpoint_plan(graph, task_id: str, failed_node: str | None) -> tuple[dict | None, dict | None]:
     """Return (resume_config, completed_final) for a durable task thread.
 
@@ -188,11 +210,7 @@ def _run_generation(task_id: str, expected_dispatch_generation: int | None = Non
             return
         was_running = task.status == TaskStatus.RUNNING
         resume_requested = was_running or bool(task.steps)
-        last_failed_step = next(
-            (step for step in reversed(task.steps) if step.status == StepStatus.FAILED),
-            None,
-        )
-        failed_node = _node_for_step(last_failed_step)
+        failed_node = _failed_resume_node(task.steps)
         idea = task.idea
         task_kind = task.task_kind or "generation"
         feedback_text = task.feedback_text or ""
