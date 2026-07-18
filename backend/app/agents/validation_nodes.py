@@ -1173,7 +1173,8 @@ def _gameplay_qa(state: dict) -> dict:
             semantic_metrics = semantic_sprite_manifest.get("metrics") or {}
             if semantic_runtime_manifest:
                 semantic_tokens = ("spriteframe", "semanticframe", "semantic_frames", "semanticframes")
-                if not any(token in gameplay_low for token in semantic_tokens):
+                resolves_semantic_frames = any(token in gameplay_low for token in semantic_tokens)
+                if not resolves_semantic_frames:
                     semantic_msg = (
                         "semantic sprite manifest is available but gameplay never resolves semantic IDs; "
                         "use spriteFrame()/semanticFrame() instead of sheet indices or positional frame names"
@@ -1183,7 +1184,12 @@ def _gameplay_qa(state: dict) -> dict:
                     else:
                         warnings.append(semantic_msg)
                 unused_required = int(semantic_metrics.get("unused_required_frame") or 0)
-                if unused_required:
+                # ``unused_required_frame`` is generated-asset coverage until
+                # code exists, not runtime-consumption proof.  A dynamic
+                # semantic resolver intentionally need not repeat every ID as a
+                # source literal, so stale/static zero-coverage must not create
+                # an impossible QA loop when the resolver is wired.
+                if unused_required and not resolves_semantic_frames:
                     coverage_msg = (
                         f"sprite demand manifest has {unused_required} unused required frame(s); "
                         "remove unconsumed demands or add the missing runtime consumer before publishing"
@@ -1197,7 +1203,17 @@ def _gameplay_qa(state: dict) -> dict:
                 for a in manifest_assets
             )
             if has_sheet_asset and not any(
-                tok in gameplay_low for tok in ["gameconfig.sheet", "sheet.frames", "sheet.key", "sheetframe"]
+                tok in gameplay_low
+                for tok in [
+                    "gameconfig.sheet",
+                    "sheet.frames",
+                    "sheet.key",
+                    "sheetframe",
+                    "spriteframe",
+                    "semanticframe",
+                    "semantic_frames",
+                    "semanticframes",
+                ]
             ):
                 sheet_msg = (
                     "generated sprite sheet is preloaded but never used: build sprites and animations "

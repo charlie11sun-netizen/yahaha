@@ -850,6 +850,32 @@ def test_gameplay_qa_accepts_sheetframe_helper_usage():
     assert result["passed"], result["issues"]
 
 
+def test_gameplay_qa_accepts_dynamic_semantic_frame_resolver_with_pre_codegen_metrics():
+    manifest = copy.deepcopy(_SHEET_MANIFEST)
+    manifest["sprite_demand_manifest"] = {
+        "demands": [{"semantic_id": "player.idle", "required": True}],
+        "runtime_manifest": {
+            "player.idle": {"sheet": "sheet", "frame": "f_000"},
+        },
+        # This value describes the pre-codegen asset phase and must not
+        # override source evidence that a dynamic resolver is wired.
+        "metrics": {"unused_required_frame": 1, "required_asset_coverage": 0.0},
+    }
+    play = _PAD + (
+        "createCursorKeys();\n"
+        "Backdrop.draw(this);\n"
+        "const frame = semanticFrame('player.idle');\n"
+        "this.add.sprite(0, 0, frame.sheet, frame.frame);\n"
+        "this.juice.shake(0.01); // restart"
+    )
+
+    result = validation_nodes._gameplay_qa(_vite_state(play, "author", manifest))
+
+    assert not any("unused required frame" in issue for issue in result["issues"])
+    assert not any("sprite sheet is preloaded" in issue for issue in result["issues"])
+    assert result["passed"], result["issues"]
+
+
 def test_gameplay_qa_flags_moving_bodies_without_bounds_handling():
     play = _PAD + "createCursorKeys();\nenemy.setVelocity(100, 0);\nthis.juice.shake(0.01); // restart"
     authored = validation_nodes._gameplay_qa(_vite_state(play, code_source="author"))

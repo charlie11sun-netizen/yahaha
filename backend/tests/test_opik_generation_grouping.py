@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 
 import opik
 import pytest
@@ -268,6 +269,38 @@ def test_decision_trace_separates_envelope_version_from_design_contract_revision
     assert decision["trace_contract_version"] == AGENT_STEP_CONTRACT_VERSION
     assert decision["design_contract_revision"] == 6
     assert decision["design_contract_hash"] == "decision-contract-hash"
+
+
+def test_decision_trace_asset_annotation_does_not_mutate_pipeline_manifest():
+    manifest = {
+        "assets": [
+            {
+                "asset_id": "asset-1",
+                "key": "sheet",
+                "kind": "spritesheet",
+                "semantic_frames": {
+                    "player.idle": {"frame": "f_000", "required": True},
+                },
+            }
+        ],
+        "sprite_demand_manifest": {
+            "demands": [{"semantic_id": "player.idle", "required": True}],
+            "runtime_manifest": {
+                "player.idle": {"sheet": "sheet", "frame": "f_000"},
+            },
+            "metrics": {"unused_required_frame": 0, "required_asset_coverage": 1.0},
+        },
+    }
+    original = deepcopy(manifest)
+
+    build_decision(
+        {"asset_manifest": manifest},
+        {"generated_assets": [{"path": "assets/sheet.png", "content_b64": "AA=="}]},
+        agent="GameAssetGenerationAgent",
+        display_name="Generate Game Assets",
+    )
+
+    assert manifest == original
 
 
 def test_finalize_root_trace_exposes_contract_identity(db_session_factory, monkeypatch):

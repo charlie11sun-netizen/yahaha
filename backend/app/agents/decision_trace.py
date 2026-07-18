@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from typing import Any, Iterable
 
 from app.core.config import settings
@@ -235,7 +236,13 @@ def build_decision(
     )
     runtime_consumed = result.get("runtime_consumed")
     if runtime_consumed is None and isinstance(manifest, dict):
-        annotations = annotate_asset_consumption(manifest, _output_files(result))
+        # Trace enrichment must never mutate the LangGraph business state.  In
+        # particular, the asset-generation step has no source files yet; an
+        # in-place annotation there used to overwrite the manifest's generated
+        # frame coverage with ``unused_required_frame == required_count`` and
+        # made every later Gameplay QA fail regardless of authored code.
+        trace_manifest = deepcopy(manifest)
+        annotations = annotate_asset_consumption(trace_manifest, _output_files(result))
         if annotations:
             runtime_consumed = all(item["runtime_consumed"] for item in annotations)
             by_id = {item.get("asset_id"): item for item in annotations if item.get("asset_id")}
