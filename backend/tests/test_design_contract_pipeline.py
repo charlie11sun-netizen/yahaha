@@ -199,6 +199,33 @@ def test_non_latin_entity_names_get_distinct_stable_semantic_ids():
     assert all(entity_id.startswith("game-") for entity_id in first_ids)
 
 
+def test_player_view_merges_with_player_entity_instead_of_duplicating_id():
+    contract = compile_design_contract(
+        {"title": "City Builder"},
+        {
+            "player": {"visual": "mayor cursor", "states": ["idle"]},
+            "entities": [
+                {
+                    "id": "player",
+                    "role": "player controller",
+                    "visual": "selected mayor cursor",
+                    "states": ["idle", "selected"],
+                },
+                {"id": "residential", "role": "building"},
+            ],
+        },
+        intent_record=IntentRecord(
+            raw_prompt="build a city",
+            normalized_prompt="build a city",
+        ),
+    )
+
+    assert [entity.id for entity in contract.entities].count("player") == 1
+    player = next(entity for entity in contract.entities if entity.id == "player")
+    assert player.role == "player controller"
+    assert {state.id for state in player.states} == {"idle", "selected"}
+
+
 def test_contract_gate_never_reuses_parent_after_revision_compile_error():
     parent = freeze_contract(_contract())
     result = contract_gate_node(

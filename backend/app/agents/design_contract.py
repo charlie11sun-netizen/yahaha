@@ -275,13 +275,34 @@ def _entity_states(entity: Mapping[str, Any], entity_id: str, role: str) -> list
 
 
 def _design_entities(design: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    rows: list[Mapping[str, Any]] = []
+    rows = [
+        row
+        for row in _items(design.get("entities"))
+        if isinstance(row, Mapping)
+    ]
     player = design.get("player")
     if isinstance(player, Mapping):
-        rows.append({"id": "player", "role": "player", **dict(player)})
-    for row in _items(design.get("entities")):
-        if isinstance(row, Mapping):
-            rows.append(row)
+        player_index = next(
+            (
+                index
+                for index, row in enumerate(rows)
+                if _slug(row.get("id") or row.get("name"), "entity") == "player"
+                or _text(row.get("role") or row.get("type")).lower().startswith(
+                    "player"
+                )
+            ),
+            None,
+        )
+        if player_index is None:
+            rows.insert(0, {"id": "player", "role": "player", **dict(player)})
+        else:
+            row = dict(rows[player_index])
+            rows[player_index] = {
+                **dict(player),
+                **row,
+                "id": "player",
+                "role": row.get("role") or row.get("type") or "player",
+            }
     boss = design.get("boss")
     if isinstance(boss, Mapping) and boss.get("name") and not any(str(row.get("name") or row.get("id")) == str(boss.get("name")) for row in rows):
         rows.append({"id": _slug(boss.get("name"), "boss"), "role": "boss", **dict(boss)})
