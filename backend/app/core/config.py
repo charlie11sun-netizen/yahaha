@@ -104,7 +104,9 @@ class Settings(BaseSettings):
     # arguments/results, generated code, and exception tracebacks.
     CODE_AGENT_DETAILED_LOGGING_ENABLED: bool = False
     CODE_AGENT_TRACE_PAYLOAD_WARN_CHARS: int = Field(default=250_000, ge=1)
-    CODE_AGENT_TRACE_MAX_PAYLOAD_CHARS: int = Field(default=1_000_000, ge=256)
+    # 0 keeps the complete serialized payload. Positive values opt into a
+    # bounded preview for deployments that prefer a hard per-event DB limit.
+    CODE_AGENT_TRACE_MAX_PAYLOAD_CHARS: int = Field(default=0, ge=0)
     CODE_AGENT_TRACE_RETENTION_DAYS: int = Field(default=7, ge=1)
 
     # Opik self-hosted Agent trace export. Keep disabled unless the SDK and

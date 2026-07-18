@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import settings
@@ -36,6 +36,8 @@ class LLMResult:
     partial: bool = False
     cached_tokens: int = 0
     cache_write_tokens: int = 0
+    cache_read_reported: bool = False
+    cache_write_reported: bool = False
     provider_response_id: str | None = None
 
     def __iter__(self):
@@ -139,6 +141,7 @@ def persist_call(
     request_index: int | None = None,
     status: str = "completed",
     error_code: str | None = None,
+    cache_metadata: Mapping[str, Any] | None = None,
 ) -> bool:
     task_id = task_id or context.get("task_id")
     step_id = step_id or context.get("step_id")
@@ -152,12 +155,22 @@ def persist_call(
         max(0, int(result.cache_write_tokens or 0)),
         max(0, prompt_tokens - cached_tokens),
     )
+    cache_metadata = dict(cache_metadata or {})
     provider_response_id = provider_response_id or result.provider_response_id
     db = session_factory()
     try:
-        if step_id and not task_id:
-            step = db.get(AgentStep, step_id)
-            task_id = step.task_id if step else None
+        step = (
+            db.get(AgentStep, step_id)
+            if step_id and callable(getattr(db, "get", None))
+            else None
+        )
+        if step and not task_id:
+            task_id = step.task_id
+        task = (
+            db.get(GenerationTask, task_id)
+            if task_id and callable(getattr(db, "get", None))
+            else None
+        )
         call = LLMCall(
             task_id=task_id,
             step_id=step_id,
@@ -170,11 +183,29 @@ def persist_call(
             status=status,
             error_code=error_code,
             model=result.model,
+            provider=cache_metadata.get("provider") or "openai",
+            provider_route=cache_metadata.get("provider_route"),
+            prompt_version=cache_metadata.get("prompt_version")
+            or (step.prompt_version if step else None),
+            contract_hash=cache_metadata.get("contract_hash")
+            or (step.contract_hash if step else None)
+            or (task.contract_hash if task else None),
+            contract_revision=cache_metadata.get("contract_revision")
+            or (task.contract_revision if task else None),
+            prompt_cache_key_hash=cache_metadata.get("prompt_cache_key_hash"),
+            prompt_cache_namespace=cache_metadata.get("prompt_cache_namespace"),
+            prompt_cache_mode=cache_metadata.get("prompt_cache_mode"),
+            prompt_cache_ttl=cache_metadata.get("prompt_cache_ttl"),
+            cache_prefix_hash=cache_metadata.get("cache_prefix_hash"),
+            toolset_hash=cache_metadata.get("toolset_hash"),
+            cache_bypass_reason=cache_metadata.get("cache_bypass_reason"),
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
             cached_tokens=cached_tokens,
             cache_write_tokens=cache_write_tokens,
+            cache_read_reported=bool(result.cache_read_reported),
+            cache_write_reported=bool(result.cache_write_reported),
             latency_ms=max(0, int(result.latency_ms or 0)),
             retried=retried,
             cost_usd=result.cost_usd,
@@ -228,6 +259,8 @@ def response_usage_result(
     completion_tokens: int,
     cached_tokens: int = 0,
     cache_write_tokens: int = 0,
+    cache_read_reported: bool = False,
+    cache_write_reported: bool = False,
     latency_ms: int = 0,
     provider_response_id: str | None = None,
 ) -> LLMResult:
@@ -254,6 +287,8 @@ def response_usage_result(
         ),
         cached_tokens=cached_tokens,
         cache_write_tokens=cache_write_tokens,
+        cache_read_reported=bool(cache_read_reported),
+        cache_write_reported=bool(cache_write_reported),
         provider_response_id=provider_response_id,
     )
 
@@ -266,6 +301,8 @@ def usage_result(
     *,
     cached_tokens: int = 0,
     cache_write_tokens: int = 0,
+    cache_read_reported: bool = False,
+    cache_write_reported: bool = False,
 ) -> LLMResult:
     prompt_tokens = int(prompt_tokens or 0)
     completion_tokens = int(completion_tokens or 0)
@@ -285,7 +322,106 @@ def usage_result(
         ),
         cached_tokens=int(cached_tokens or 0),
         cache_write_tokens=int(cache_write_tokens or 0),
+        cache_read_reported=bool(cache_read_reported),
+        cache_write_reported=bool(cache_write_reported),
     )
+
+
+def cache_observability_metadata(
+    *,
+    session_factory: Callable[[], Any],
+    task_id: str,
+    step_id: str | None = None,
+    logger: Any,
+) -> dict[str, Any]:
+    """Aggregate durable LLM cache accounting into bounded Opik metadata."""
+    db = session_factory()
+    try:
+        query = db.query(
+            func.count(LLMCall.id),
+            func.coalesce(func.sum(LLMCall.prompt_tokens), 0),
+            func.coalesce(func.sum(LLMCall.completion_tokens), 0),
+            func.coalesce(func.sum(LLMCall.cached_tokens), 0),
+            func.coalesce(func.sum(LLMCall.cache_write_tokens), 0),
+            func.coalesce(func.sum(LLMCall.latency_ms), 0),
+            func.coalesce(func.avg(LLMCall.latency_ms), 0),
+            func.coalesce(func.sum(LLMCall.cost_usd), 0),
+            func.coalesce(
+                func.sum(case((LLMCall.retried.is_(True), 1), else_=0)), 0
+            ),
+            func.coalesce(
+                func.sum(case((LLMCall.cached_tokens > 0, 1), else_=0)), 0
+            ),
+            func.coalesce(
+                func.sum(case((LLMCall.cache_read_reported.is_(True), 1), else_=0)), 0
+            ),
+            func.coalesce(
+                func.sum(case((LLMCall.cache_write_reported.is_(True), 1), else_=0)), 0
+            ),
+        ).filter(LLMCall.task_id == task_id)
+        if step_id:
+            query = query.filter(LLMCall.step_id == step_id)
+        row = query.one()
+        call_count = int(row[0] or 0)
+        if not call_count:
+            return {}
+        prompt_tokens = int(row[1] or 0)
+        completion_tokens = int(row[2] or 0)
+        cached_tokens = min(int(row[3] or 0), prompt_tokens)
+        cache_write_tokens = max(0, int(row[4] or 0))
+        uncached_tokens = max(0, prompt_tokens - cached_tokens)
+        metrics = {
+            "call_count": call_count,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+            "cached_tokens": cached_tokens,
+            "cache_write_tokens": cache_write_tokens,
+            "uncached_tokens": uncached_tokens,
+            "cache_hit_rate": round(cached_tokens / prompt_tokens, 6)
+            if prompt_tokens
+            else None,
+            "cache_write_rate": round(cache_write_tokens / uncached_tokens, 6)
+            if uncached_tokens
+            else None,
+            "latency_ms_total": int(row[5] or 0),
+            "latency_ms_avg": round(float(row[6] or 0), 3),
+            "cost_usd": float(row[7] or 0),
+            "retry_count": int(row[8] or 0),
+            "cache_hit_call_count": int(row[9] or 0),
+            "cache_read_reported_count": int(row[10] or 0),
+            "cache_write_reported_count": int(row[11] or 0),
+        }
+        return {
+            "llm_call_count": metrics["call_count"],
+            "llm_prompt_tokens": metrics["prompt_tokens"],
+            "llm_completion_tokens": metrics["completion_tokens"],
+            "llm_total_tokens": metrics["total_tokens"],
+            "llm_cached_tokens": metrics["cached_tokens"],
+            "llm_cache_write_tokens": metrics["cache_write_tokens"],
+            "llm_uncached_tokens": metrics["uncached_tokens"],
+            "llm_cache_hit_rate": metrics["cache_hit_rate"],
+            "llm_cache_write_rate": metrics["cache_write_rate"],
+            "llm_latency_ms_avg": metrics["latency_ms_avg"],
+            "llm_cost_usd": metrics["cost_usd"],
+            "llm_retry_count": metrics["retry_count"],
+            "llm_cache_hit_call_count": metrics["cache_hit_call_count"],
+            "llm_cache_read_reported_count": metrics[
+                "cache_read_reported_count"
+            ],
+            "llm_cache_write_reported_count": metrics[
+                "cache_write_reported_count"
+            ],
+            "llm_cache_metrics": metrics,
+        }
+    except Exception:  # noqa: BLE001 - observability aggregation must fail open
+        logger.exception(
+            "LLM cache observability aggregation failed",
+            extra={"generation_task_id": task_id, "step_id": step_id},
+        )
+        return {}
+    finally:
+        db.close()
 
 
 def record_stream_progress(

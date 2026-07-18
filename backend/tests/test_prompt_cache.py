@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from app.agents import llm, planning_nodes, prompts, repair
+from app.agents import llm, llm_cache, planning_nodes, prompts, repair
 from app.core.telemetry import bind_context, clear_context
 
 
@@ -34,6 +34,32 @@ def test_prompt_cache_key_is_stable_per_task_and_bounded(monkeypatch):
     assert llm.prompt_cache_key("planning-v1") != llm.prompt_cache_key("planning-v1")
     monkeypatch.setattr(llm.settings, "CODE_AGENT_PROMPT_CACHE_KEY_PREFIX", " ")
     assert llm.prompt_cache_key("planning-v1") is None
+
+
+def test_cache_request_metadata_is_stable_and_does_not_expose_sensitive_inputs():
+    metadata = llm_cache.cache_request_metadata(
+        cache_key="secret-cache-key",
+        namespace="planning-v2",
+        mode="explicit",
+        ttl="30m",
+        cache_prefix="private prompt prefix",
+        tools=[{"name": "write_file", "schema": {"path": "string"}}],
+        base_url="https://user:password@gateway.example:8443/v1?token=secret",
+    )
+
+    assert metadata["provider_route"] == "gateway.example:8443/v1"
+    assert metadata["prompt_cache_key_hash"] == llm_cache.stable_hash(
+        "secret-cache-key"
+    )
+    assert metadata["cache_prefix_hash"] == llm_cache.stable_hash(
+        "private prompt prefix"
+    )
+    assert metadata["toolset_hash"]
+    assert "secret-cache-key" not in str(metadata)
+    assert "private prompt prefix" not in str(metadata)
+    assert "password" not in str(metadata)
+    assert llm_cache.usage_detail_reported({"cached_tokens": 0}, "cached_tokens")
+    assert not llm_cache.usage_detail_reported({}, "cached_tokens")
 
 
 def test_generation_planning_nodes_share_one_cacheable_prefix(monkeypatch):
@@ -182,7 +208,7 @@ def test_chat_uses_key_only_implicit_cache_for_compatible_gateway(monkeypatch):
     monkeypatch.setattr(
         llm,
         "_record_call",
-        lambda _result, retried=False, previous_response_id=None: None,
+        lambda _result, **_kwargs: None,
     )
     monkeypatch.setattr(llm, "_record_stream_progress", lambda _line, payload=None: None)
     monkeypatch.setattr(llm.settings, "CODE_AGENT_PROMPT_CACHE_KEY_PREFIX", "cache-test")
@@ -242,9 +268,10 @@ def test_chat_replays_context_items_and_records_chain_lineage(monkeypatch):
         llm, "_client", lambda timeout=None: _streaming_responses(captured, response)
     )
 
-    def fake_record(result, retried=False, previous_response_id=None):
-        ledger["previous_response_id"] = previous_response_id
+    def fake_record(result, **kwargs):
+        ledger["previous_response_id"] = kwargs.get("previous_response_id")
         ledger["provider_response_id"] = result.provider_response_id
+        ledger["cache_metadata"] = kwargs.get("cache_metadata")
 
     monkeypatch.setattr(llm, "_record_call", fake_record)
     monkeypatch.setattr(
@@ -278,6 +305,10 @@ def test_chat_replays_context_items_and_records_chain_lineage(monkeypatch):
     # Lineage lands in the ledger and in the usage log payload.
     assert ledger["previous_response_id"] == "resp-plan"
     assert ledger["provider_response_id"] == "resp-design"
+    assert ledger["cache_metadata"]["prompt_cache_namespace"] == (
+        prompts.PLANNING_PROMPT_CACHE_NAMESPACE
+    )
+    assert ledger["cache_metadata"]["prompt_cache_key_hash"]
     usage_payloads = [
         payload for _line, payload in progress if payload and payload.get("type") == "usage"
     ]
@@ -331,7 +362,7 @@ def test_chat_warns_when_provider_drops_conversation_state(monkeypatch):
         llm, "_client", lambda timeout=None: _streaming_responses(captured, response)
     )
     monkeypatch.setattr(
-        llm, "_record_call", lambda result, retried=False, previous_response_id=None: None
+        llm, "_record_call", lambda result, **_kwargs: None
     )
     monkeypatch.setattr(
         llm,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 
 from app.agents import detailed_trace, llm_accounting, llm_cache, llm_provider
 from app.agents.llm_accounting import LLMResult
@@ -69,6 +70,7 @@ def _persist_call(
     request_index: int | None = None,
     status: str = "completed",
     error_code: str | None = None,
+    cache_metadata: dict | None = None,
 ) -> bool:
     return llm_accounting.persist_call(
         result,
@@ -86,6 +88,7 @@ def _persist_call(
         request_index=request_index,
         status=status,
         error_code=error_code,
+        cache_metadata=cache_metadata,
     )
 
 
@@ -94,9 +97,22 @@ def _record_call(
     *,
     retried: bool = False,
     previous_response_id: str | None = None,
+    run_id: str | None = None,
+    agent: str | None = None,
+    workflow_name: str | None = None,
+    request_index: int | None = None,
+    cache_metadata: dict | None = None,
 ) -> bool:
     return _persist_call(
-        result, retried=retried, previous_response_id=previous_response_id
+        result,
+        retried=retried,
+        previous_response_id=previous_response_id,
+        run_id=run_id,
+        agent=agent,
+        workflow_name=workflow_name,
+        provider_response_id=result.provider_response_id,
+        request_index=request_index,
+        cache_metadata=cache_metadata,
     )
 
 
@@ -107,6 +123,8 @@ def record_response_usage(
     completion_tokens: int,
     cached_tokens: int = 0,
     cache_write_tokens: int = 0,
+    cache_read_reported: bool = False,
+    cache_write_reported: bool = False,
     latency_ms: int = 0,
     task_id: str | None = None,
     step_id: str | None = None,
@@ -119,6 +137,7 @@ def record_response_usage(
     status: str = "completed",
     error_code: str | None = None,
     retried: bool = False,
+    cache_metadata: dict | None = None,
 ) -> LLMResult:
     """Persist exactly one Agents SDK provider response.
 
@@ -134,6 +153,8 @@ def record_response_usage(
         completion_tokens=completion_tokens,
         cached_tokens=cached_tokens,
         cache_write_tokens=cache_write_tokens,
+        cache_read_reported=cache_read_reported,
+        cache_write_reported=cache_write_reported,
         latency_ms=latency_ms,
         provider_response_id=provider_response_id,
     )
@@ -150,6 +171,7 @@ def record_response_usage(
         status=status,
         error_code=error_code,
         retried=retried,
+        cache_metadata=cache_metadata,
     )
     return result
 
@@ -175,6 +197,9 @@ def record_usage(
     retried: bool = False,
     cached_tokens: int = 0,
     cache_write_tokens: int = 0,
+    cache_read_reported: bool = False,
+    cache_write_reported: bool = False,
+    cache_metadata: dict | None = None,
 ) -> LLMResult:
     """把外部执行的模型调用并入统一记账（LLMCall 行 + task.cost_usd）。
 
@@ -188,8 +213,10 @@ def record_usage(
         latency_ms=latency_ms,
         cached_tokens=cached_tokens,
         cache_write_tokens=cache_write_tokens,
+        cache_read_reported=cache_read_reported,
+        cache_write_reported=cache_write_reported,
     )
-    _record_call(result, retried=retried)
+    _record_call(result, retried=retried, cache_metadata=cache_metadata)
     return result
 
 
@@ -203,6 +230,10 @@ def _partial_stream_result(
     retried: bool,
     context_chars: int = 0,
     previous_response_id: str | None = None,
+    run_id: str | None = None,
+    agent: str | None = None,
+    workflow_name: str | None = None,
+    cache_metadata: dict | None = None,
 ) -> LLMResult:
     latency_ms = int((time.perf_counter() - start) * 1000)
     prompt_tokens = _estimate_prompt_tokens(system, input_text) + (
@@ -220,7 +251,16 @@ def _partial_stream_result(
         partial=True,
     )
     _record_stream_progress(f"stream_tokens={completion_tokens}")
-    _record_call(result, retried=retried, previous_response_id=previous_response_id)
+    _record_call(
+        result,
+        retried=retried,
+        previous_response_id=previous_response_id,
+        run_id=run_id,
+        agent=agent,
+        workflow_name=workflow_name,
+        request_index=1,
+        cache_metadata=cache_metadata,
+    )
     return result
 
 
@@ -380,6 +420,35 @@ def chat(
         kwargs["text"] = {"format": response_format}
 
     context = get_context()
+    explicit_mode = "prompt_cache_options" in kwargs
+    if explicit_mode:
+        cache_mode = "explicit"
+        cache_bypass_reason = None
+    elif cache_key:
+        cache_mode = "routed_implicit"
+        if cache_prefix is None:
+            cache_bypass_reason = None
+        elif not settings.OPENAI_EXPLICIT_PROMPT_CACHE_ENABLED:
+            cache_bypass_reason = "explicit_cache_disabled"
+        else:
+            cache_bypass_reason = "model_not_explicit_cache_capable"
+    else:
+        cache_mode = "provider_implicit"
+        cache_bypass_reason = (
+            "cache_namespace_missing"
+            if not cache_namespace
+            else "cache_key_prefix_disabled"
+        )
+    cache_metadata = llm_cache.cache_request_metadata(
+        cache_key=cache_key,
+        namespace=cache_namespace,
+        mode=cache_mode,
+        ttl="30m" if explicit_mode else None,
+        cache_prefix=cache_prefix,
+        bypass_reason=cache_bypass_reason,
+        base_url=settings.OPENAI_BASE_URL,
+    )
+    cache_metadata["prompt_version"] = cache_namespace
     # require_code_context=False: planning/QA calls must be traceable too —
     # the chain rebuild was unverifiable while stages 1-3 never reached
     # agent_trace_events (request kwargs are the only place the replayed
@@ -390,6 +459,9 @@ def chat(
         model=requested_model,
         require_code_context=False,
     )
+    ledger_run_id = trace_recorder.run_id if trace_recorder else str(uuid.uuid4())
+    ledger_agent = context.get("agent") or "GameCodeAgent"
+    ledger_workflow = cache_namespace or context.get("node_name") or "responses-api"
     if trace_recorder:
         trace_recorder.record(
             "run_start",
@@ -455,6 +527,10 @@ def chat(
                         retried=retried,
                         context_chars=context_chars,
                         previous_response_id=chain_lineage_id,
+                        run_id=ledger_run_id,
+                        agent=ledger_agent,
+                        workflow_name=ledger_workflow,
+                        cache_metadata=cache_metadata,
                     )
                     if trace_recorder:
                         trace_recorder.record(
@@ -489,6 +565,10 @@ def chat(
                     retried=retried,
                     context_chars=context_chars,
                     previous_response_id=chain_lineage_id,
+                    run_id=ledger_run_id,
+                    agent=ledger_agent,
+                    workflow_name=ledger_workflow,
+                    cache_metadata=cache_metadata,
                 )
                 if trace_recorder:
                     trace_recorder.record(
@@ -560,6 +640,10 @@ def chat(
                         retried=retried,
                         context_chars=context_chars,
                         previous_response_id=chain_lineage_id,
+                        run_id=ledger_run_id,
+                        agent=ledger_agent,
+                        workflow_name=ledger_workflow,
+                        cache_metadata=cache_metadata,
                     )
                     if trace_recorder:
                         trace_recorder.record(
@@ -608,6 +692,12 @@ def chat(
     usage_details = getattr(usage, "input_tokens_details", None) if usage else None
     cached_tokens = int(getattr(usage_details, "cached_tokens", 0) or 0)
     cache_write_tokens = int(getattr(usage_details, "cache_write_tokens", 0) or 0)
+    cache_read_reported = llm_cache.usage_detail_reported(
+        usage_details, "cached_tokens"
+    )
+    cache_write_reported = llm_cache.usage_detail_reported(
+        usage_details, "cache_write_tokens"
+    )
     if latency_ms >= int(_STREAM_PROGRESS_INTERVAL_SECONDS * 1000):
         _record_stream_progress(f"stream_tokens={completion_tokens or _estimate_tokens(len(text))}")
     actual_model = str(getattr(completed_response, "model", None) or requested_model)
@@ -631,13 +721,19 @@ def chat(
                 "total_tokens": total_tokens,
                 "cached_tokens": cached_tokens,
                 "cache_write_tokens": cache_write_tokens,
+                "cache_read_reported": cache_read_reported,
+                "cache_write_reported": cache_write_reported,
                 "requests": 1,
                 "cache_percent": cache_pct,
                 "prompt_cache_key": cache_key,
                 "prompt_cache_namespace": cache_namespace,
-                "prompt_cache_mode": (
-                    "explicit" if "prompt_cache_options" in kwargs else "implicit"
-                ) if cache_key else None,
+                "prompt_cache_mode": cache_mode,
+                "prompt_cache_key_hash": cache_metadata.get(
+                    "prompt_cache_key_hash"
+                ),
+                "cache_prefix_hash": cache_metadata.get("cache_prefix_hash"),
+                "provider_route": cache_metadata.get("provider_route"),
+                "cache_bypass_reason": cache_metadata.get("cache_bypass_reason"),
                 "previous_response_id": chain_lineage_id,
                 "context_messages": len(context_items or []),
             },
@@ -658,6 +754,8 @@ def chat(
         ),
         cached_tokens=cached_tokens,
         cache_write_tokens=cache_write_tokens,
+        cache_read_reported=cache_read_reported,
+        cache_write_reported=cache_write_reported,
         provider_response_id=str(getattr(completed_response, "id", "") or "") or None,
     )
     if trace_recorder:
@@ -672,7 +770,16 @@ def chat(
             },
             model=actual_model,
         )
-    _record_call(result, retried=retried, previous_response_id=chain_lineage_id)
+    _record_call(
+        result,
+        retried=retried,
+        previous_response_id=chain_lineage_id,
+        run_id=ledger_run_id,
+        agent=ledger_agent,
+        workflow_name=ledger_workflow,
+        request_index=1,
+        cache_metadata=cache_metadata,
+    )
     if trace_recorder:
         trace_recorder.record(
             "run_end",

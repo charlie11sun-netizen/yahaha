@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 _CONFIG_LOCK = threading.Lock()
 _AGENTS_CONFIGURED = False
-GENERATION_TRACE_SCHEMA_VERSION = "gameweave.opik.generation/2.0"
+GENERATION_TRACE_SCHEMA_VERSION = "gameweave.opik.generation/2.1"
 
 
 def enabled() -> bool:

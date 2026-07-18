@@ -9,7 +9,7 @@ import time
 import uuid
 from typing import Literal
 
-from app.agents import detailed_trace, llm, opik_integration, tracing
+from app.agents import detailed_trace, llm, llm_cache, opik_integration, tracing
 from app.agents.agent_tools import AgentToolPolicy, _make_tools
 from app.agents.repair_session import RepairOutcome, RepairSession, _bundle_context_text, available_skills
 from app.core.config import settings
@@ -272,6 +272,12 @@ def _usage_of(result) -> dict:
         "total": int(getattr(usage, "total_tokens", 0) or 0),
         "cached": int(getattr(details, "cached_tokens", 0) or 0),
         "cache_write": int(getattr(details, "cache_write_tokens", 0) or 0),
+        "cache_read_reported": llm_cache.usage_detail_reported(
+            details, "cached_tokens"
+        ),
+        "cache_write_reported": llm_cache.usage_detail_reported(
+            details, "cache_write_tokens"
+        ),
     }
 
 
@@ -294,6 +300,8 @@ def _log_cache_hit(session: RepairSession, result) -> None:
                 total_tokens=u["total"],
                 cached_tokens=u["cached"],
                 cache_write_tokens=u["cache_write"],
+                cache_read_reported=u["cache_read_reported"],
+                cache_write_reported=u["cache_write_reported"],
                 uncached_tokens=uncached,
                 requests=u["requests"],
                 cache_percent=pct,
@@ -333,6 +341,7 @@ def _record_fallback_response(
     step_id: str | None,
     retried: bool = False,
     chained_from_response_id: str | None = None,
+    cache_metadata: dict | None = None,
 ) -> int:
     """Persist one aggregate row only when no response.completed event was emitted."""
     if result is None:
@@ -346,6 +355,8 @@ def _record_fallback_response(
             completion_tokens=u["output"],
             cached_tokens=u["cached"],
             cache_write_tokens=u["cache_write"],
+            cache_read_reported=u["cache_read_reported"],
+            cache_write_reported=u["cache_write_reported"],
             latency_ms=latency_ms,
             step_id=step_id,
             run_id=execution_run_id,
@@ -355,6 +366,7 @@ def _record_fallback_response(
             previous_response_id=chained_from_response_id,
             request_index=1,
             retried=retried,
+            cache_metadata=cache_metadata,
         )
     except Exception:  # noqa: BLE001 - accounting cannot abort generation
         logger.exception("fallback author response accounting failed")
@@ -458,7 +470,7 @@ def _stream_error_details(raw_event) -> tuple[str | None, str | None, str | None
     )
 
 
-def _response_usage(response) -> dict[str, int]:
+def _response_usage(response) -> dict[str, int | bool]:
     usage = _field(response, "usage")
     details = _field(usage, "input_tokens_details")
     input_tokens = int(_field(usage, "input_tokens", 0) or 0)
@@ -475,6 +487,12 @@ def _response_usage(response) -> dict[str, int]:
         "cached_tokens": int(_field(details, "cached_tokens", 0) or 0),
         "cache_write_tokens": int(
             _field(details, "cache_write_tokens", 0) or 0
+        ),
+        "cache_read_reported": llm_cache.usage_detail_reported(
+            details, "cached_tokens"
+        ),
+        "cache_write_reported": llm_cache.usage_detail_reported(
+            details, "cache_write_tokens"
         ),
     }
 
@@ -746,6 +764,7 @@ async def _run_agent_streamed(
     deadline_at: float | None = None,
     safe_partial_stream_retry: bool = False,
     chained_from_response_id: str | None = None,
+    cache_metadata: dict | None = None,
 ):
     """Consume semantic SDK events and resume only safe failed model turns.
 
@@ -825,6 +844,8 @@ async def _run_agent_streamed(
                             completion_tokens=completed["output_tokens"],
                             cached_tokens=completed["cached_tokens"],
                             cache_write_tokens=completed["cache_write_tokens"],
+                            cache_read_reported=completed["cache_read_reported"],
+                            cache_write_reported=completed["cache_write_reported"],
                             latency_ms=completed["latency_ms"],
                             step_id=step_id,
                             run_id=execution_run_id,
@@ -840,6 +861,7 @@ async def _run_agent_streamed(
                             ),
                             request_index=completed["request_index"],
                             retried=attempt > 1,
+                            cache_metadata=cache_metadata,
                         )
                     except Exception:  # noqa: BLE001 - accounting cannot abort generation
                         logger.exception(
@@ -1175,9 +1197,27 @@ def _execute_agent(
         operation=operation,
         activity=stream_activity,
     )
+    cache_metadata: dict | None = None
     try:
         prompt_cache_key = _prompt_cache_key(workflow_name)
         extra_args = {"prompt_cache_key": prompt_cache_key} if prompt_cache_key else None
+        cache_metadata = llm_cache.cache_request_metadata(
+            cache_key=prompt_cache_key,
+            namespace=workflow_name,
+            mode="routed_implicit" if prompt_cache_key else "provider_implicit",
+            tools=[
+                {
+                    "type": getattr(tool, "type", type(tool).__name__),
+                    "name": getattr(tool, "name", None),
+                    "description": getattr(tool, "description", None),
+                    "params_json_schema": getattr(tool, "params_json_schema", None),
+                }
+                for tool in tools
+            ],
+            bypass_reason=(None if prompt_cache_key else "cache_key_prefix_disabled"),
+            base_url=settings.OPENAI_BASE_URL,
+        )
+        cache_metadata["prompt_version"] = workflow_name
         opik_agents_tracing = opik_integration.configure_agents_tracing()
         run_config = RunConfig(
             workflow_name=workflow_name,
@@ -1223,6 +1263,7 @@ def _execute_agent(
                 deadline_at=deadline_at,
                 safe_partial_stream_retry=safe_partial_stream_retry,
                 chained_from_response_id=chained_from_response_id,
+                cache_metadata=cache_metadata,
             )
         )
         raw_output = result.final_output
@@ -1313,6 +1354,7 @@ def _execute_agent(
             step_id=session.live_step_id,
             retried=stream_usage["attempt"] > 1,
             chained_from_response_id=chained_from_response_id,
+            cache_metadata=cache_metadata,
         )
     _log_cache_hit(session, result)
     if trace_recorder and result is not None:

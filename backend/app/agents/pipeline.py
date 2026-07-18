@@ -10,7 +10,7 @@ import logging
 from psycopg import Error as PsycopgError
 from psycopg_pool import PoolTimeout
 
-from app.agents import opik_integration
+from app.agents import llm_accounting, opik_integration
 from app.agents.decision_trace import (
     AGENT_STEP_CONTRACT_VERSION,
     DECISION_TRACE_SCHEMA_VERSION,
@@ -237,6 +237,7 @@ def _run_generation(task_id: str, expected_dispatch_generation: int | None = Non
             "design_contract_hash": getattr(task, "contract_hash", None),
             "design_contract_revision": getattr(task, "contract_revision", None),
             "design_contract_schema_version": saved_contract_meta.get("schema_version"),
+            "opik_trace_id": getattr(task, "opik_trace_id", None),
         },
         tags=[
             "gameweave",
@@ -457,6 +458,7 @@ def _finalize_generation_trace(task_id: str) -> None:
             "failed_stage": task.failed_stage,
             "decision_schema_version": DECISION_TRACE_SCHEMA_VERSION,
             "trace_contract_version": AGENT_STEP_CONTRACT_VERSION,
+            "opik_trace_id": getattr(task, "opik_trace_id", None),
         }
         contract = _json_object(getattr(task, "contract_json", None))
         contract_metadata = opik_integration.contract_observability_metadata(
@@ -467,6 +469,12 @@ def _finalize_generation_trace(task_id: str) -> None:
             }
         )
         metadata.update(contract_metadata)
+        cache_metadata = llm_accounting.cache_observability_metadata(
+            session_factory=SessionLocal,
+            task_id=task_id,
+            logger=logger,
+        )
+        metadata.update(cache_metadata)
         output = {
             "status": status,
             "game_id": game_id,
@@ -479,6 +487,8 @@ def _finalize_generation_trace(task_id: str) -> None:
             "design_contract_schema_version": contract_metadata.get(
                 "design_contract_schema_version"
             ),
+            "opik_trace_id": getattr(task, "opik_trace_id", None),
+            "cache_observability": cache_metadata.get("llm_cache_metrics"),
         }
         display_name = game.title if game and game.title else task.id
         opik_integration.update_generation_trace(
@@ -499,6 +509,26 @@ def _finalize_generation_trace(task_id: str) -> None:
         db.close()
 
 
+def _persist_opik_trace_id(task_id: str, trace) -> None:
+    trace_id = str(getattr(trace, "id", "") or "").strip()
+    if not trace_id:
+        return
+    db = SessionLocal()
+    try:
+        task = db.get(GenerationTask, task_id)
+        if task and task.opik_trace_id != trace_id:
+            task.opik_trace_id = trace_id
+            db.commit()
+    except Exception:  # noqa: BLE001 - telemetry correlation must fail open
+        db.rollback()
+        logger.exception(
+            "failed to persist Opik trace id",
+            extra={"generation_task_id": task_id, "opik_trace_id": trace_id},
+        )
+    finally:
+        db.close()
+
+
 def run_generation(task_id: str, expected_dispatch_generation: int | None = None) -> None:
     """Run one generation inside a searchable Opik task-level root trace."""
     try:
@@ -507,6 +537,8 @@ def run_generation(task_id: str, expected_dispatch_generation: int | None = None
             dispatch_generation=expected_dispatch_generation,
         ) as trace:
             try:
+                if trace is not None:
+                    _persist_opik_trace_id(task_id, trace)
                 _run_generation(task_id, expected_dispatch_generation)
             finally:
                 if trace is not None:

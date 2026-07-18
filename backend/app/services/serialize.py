@@ -426,6 +426,7 @@ def task_out(
         "dimension": getattr(t, "dimension", "2d") or "2d",
         "contract_hash": getattr(t, "contract_hash", None),
         "contract_revision": getattr(t, "contract_revision", None),
+        "opik_trace_id": getattr(t, "opik_trace_id", None),
         "created_at": _iso(t.created_at), "started_at": _iso(t.started_at),
         "finished_at": _iso(t.finished_at), "updated_at": _iso(latest_event_at),
         "progress": progress, "game_title": game_title,

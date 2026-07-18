@@ -67,6 +67,7 @@ def test_llm_chat_records_usage_and_cost(db_session_factory, monkeypatch):
     published_events = []
     monkeypatch.setattr(llm, "SessionLocal", db_session_factory)
     monkeypatch.setattr(llm, "_client", lambda timeout=None: fake_client)
+    monkeypatch.setattr(llm.detailed_trace, "create_recorder", lambda **_kwargs: None)
     monkeypatch.setattr(
         llm,
         "publish_task_event",
@@ -98,6 +99,15 @@ def test_llm_chat_records_usage_and_cost(db_session_factory, monkeypatch):
     assert call.total_tokens == 3000
     assert call.cached_tokens == 600
     assert call.cache_write_tokens == 400
+    assert call.cache_read_reported is True
+    assert call.cache_write_reported is True
+    assert call.run_id
+    assert call.agent == "GameCodeAgent"
+    assert call.workflow_name == "responses-api"
+    assert call.request_index == 1
+    assert call.provider == "openai"
+    assert call.prompt_cache_mode == "provider_implicit"
+    assert call.cache_bypass_reason == "cache_namespace_missing"
     assert call.cost_usd == Decimal("0.021250")
     assert refreshed_step.tokens == 3000
     assert refreshed_task.tokens_used == 3000
@@ -112,6 +122,8 @@ def test_llm_chat_records_usage_and_cost(db_session_factory, monkeypatch):
     assert event["type"] == "usage"
     assert event["cached_tokens"] == 600
     assert event["cache_write_tokens"] == 400
+    assert event["cache_read_reported"] is True
+    assert event["cache_write_reported"] is True
     assert event["cache_percent"] == 60
     db.close()
 
@@ -153,7 +165,7 @@ def test_llm_chat_builds_gpt56_explicit_prompt_cache_request(monkeypatch):
     monkeypatch.setattr(
         llm,
         "_record_call",
-        lambda _result, retried=False, previous_response_id=None: None,
+        lambda _result, **_kwargs: None,
     )
     monkeypatch.setattr(
         llm,
@@ -238,6 +250,8 @@ def test_sdk_response_ledger_is_idempotent_and_survives_run_level_stops(
         "prompt_tokens": 80,
         "completion_tokens": 20,
         "cached_tokens": 40,
+        "cache_read_reported": True,
+        "cache_write_reported": False,
         "latency_ms": 123,
         "step_id": step_id,
         "run_id": "team-run-1",
@@ -246,6 +260,15 @@ def test_sdk_response_ledger_is_idempotent_and_survives_run_level_stops(
         "provider_response_id": "resp-ledger-1",
         "request_index": 1,
         "retried": True,
+        "cache_metadata": {
+            "provider": "openai",
+            "provider_route": "gateway.test/v1",
+            "prompt_version": "author-v2",
+            "prompt_cache_key_hash": "a" * 64,
+            "prompt_cache_namespace": "gameweave-project-rules",
+            "prompt_cache_mode": "routed_implicit",
+            "toolset_hash": "b" * 64,
+        },
     }
     llm.record_response_usage(**kwargs)
     # A reconnect/replay must not double charge or double count.
@@ -261,8 +284,84 @@ def test_sdk_response_ledger_is_idempotent_and_survives_run_level_stops(
     assert rows[0].total_tokens == 100
     assert rows[0].cached_tokens == 40
     assert rows[0].retried is True
+    assert rows[0].cache_read_reported is True
+    assert rows[0].cache_write_reported is False
+    assert rows[0].provider_route == "gateway.test/v1"
+    assert rows[0].prompt_cache_key_hash == "a" * 64
+    assert rows[0].toolset_hash == "b" * 64
     assert db.get(AgentStep, step_id).tokens == 100
     assert db.get(GenerationTask, task_id).tokens_used == 100
+    db.close()
+
+    from app.agents import llm_accounting
+
+    cache_metadata = llm_accounting.cache_observability_metadata(
+        session_factory=db_session_factory,
+        task_id=task_id,
+        step_id=step_id,
+        logger=llm.logger,
+    )
+    assert cache_metadata["llm_call_count"] == 1
+    assert cache_metadata["llm_cached_tokens"] == 40
+    assert cache_metadata["llm_cache_hit_rate"] == 0.5
+    assert cache_metadata["llm_cache_read_reported_count"] == 1
+
+
+def test_finish_step_backfills_contract_identity_into_llm_calls(
+    db_session_factory, monkeypatch
+):
+    from app.agents import tracing
+    from app.models import AgentStep, GenerationTask, LLMCall
+    from app.models.common import StepStatus
+
+    db = db_session_factory()
+    user = _user()
+    db.add(user)
+    db.flush()
+    task = GenerationTask(user_id=user.id, idea="backfill contract")
+    db.add(task)
+    db.flush()
+    step = AgentStep(
+        task_id=task.id,
+        seq=1,
+        agent="DesignContractAgent",
+        name="Design Contract",
+        status=StepStatus.RUNNING,
+    )
+    db.add(step)
+    db.flush()
+    call = LLMCall(
+        task_id=task.id,
+        step_id=step.id,
+        model="gpt-test",
+        prompt_tokens=10,
+        completion_tokens=2,
+        total_tokens=12,
+        cached_tokens=4,
+    )
+    db.add(call)
+    db.commit()
+    task_id, step_id, call_id = task.id, step.id, call.id
+    db.close()
+
+    monkeypatch.setattr(tracing, "SessionLocal", db_session_factory)
+    monkeypatch.setattr(tracing, "publish_task_event", lambda *_args: None)
+    tracing.finish_step(
+        task_id,
+        step_id,
+        ["done"],
+        decision={
+            "prompt_version": "design-contract/v2",
+            "contract_hash": "c" * 64,
+            "contract_revision": 9,
+        },
+    )
+
+    db = db_session_factory()
+    call = db.get(LLMCall, call_id)
+    assert call.prompt_version == "design-contract/v2"
+    assert call.contract_hash == "c" * 64
+    assert call.contract_revision == 9
     db.close()
 
 
@@ -574,7 +673,7 @@ def test_llm_chat_retries_streamed_server_error(monkeypatch):
     monkeypatch.setattr(
         llm,
         "_record_call",
-        lambda _result, retried=False, previous_response_id=None: None,
+        lambda _result, **_kwargs: None,
     )
     monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(llm.settings, "OPENAI_MAX_RETRIES", 2)
@@ -617,7 +716,7 @@ def test_llm_chat_retries_provider_internal_server_error(monkeypatch):
     monkeypatch.setattr(
         llm,
         "_record_call",
-        lambda _result, retried=False, previous_response_id=None: None,
+        lambda _result, **_kwargs: None,
     )
     monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(llm.settings, "OPENAI_MAX_RETRIES", 2)
@@ -661,7 +760,7 @@ def test_llm_chat_retries_top_level_response_error_event(monkeypatch):
     monkeypatch.setattr(
         llm,
         "_record_call",
-        lambda _result, retried=False, previous_response_id=None: None,
+        lambda _result, **_kwargs: None,
     )
     monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(llm.settings, "OPENAI_MAX_RETRIES", 2)
@@ -701,8 +800,8 @@ def test_llm_chat_recovers_complete_json_from_interrupted_attempt(monkeypatch):
     monkeypatch.setattr(
         llm,
         "_record_call",
-        lambda result, retried=False, previous_response_id=None: recorded.append(
-            (result, retried)
+        lambda result, **kwargs: recorded.append(
+            (result, kwargs.get("retried", False))
         ),
     )
     monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
@@ -771,7 +870,7 @@ def test_llm_chat_logs_stream_failure_details_and_closes_each_attempt(monkeypatc
     monkeypatch.setattr(
         llm,
         "_record_call",
-        lambda _result, retried=False, previous_response_id=None: None,
+        lambda _result, **_kwargs: None,
     )
     monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(llm.settings, "OPENAI_MAX_RETRIES", 1)

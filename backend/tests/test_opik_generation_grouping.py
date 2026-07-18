@@ -56,7 +56,7 @@ def test_generation_trace_has_searchable_task_identity(monkeypatch):
     assert captured["name"] == "game-generation"
     assert captured["thread_id"] == "task:task-123"
     assert captured["metadata"]["task_id"] == "task-123"
-    assert captured["metadata"]["schema_version"] == "gameweave.opik.generation/2.0"
+    assert captured["metadata"]["schema_version"] == "gameweave.opik.generation/2.1"
     assert captured["metadata"]["trace_contract_version"] == AGENT_STEP_CONTRACT_VERSION
     assert context.exit_args == (None, None, None)
 
@@ -272,7 +272,7 @@ def test_decision_trace_separates_envelope_version_from_design_contract_revision
 
 def test_finalize_root_trace_exposes_contract_identity(db_session_factory, monkeypatch):
     from app.agents import pipeline
-    from app.models import GenerationTask, User
+    from app.models import GenerationTask, LLMCall, User
     from app.models.common import TaskStatus
 
     db = db_session_factory()
@@ -300,8 +300,24 @@ def test_finalize_root_trace_exposes_contract_identity(db_session_factory, monke
         ),
         contract_hash="root-contract-hash",
         contract_revision=7,
+        opik_trace_id="11111111-2222-4333-8444-555555555555",
     )
     db.add(task)
+    db.flush()
+    db.add(
+        LLMCall(
+            task_id=task.id,
+            model="gpt-test",
+            prompt_tokens=100,
+            completion_tokens=10,
+            total_tokens=110,
+            cached_tokens=75,
+            cache_write_tokens=5,
+            cache_read_reported=True,
+            cache_write_reported=True,
+            latency_ms=250,
+        )
+    )
     db.commit()
     task_id = task.id
     db.close()
@@ -320,6 +336,46 @@ def test_finalize_root_trace_exposes_contract_identity(db_session_factory, monke
     assert captured["metadata"]["contract_revision"] == 7
     assert captured["metadata"]["design_contract_schema_version"] == 1
     assert captured["metadata"]["trace_contract_version"] == AGENT_STEP_CONTRACT_VERSION
+    assert captured["metadata"]["opik_trace_id"] == task.opik_trace_id
+    assert captured["metadata"]["llm_cache_hit_rate"] == 0.75
+    assert captured["metadata"]["llm_cache_read_reported_count"] == 1
     assert captured["output"]["contract_hash"] == "root-contract-hash"
     assert captured["output"]["contract_revision"] == 7
+    assert captured["output"]["cache_observability"]["cached_tokens"] == 75
     assert "contract-revision:7" in captured["tags"]
+
+
+def test_opik_trace_id_is_persisted_for_direct_correlation(
+    db_session_factory, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from app.agents import pipeline
+    from app.models import GenerationTask, User
+
+    db = db_session_factory()
+    user = User(
+        email="opik-id@example.com",
+        password_hash="x",
+        display_name="Opik Id",
+        avatar_initial="O",
+    )
+    db.add(user)
+    db.flush()
+    task = GenerationTask(user_id=user.id, idea="persist trace id")
+    db.add(task)
+    db.commit()
+    task_id = task.id
+    db.close()
+
+    monkeypatch.setattr(pipeline, "SessionLocal", db_session_factory)
+    pipeline._persist_opik_trace_id(
+        task_id,
+        SimpleNamespace(id="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+    )
+
+    db = db_session_factory()
+    assert db.get(GenerationTask, task_id).opik_trace_id == (
+        "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    )
+    db.close()

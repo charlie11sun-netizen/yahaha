@@ -99,3 +99,82 @@ left join agent_steps cause on cause.id = repair.caused_by_step_id
 where repair.caused_by_step_id is not null
 order by repair.created_at desc;
 ```
+
+## Prompt cache 加权命中率
+
+命中率必须按 token 加权，不能直接平均每次调用的百分比。下面同时按 workflow 和多轮请求序号观察缓存预热过程：
+
+```sql
+select
+  coalesce(workflow_name, '<missing>') as workflow_name,
+  coalesce(request_index, 0) as request_index,
+  count(*) as calls,
+  sum(prompt_tokens) as prompt_tokens,
+  sum(cached_tokens) as cached_tokens,
+  sum(prompt_tokens - cached_tokens) as uncached_tokens,
+  round(
+    100.0 * sum(cached_tokens) / nullif(sum(prompt_tokens), 0),
+    2
+  ) as weighted_cache_hit_pct,
+  round(
+    100.0 * sum(cache_write_tokens)
+      / nullif(sum(prompt_tokens - cached_tokens), 0),
+    2
+  ) as cache_write_pct
+from llm_calls
+group by 1, 2
+order by 1, 2;
+```
+
+## Cache usage 上报覆盖率
+
+`cache_read_reported=false` 表示 provider 没有提供该字段，与“明确上报 0 个 cached token”不同。优化命中率前先确认覆盖率：
+
+```sql
+select
+  provider,
+  provider_route,
+  model,
+  count(*) as calls,
+  count(*) filter (where cache_read_reported) as cache_read_reported_calls,
+  count(*) filter (where cache_write_reported) as cache_write_reported_calls,
+  round(100.0 * count(*) filter (where cache_read_reported) / count(*), 2)
+    as cache_read_reporting_pct,
+  round(100.0 * count(*) filter (where cache_write_reported) / count(*), 2)
+    as cache_write_reporting_pct
+from llm_calls
+group by 1, 2, 3
+order by calls desc;
+```
+
+## Cache key / prompt / toolset 漂移
+
+以下字段只保存 SHA-256，不保存原始 cache key、prompt 前缀或工具 schema：
+
+```sql
+select
+  prompt_cache_namespace,
+  prompt_version,
+  prompt_cache_key_hash,
+  cache_prefix_hash,
+  toolset_hash,
+  cache_bypass_reason,
+  count(*) as calls,
+  round(
+    100.0 * sum(cached_tokens) / nullif(sum(prompt_tokens), 0),
+    2
+  ) as weighted_cache_hit_pct
+from llm_calls
+group by 1, 2, 3, 4, 5, 6
+order by calls desc;
+```
+
+同一 workflow 出现多个 `cache_prefix_hash` 或 `toolset_hash`，通常意味着稳定前缀或工具定义发生漂移；`cache_bypass_reason` 可直接解释为何未走显式/路由缓存。
+
+## 导出一个任务的完整分析包
+
+```powershell
+python -m app.tools.export_generation_analysis TASK_ID --pretty > generation-analysis.json
+```
+
+导出内容包括 task/spec/design/DesignContract、全部 step decision、agent logs、逐次 `llm_calls`、缓存聚合和详细 `agent_trace_events`。默认 `CODE_AGENT_TRACE_MAX_PAYLOAD_CHARS=0`，保存完整事件 payload；如部署方设置了正数上限，导出会用 `payload_truncated` 和 `truncated_trace_event_count` 明确标记历史截断。

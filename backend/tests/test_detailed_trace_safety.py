@@ -110,6 +110,21 @@ def test_trace_payload_warns_and_is_capped(monkeypatch):
     assert "truncated=True" in warnings[0]
 
 
+def test_trace_payload_limit_zero_preserves_complete_payload(monkeypatch):
+    from app.agents import detailed_trace
+
+    monkeypatch.setattr(
+        detailed_trace.settings, "CODE_AGENT_TRACE_MAX_PAYLOAD_CHARS", 0
+    )
+    payload = {"complete": "x" * 1_100_000}
+
+    serialized, original_chars, truncated = detailed_trace._serialize_payload(payload)
+
+    assert truncated is False
+    assert len(serialized) == original_chars
+    assert json.loads(serialized) == payload
+
+
 def test_agent_trace_retention_task_deletes_only_expired_rows(
     db_session_factory, monkeypatch
 ):

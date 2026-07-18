@@ -81,7 +81,10 @@ def _serialize_payload(payload: Any) -> tuple[str, int, bool]:
         default=str,
     )
     original_chars = len(payload_json)
-    max_chars = max(256, int(settings.CODE_AGENT_TRACE_MAX_PAYLOAD_CHARS))
+    configured_max_chars = int(settings.CODE_AGENT_TRACE_MAX_PAYLOAD_CHARS)
+    if configured_max_chars <= 0:
+        return payload_json, original_chars, False
+    max_chars = max(256, configured_max_chars)
     if original_chars <= max_chars:
         return payload_json, original_chars, False
 
@@ -185,13 +188,10 @@ class TraceRecorder:
                 if asset is not None:
                     payload_value["asset_trace"] = asset
             payload_json, original_chars, truncated = _serialize_payload(payload_value)
-            warn_chars = max(
-                1,
-                min(
-                    int(settings.CODE_AGENT_TRACE_PAYLOAD_WARN_CHARS),
-                    int(settings.CODE_AGENT_TRACE_MAX_PAYLOAD_CHARS),
-                ),
-            )
+            configured_limit = int(settings.CODE_AGENT_TRACE_MAX_PAYLOAD_CHARS)
+            warn_chars = max(1, int(settings.CODE_AGENT_TRACE_PAYLOAD_WARN_CHARS))
+            if configured_limit > 0:
+                warn_chars = min(warn_chars, configured_limit)
             if original_chars >= warn_chars:
                 logger.warning(
                     "code agent detailed trace payload is large "

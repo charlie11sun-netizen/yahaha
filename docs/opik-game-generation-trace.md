@@ -63,12 +63,12 @@ game-generation:<游戏标题>
 当前 schema 版本：
 
 ```text
-gameweave.opik.generation/2.0
+gameweave.opik.generation/2.1
 ```
 
 以后新增或改变字段时，应升级该值，并在数据导出程序中保留兼容处理。
 
-v2 在根 trace 和阶段 span 上增加可搜索的 DesignContract 字段：
+v2 在根 trace 和阶段 span 上增加可搜索的 DesignContract 字段；v2.1 补充 Opik trace 直接关联和 cache observability：
 
 - 身份：`contract_hash`、`contract_revision`、`design_contract_schema_version`；
 - Gate：`contract_gate_passed`、`contract_gate_code`、覆盖率和孤立 semantic ID 指标；
@@ -76,6 +76,8 @@ v2 在根 trace 和阶段 span 上增加可搜索的 DesignContract 字段：
 - Acceptance：测试数、结果数、失败数和 `required_acceptance_pass`；
 - FrameAudit：审计资产数、失败帧数、`failed_semantic_ids`、覆盖率、重生成数量和 `regeneration_semantic_ids`；
 - 版本语义：`contract_version` / `trace_contract_version` 表示 `agent-step/v2` trace envelope；DesignContract 修订号只使用 `contract_revision` / `design_contract_revision`。
+- 直接关联：`opik_trace_id` 同时保存在 `generation_tasks`、根 trace metadata/output 和任务 API 中；
+- Cache 汇总：`llm_call_count`、`llm_prompt_tokens`、`llm_cached_tokens`、`llm_uncached_tokens`、`llm_cache_hit_rate`、`llm_cache_write_rate`、retry/latency/cost 和 provider 上报覆盖数。阶段 span 是 step 汇总，根 trace 是整个 task 汇总。
 
 ### 4.1 根 trace
 
@@ -94,6 +96,8 @@ v2 在根 trace 和阶段 span 上增加可搜索的 DesignContract 字段：
 | `metadata` | `model` | 本次任务使用的主模型名称 |
 | `metadata` | `status` | `running`、`succeeded`、`failed` 等最终状态 |
 | `metadata` | `error_code`、`failed_stage` | 失败原因和失败阶段 |
+| `metadata` | `opik_trace_id` | 与本地 `generation_tasks.opik_trace_id` 一致，可从数据库直接跳转/反查 |
+| `metadata` | `llm_*` | task 级逐次调用、token、加权 cache 命中率、写入率、重试、延迟、成本和上报覆盖摘要 |
 | `input` | `task_id`、`task_kind`、`prompt`、`asset_ids`、`dimension` | 任务输入；入库前应遵循统一脱敏策略 |
 | `output` | `status`、`game_id`、`version`、`tokens`、`cost_usd`、`error_code` | 任务结果摘要 |
 | `tags` | `gameweave`、`game-generation`、`task-kind:*`、`dimension:*`、`status:*` | 快速筛选标签 |
@@ -111,8 +115,9 @@ v2 在根 trace 和阶段 span 上增加可搜索的 DesignContract 字段：
 | `agent` | 执行该阶段的 Agent |
 | `display_name` | 面向 UI 的阶段名称 |
 | `failed` | 是否在该阶段失败 |
+| `llm_*` | 当前 step 的 cache/token/latency/cost 聚合；`llm_cache_metrics` 为同一组指标的嵌套摘要 |
 
-阶段 output 会记录状态、token 摘要、repair/replan 次数和错误摘要。完整的 LLM input/output、模型参数、延迟、token usage 和 tool arguments/result 由现有 OpenAI/Agents instrumentation 作为子 observation 记录。
+阶段 output 会记录状态、token 摘要、repair/replan 次数、错误摘要和 `cache_observability`。完整的 LLM input/output、模型参数、延迟、token usage 和 tool arguments/result 由现有 OpenAI/Agents instrumentation 作为子 observation 记录。
 
 ## 5. 如何在 Opik 中查找一个游戏
 
@@ -190,6 +195,14 @@ spans = client.search_spans(
 | `agent_trace_events` / agent logs | 详细事件 payload、状态快照、异常堆栈、代码产物和本地审计；适合精确重放和故障排查 |
 
 两者通过 `task_id`、`step_id`、`run_id` 等字段关联。Opik 负责“看完整流程和做分析”，agent logs 负责“保留更细的本地事件和审计数据”。
+
+`llm_cache_metrics` / `cache_observability` 是方便 Opik 展示的有界嵌套摘要，不替代原始日志。需要离线复盘、训练集构建或缓存优化时，使用：
+
+```powershell
+python -m app.tools.export_generation_analysis TASK_ID --pretty > generation-analysis.json
+```
+
+该分析包合并 task、完整 DesignContract、step decisions、agent logs、逐 provider response 的 LLM 账本和详细 trace events。`CODE_AGENT_TRACE_MAX_PAYLOAD_CHARS=0` 表示不截断 payload；正数表示只保存有明确截断标记的预览。详细事件仍受 `CODE_AGENT_TRACE_RETENTION_DAYS` 保留期约束，因此需要长期分析时应在过期前导出。
 
 ## 8. 验证记录
 

@@ -717,9 +717,11 @@ def test_generated_assets_endpoint_returns_checkpoint_images_and_enforces_owner(
                 "key": "sheet",
                 "name": "Sheet",
                 "kind": "spritesheet",
-                "content_type": "image/png",
-                "bytes": 9,
-                "data_url": "data:image/png;base64,cG5nLWJ5dGVz",
+                    "content_type": "image/png",
+                    "bytes": 9,
+                    "semantic_ids": [],
+                    "frame_audit": {},
+                    "data_url": "data:image/png;base64,cG5nLWJ5dGVz",
             }
         ]
     }

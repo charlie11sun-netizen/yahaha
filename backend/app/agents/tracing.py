@@ -7,7 +7,7 @@ import json
 import logging
 import time
 
-from app.agents import opik_integration
+from app.agents import llm_accounting, opik_integration
 from app.agents.decision_trace import build_decision, json_text
 from app.agents.state import STEP_META
 from app.core.config import settings
@@ -234,6 +234,20 @@ def finish_step(task_id, step_id, logs, tokens=0, repair=None, replan=None, fail
                 if decision.get("cost_usd") is None and llm_cost:
                     decision["cost_usd"] = llm_cost
                 _apply_decision(step, decision)
+                call_dimensions = {
+                    key: value
+                    for key, value in {
+                        "prompt_version": decision.get("prompt_version"),
+                        "contract_hash": decision.get("contract_hash"),
+                        "contract_revision": decision.get("contract_revision"),
+                    }.items()
+                    if value is not None
+                }
+                if call_dimensions:
+                    db.query(LLMCall).filter(LLMCall.step_id == step_id).update(
+                        call_dimensions,
+                        synchronize_session=False,
+                    )
                 step.finished_at = now_utc()
                 # Live log writes may already contain lines from this step.  Consume
                 # those occurrences one-for-one so finalization does not duplicate
@@ -376,6 +390,15 @@ def finish_step(task_id, step_id, logs, tokens=0, repair=None, replan=None, fail
         db.close()
 
 
+def _cache_observability(task_id: str, step_id: str | None = None) -> dict:
+    return llm_accounting.cache_observability_metadata(
+        session_factory=SessionLocal,
+        task_id=task_id,
+        step_id=step_id,
+        logger=logger,
+    )
+
+
 def logged(node_name: str):
     """把节点包成：begin(running) → 跑 → finish(done/failed)。"""
     agent, display = STEP_META.get(node_name, (node_name, node_name))
@@ -420,14 +443,22 @@ def logged(node_name: str):
                     contract_tags = opik_integration.contract_observability_tags(
                         contract_metadata
                     )
+                    cache_metadata = _cache_observability(task_id, sid)
                     opik_integration.update_generation_span(
                         output={
                             "status": "failed",
                             "error": str(exc)[:500],
                             "decision_chain": decision,
                             "contract_observability": contract_metadata,
+                            "cache_observability": cache_metadata.get(
+                                "llm_cache_metrics"
+                            ),
                         },
-                        metadata={"failed": True, **contract_metadata},
+                        metadata={
+                            "failed": True,
+                            **contract_metadata,
+                            **cache_metadata,
+                        },
                         tags=[
                             "gameweave-stage",
                             f"agent:{agent}",
@@ -436,7 +467,12 @@ def logged(node_name: str):
                         ],
                     )
                     finish_step(task_id, sid, [f"error: {exc}"], failed=True, decision=decision)
-                    opik_integration.update_generation_trace(metadata=contract_metadata or None)
+                    opik_integration.update_generation_trace(
+                        metadata={
+                            **contract_metadata,
+                            **_cache_observability(task_id),
+                        }
+                    )
                     bind_context(step_id=None, agent=None, node_name=None)
                     raise
                 tokens = int(result.get("_tokens_delta", 0) or 0)
@@ -471,6 +507,7 @@ def logged(node_name: str):
                 contract_tags = opik_integration.contract_observability_tags(
                     contract_metadata
                 )
+                cache_metadata = _cache_observability(task_id, sid)
                 opik_integration.update_generation_span(
                     output={
                         "status": stage_status,
@@ -479,6 +516,9 @@ def logged(node_name: str):
                         "replan_attempts": result.get("replan_attempts"),
                         "decision_chain": decision,
                         "contract_observability": contract_metadata,
+                        "cache_observability": cache_metadata.get(
+                            "llm_cache_metrics"
+                        ),
                     },
                     metadata={
                         "failed": failed,
@@ -502,6 +542,7 @@ def logged(node_name: str):
                         "cost_usd": decision.get("cost_usd"),
                         "runtime_consumed": decision.get("runtime_consumed"),
                         **contract_metadata,
+                        **cache_metadata,
                     },
                     tags=[
                         "gameweave-stage",
@@ -510,13 +551,18 @@ def logged(node_name: str):
                         *contract_tags,
                     ],
                 )
-                opik_integration.update_generation_trace(metadata=contract_metadata or None)
                 finish_step(
                     task_id, sid, result.get("_logs"), tokens,
                     repair=repair_total, replan=result.get("replan_attempts"),
                     failed=failed,
                     spec=result.get("game_spec"), design=result.get("game_design"),
                     decision=decision,
+                )
+                opik_integration.update_generation_trace(
+                    metadata={
+                        **contract_metadata,
+                        **_cache_observability(task_id),
+                    }
                 )
                 bind_context(step_id=None, agent=None, node_name=None)
                 return result

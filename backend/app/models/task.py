@@ -76,6 +76,7 @@ class GenerationTask(PkMixin, TimestampMixin, Base):
     contract_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     contract_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     contract_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    opik_trace_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -247,6 +248,11 @@ class LLMCall(PkMixin, TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("provider_response_id", name="uq_llm_calls_provider_response_id"),
         UniqueConstraint("run_id", "request_index", name="uq_llm_calls_run_request"),
+        Index(
+            "ix_llm_calls_workflow_request_index",
+            "workflow_name",
+            "request_index",
+        ),
     )
 
     task_id: Mapped[str | None] = mapped_column(
@@ -268,6 +274,20 @@ class LLMCall(PkMixin, TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(24), default="completed", server_default="completed")
     error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     model: Mapped[str] = mapped_column(String(120))
+    provider: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    provider_route: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    contract_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    contract_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    prompt_cache_key_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+    prompt_cache_namespace: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    prompt_cache_mode: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    prompt_cache_ttl: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    cache_prefix_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    toolset_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    cache_bypass_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
     prompt_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
     completion_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
     total_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
@@ -276,6 +296,12 @@ class LLMCall(PkMixin, TimestampMixin, Base):
     # provider 本次写入 prompt cache 的 token 数。
     cache_write_tokens: Mapped[int] = mapped_column(
         BigInteger, default=0, server_default="0", nullable=False
+    )
+    cache_read_reported: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    cache_write_reported: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
     )
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     retried: Mapped[bool] = mapped_column(Boolean, default=False)
