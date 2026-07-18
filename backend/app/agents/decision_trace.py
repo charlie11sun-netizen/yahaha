@@ -248,6 +248,9 @@ def build_decision(
             if isinstance(manifest, dict)
             else len(assets)
         )
+    contract_hash = result.get("contract_hash") or state.get("contract_hash")
+    if not contract_hash and isinstance(manifest, dict):
+        contract_hash = manifest.get("contract_hash")
     model = result.get("model") or state.get("model") or settings.CODE_AGENT_MODEL or settings.MODEL_NAME
     provider = result.get("provider") or state.get("provider") or "openai"
     decision = {
@@ -270,6 +273,7 @@ def build_decision(
         "cost_usd": result.get("cost_usd"),
         "runtime_consumed": runtime_consumed,
         "asset_trace": assets,
+        "contract_hash": contract_hash,
     }
     return decision
 
@@ -289,6 +293,7 @@ def asset_trace_record(
     frame_count: int = 0,
     consumer_refs: list[str] | None = None,
     coverage_result: Any = None,
+    contract_hash: str | None = None,
 ) -> dict[str, Any]:
     digest = hashlib.sha256(content or b"").hexdigest()
     return {
@@ -310,6 +315,7 @@ def asset_trace_record(
         "provider": provider,
         "model": model,
         "output_artifact_id": f"output:assets/{key}:{digest[:24]}",
+        "contract_hash": contract_hash,
     }
 
 

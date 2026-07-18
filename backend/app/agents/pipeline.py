@@ -197,6 +197,7 @@ def _run_generation(task_id: str, expected_dispatch_generation: int | None = Non
         base_version = task.base_version
         spec = _json_object(task.spec_json)
         design = _json_object(task.design_json)
+        saved_contract = _json_object(getattr(task, "contract_json", None))
         user_id = task.user_id
         dimension = task.dimension or "2d"
         asset_ids = [a.id for a in task.assets]
@@ -335,6 +336,9 @@ def _run_generation(task_id: str, expected_dispatch_generation: int | None = Non
                             "artifact_format": VITE_PROJECT_FORMAT if vite_source else "legacy-bundle/v1",
                             "game_spec": spec,
                             "game_design": design,
+                            "design_contract": saved_contract,
+                            "contract_hash": getattr(task, "contract_hash", None),
+                            "contract_revision": getattr(task, "contract_revision", None),
                         }
                     )
                 final = graph.invoke(initial, checkpoint_config(task_id))
@@ -383,6 +387,10 @@ def _run_generation(task_id: str, expected_dispatch_generation: int | None = Non
                     task.spec_json = json.dumps(final["game_spec"], ensure_ascii=False)
                 if final.get("game_design"):
                     task.design_json = json.dumps(final["game_design"], ensure_ascii=False)
+                if final.get("design_contract"):
+                    task.contract_json = json.dumps(final["design_contract"], ensure_ascii=False)
+                    task.contract_hash = final.get("contract_hash") or ((final.get("design_contract") or {}).get("meta") or {}).get("contract_hash")
+                    task.contract_revision = final.get("contract_revision") or ((final.get("design_contract") or {}).get("meta") or {}).get("revision")
                 if final.get("feedback_brief"):
                     task.feedback_brief = str(final["feedback_brief"])
                 if final.get("status") == "succeeded" and final.get("game_id"):

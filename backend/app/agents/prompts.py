@@ -385,6 +385,7 @@ def build_code_revision_prompt(
     files: list[dict],
     repair_error: str | None = None,
     memory_context: str | None = None,
+    design_contract: dict | None = None,
 ) -> str:
     parts = [
         f"Player's exact feedback:\n{feedback}",
@@ -396,8 +397,12 @@ def build_code_revision_prompt(
             if memory_context
             else ""
         ),
-        f"Current GameSpec:\n{json.dumps(game_spec or {}, ensure_ascii=False)}",
-        f"Current GameDesign:\n{json.dumps(game_design or {}, ensure_ascii=False)}",
+        (
+            "Frozen DesignContract (唯一执行事实源；仅实现其中的修订影响范围):\n"
+            + json.dumps(design_contract, ensure_ascii=False)
+            if design_contract
+            else f"Current GameSpec:\n{json.dumps(game_spec or {}, ensure_ascii=False)}\nCurrent GameDesign:\n{json.dumps(game_design or {}, ensure_ascii=False)}"
+        ),
         "Existing files (edit these; do not discard unrelated code):",
     ]
     for file in files:
@@ -525,12 +530,21 @@ def build_code_prompt(
     dimension: str = "2d",
     runtime: str = "canvas",
     asset_manifest: dict | None = None,
+    design_contract: dict | None = None,
+    execution_views: dict | None = None,
 ) -> str:
-    parts = [
-        f"Player idea & GameSpec:\n{json.dumps(game_spec, ensure_ascii=False)}",
-        f"Concrete GameDesign to implement:\n{json.dumps(game_design, ensure_ascii=False)}",
-        f"Local AssetManifest (optional; use only listed relative paths):\n{json.dumps(asset_manifest or {}, ensure_ascii=False)}",
-    ]
+    if design_contract:
+        parts = [
+            "Frozen DesignContract (唯一执行事实源；不得重新解释原始 prompt):\n" + json.dumps(design_contract, ensure_ascii=False),
+            "Derived read-only execution views:\n" + json.dumps(execution_views or {}, ensure_ascii=False),
+            f"Local AssetManifest (optional; use only listed relative paths):\n{json.dumps(asset_manifest or {}, ensure_ascii=False)}",
+        ]
+    else:
+        parts = [
+            f"Player idea & GameSpec:\n{json.dumps(game_spec, ensure_ascii=False)}",
+            f"Concrete GameDesign to implement:\n{json.dumps(game_design, ensure_ascii=False)}",
+            f"Local AssetManifest (optional; use only listed relative paths):\n{json.dumps(asset_manifest or {}, ensure_ascii=False)}",
+        ]
     if reference:
         if dimension == "3d":
             framing = (

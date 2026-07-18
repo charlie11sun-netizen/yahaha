@@ -35,6 +35,8 @@ def run_author(
     max_turns: int | None = None,
     deadline_at: float | None = None,
     planning_context: dict | None = None,
+    design_contract: dict | None = None,
+    execution_views: dict | None = None,
 ) -> RepairOutcome | None:
     """Route project authoring through the public team facade when needed.
 
@@ -58,6 +60,10 @@ def run_author(
         }
         if planning_context:
             author_kwargs["planning_context"] = planning_context
+        if design_contract:
+            author_kwargs["design_contract"] = design_contract
+        if execution_views:
+            author_kwargs["execution_views"] = execution_views
         return author_runner.run_author(files, **author_kwargs)
 
     from app.agents import author_team
@@ -74,6 +80,10 @@ def run_author(
     }
     if planning_context:
         team_kwargs["planning_context"] = planning_context
+    if design_contract:
+        team_kwargs["design_contract"] = design_contract
+    if execution_views:
+        team_kwargs["execution_views"] = execution_views
     return author_team.run_project_author_team(files, **team_kwargs)
 
 

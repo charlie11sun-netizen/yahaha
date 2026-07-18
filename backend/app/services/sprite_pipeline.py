@@ -126,6 +126,41 @@ class BatchSpec:
 
 
 @dataclass(frozen=True)
+class CellRegenerationSpec:
+    """A retry for exactly one failed semantic cell.
+
+    The original batch is retained as immutable evidence; references are only
+    successful peers from that same batch, so a repair cannot silently drift
+    to another visual family or contract revision.
+    """
+
+    semantic_id: str
+    source_batch: BatchSpec
+    reference_semantic_ids: tuple[str, ...] = ()
+    failed_checks: tuple[str, ...] = ()
+    style_bible: Mapping[str, Any] = field(default_factory=dict)
+    contract_hash: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "semantic_id": self.semantic_id,
+            "source_batch": self.source_batch.to_dict(),
+            "reference_semantic_ids": list(self.reference_semantic_ids),
+            "failed_checks": list(self.failed_checks),
+            "style_bible": _jsonable(dict(self.style_bible)),
+            "contract_hash": self.contract_hash,
+            "replacement": {
+                "semantic_ids": [self.semantic_id],
+                "rows": 1,
+                "columns": 1,
+                "cell_width": self.source_batch.cell_width,
+                "cell_height": self.source_batch.cell_height,
+                "style_group": self.source_batch.style_group,
+            },
+        }
+
+
+@dataclass(frozen=True)
 class SpriteDemandManifest:
     """Serializable demand contract consumed by generation and runtime QA."""
 
@@ -573,6 +608,43 @@ def audit_batch(
     }
 
 
+def build_cell_regeneration_specs(
+    audit: Mapping[str, Any],
+    batch: BatchSpec,
+    *,
+    style_bible: Mapping[str, Any] | None = None,
+    contract_hash: str | None = None,
+) -> list[CellRegenerationSpec]:
+    """Plan retries for failed cells only, reusing batch/style references."""
+
+    failed_ids = {
+        str(item)
+        for item in (audit.get("failed_frame_ids") or [])
+        if str(item) in batch.semantic_ids
+    }
+    passed_ids = tuple(
+        str(frame.get("semantic_id"))
+        for frame in (audit.get("frames") or [])
+        if frame.get("passed") and str(frame.get("semantic_id")) in batch.semantic_ids
+    )
+    failures_by_id = {
+        str(frame.get("semantic_id")): tuple(str(item) for item in (frame.get("failed_checks") or []))
+        for frame in (audit.get("frames") or [])
+    }
+    return [
+        CellRegenerationSpec(
+            semantic_id=semantic_id,
+            source_batch=batch,
+            reference_semantic_ids=passed_ids,
+            failed_checks=failures_by_id.get(semantic_id, ()),
+            style_bible=dict(style_bible or {}),
+            contract_hash=contract_hash,
+        )
+        for semantic_id in batch.semantic_ids
+        if semantic_id in failed_ids
+    ]
+
+
 def pack_atlas(
     frames: Mapping[str, Any] | Sequence[tuple[str, Any]],
     *,
@@ -675,10 +747,12 @@ __all__ = [
     "SpriteDemand",
     "SpriteDemandManifest",
     "BatchSpec",
+    "CellRegenerationSpec",
     "build_sprite_demand_manifest",
     "build_batch_specs",
     "audit_frame",
     "audit_batch",
+    "build_cell_regeneration_specs",
     "pack_atlas",
     "apply_programmatic_variant",
     "semantic_manifest_for_sheet",

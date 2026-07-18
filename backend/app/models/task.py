@@ -73,6 +73,9 @@ class GenerationTask(PkMixin, TimestampMixin, Base):
     max_replan_attempts: Mapped[int] = mapped_column(Integer, default=1)
     spec_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     design_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    contract_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    contract_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    contract_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -124,6 +127,7 @@ class AgentStep(PkMixin, TimestampMixin, Base):
     # trace works on both PostgreSQL and the SQLite test database while still
     # allowing callers to evolve the shape without another migration.
     contract_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    contract_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     prompt_version: Mapped[str | None] = mapped_column(String(120), nullable=True)
     model: Mapped[str | None] = mapped_column(String(120), nullable=True)
     provider: Mapped[str | None] = mapped_column(String(80), nullable=True)

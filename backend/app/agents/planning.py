@@ -24,6 +24,7 @@ from app.agents.planning_nodes import (
     archetype_router_node,
     asset_processing_node,
     balance_plan_node,
+    contract_gate_node,
     content_plan_node,
     done_node,
     failed_node,
@@ -31,7 +32,10 @@ from app.agents.planning_nodes import (
     game_design_node,
     gameplay_planning_node,
     intent_spec_node,
+    design_contract_node,
     should_continue_after_safety,
+    should_continue_after_contract_gate,
+    should_continue_after_asset_generation,
 )
 from app.agents.planning_routing import (
     _balance_plan,
@@ -95,8 +99,12 @@ __all__ = [
     'game_design_node',
     'content_plan_node',
     'balance_plan_node',
+    'design_contract_node',
+    'contract_gate_node',
     'feedback_understanding_node',
     'failed_node',
     'done_node',
     'should_continue_after_safety',
+    'should_continue_after_contract_gate',
+    'should_continue_after_asset_generation',
 ]

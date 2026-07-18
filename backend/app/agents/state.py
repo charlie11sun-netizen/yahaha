@@ -17,6 +17,8 @@ STEP_META: dict[str, tuple[str, str]] = {
     "game_design": ("GameDesignAgent", "Game Design"),
     "content_plan": ("ContentPlanAgent", "Content Plan"),
     "balance_plan": ("BalanceAgent", "Balance Plan"),
+    "design_contract": ("DesignContractCompilerAgent", "Design Contract"),
+    "contract_gate": ("ContractGateAgent", "Contract Gate"),
     "code_generation": ("GameCodeAgent", "Code Generation"),
     "project_build": ("ProjectBuildAgent", "Project Build"),
     "build_validation": ("BuildValidateAgent", "Build Validation"),
@@ -79,10 +81,28 @@ class GenerationState(TypedDict, total=False):
     # frame bindings.  Kept separate from the legacy `assets` list so older
     # clients can still read their manifest unchanged.
     sprite_demand_manifest: dict
+    asset_batch_specs: dict
     runtime_consumers: dict
     game_design: dict
     content_plan: dict
     balance_config: dict
+
+    # Frozen design-contract boundary and its read-only derived views.  The
+    # original prompt/spec/design remain audit evidence; downstream producers
+    # use these fields once the contract gate passes.
+    intent_record: dict
+    design_contract: dict
+    contract_hash: str
+    contract_revision: int
+    contract_diff: dict
+    contract_gate: dict
+    contract_error: str
+    design_execution_view: dict
+    spec_execution_view: dict
+    style_bible: dict
+    author_role_contracts: dict
+    acceptance_plan: dict
+    runtime_asset_requirements: dict
 
     generated_files: list  # [{"path": str, "content": str}]
     project_files: list

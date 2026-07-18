@@ -215,21 +215,29 @@ def asset_processing_node(state: dict) -> dict:
                     uploaded.append({"id": asset.id, "key": asset.filename, "type": asset.kind, "url": url, "source": "uploaded"})
         finally:
             db.close()
-    spec = state.get("game_spec") or {}
-    from app.services.sprite_pipeline import build_sprite_demand_manifest
-
-    # Asset processing freezes the semantic demand before any image request is
-    # made.  Generation later enriches it with actual sheet/frame coordinates.
-    demand_manifest = build_sprite_demand_manifest(
-        state.get("game_design") or {},
-        state.get("runtime_consumers"),
-    ).to_dict()
+    spec = state.get("spec_execution_view") or {}
+    # The contract gate publishes the manifest; this node must not reinterpret
+    # GameSpec/GameDesign or the original prompt after the freeze boundary.
+    demand_manifest = dict(state.get("sprite_demand_manifest") or {})
+    if not demand_manifest:
+        return {
+            "asset_manifest": {"assets": [], "contract_hash": state.get("contract_hash")},
+            "sprite_demand_manifest": {},
+            "_agent": "AssetAgent",
+            "_logs": ["asset processing blocked: frozen SpriteDemandManifest is missing"],
+            "status": "failed",
+            "error_code": "contract_gap",
+            "error_message": "frozen SpriteDemandManifest is required before asset processing",
+        }
     asset_manifest = {
-        "cover": _theme_cover(spec.get("theme")),
+        "cover": _theme_cover((state.get("style_bible") or {}).get("theme") or spec.get("theme")),
         "assets": uploaded,
         "sprite_demand_manifest": demand_manifest,
+        "asset_batch_specs": dict(state.get("asset_batch_specs") or {}),
+        "style_bible": dict(state.get("style_bible") or {}),
+        "contract_hash": state.get("contract_hash"),
     }
-    return {"uploaded_assets": uploaded, "asset_manifest": asset_manifest, "_agent": "AssetAgent", "_logs": _asset_log_lines(uploaded, asset_manifest, spec)}
+    return {"uploaded_assets": uploaded, "asset_manifest": asset_manifest, "sprite_demand_manifest": demand_manifest, "asset_batch_specs": dict(state.get("asset_batch_specs") or {}), "_agent": "AssetAgent", "_logs": _asset_log_lines(uploaded, asset_manifest, spec) + [f"consuming frozen contract {state.get('contract_hash')}"]}
 
 
 def game_design_node(state: dict) -> dict:
@@ -339,6 +347,138 @@ def balance_plan_node(state: dict) -> dict:
     }
 
 
+def design_contract_node(state: dict) -> dict:
+    """Compile the complete design before any asset or code request.
+
+    This node never asks an implementation agent to reinterpret the prompt.
+    It emits a draft contract; ``contract_gate_node`` is the only place that
+    may promote it to a frozen execution authority.
+    """
+    from app.agents.design_contract import (
+        ContractCompileError,
+        ScopeExceededError,
+        build_intent_record,
+        compile_design_contract,
+        diff_design_contracts,
+    )
+
+    record = build_intent_record(state)
+    parent_contract = state.get("design_contract") or None
+    try:
+        contract = compile_design_contract(
+            state.get("game_spec") or {},
+            state.get("game_design") or {},
+            intent_record=record,
+            parent=parent_contract,
+        )
+        contract_diff = diff_design_contracts(parent_contract, contract)
+        payload = contract.model_dump(mode="json")
+        return {
+            "intent_record": record.model_dump(mode="json"),
+            "design_contract": payload,
+            "contract_revision": contract.meta.revision,
+            "contract_diff": contract_diff,
+            "contract_error": None,
+            "_agent": "DesignContractCompilerAgent",
+            "_logs": [
+                f"compiled design contract {contract.meta.contract_id} revision {contract.meta.revision}",
+                f"contract inputs: {len(contract.entities)} entities, {len(contract.systems)} systems, {len(contract.requirements)} requirements",
+            ],
+        }
+    except ScopeExceededError as exc:
+        return {
+            "intent_record": record.model_dump(mode="json"),
+            "contract_error": str(exc),
+            "error_code": "scope_exceeded",
+            "status": "failed",
+            "_agent": "DesignContractCompilerAgent",
+            "_logs": [f"contract scope exceeded: {exc}"],
+        }
+    except (ContractCompileError, ValueError) as exc:
+        return {
+            "intent_record": record.model_dump(mode="json"),
+            "contract_error": str(exc),
+            "error_code": "contract_gap",
+            "status": "failed",
+            "_agent": "DesignContractCompilerAgent",
+            "_logs": [f"contract compilation gap: {exc}"],
+        }
+
+
+def contract_gate_node(state: dict) -> dict:
+    """Validate and freeze the contract, then publish only derived views."""
+    from app.agents.design_contract import (
+        ContractCompileError,
+        contract_to_design_payload,
+        contract_to_spec_payload,
+        derive_contract_views,
+        freeze_contract,
+        validate_contract,
+    )
+
+    if state.get("contract_error"):
+        issue = str(state["contract_error"])
+        result = {
+            "passed": False,
+            "issues": [issue],
+            "metrics": {},
+            "code": state.get("error_code") or "contract_gap",
+        }
+        return {
+            "contract_gate": result,
+            "status": "failed",
+            "_agent": "ContractGateAgent",
+            "_logs": [f"contract gate blocked stale contract reuse: {issue}"],
+        }
+    raw = state.get("design_contract") or {}
+    if not raw:
+        result = {"passed": False, "issues": ["design contract is missing"], "metrics": {}, "code": "contract_gap"}
+        return {"contract_gate": result, "contract_error": result["issues"][0], "error_code": "contract_gap", "status": "failed", "_agent": "ContractGateAgent", "_logs": ["contract gate failed: design contract is missing"]}
+    gate = validate_contract(raw)
+    if not gate.passed:
+        result = gate.to_dict()
+        return {
+            "contract_gate": result,
+            "contract_error": "; ".join(gate.issues),
+            "error_code": gate.code or "contract_gap",
+            "status": "failed",
+            "_agent": "ContractGateAgent",
+            "_logs": ["contract gate failed:"] + list(gate.issues[:8]),
+        }
+    try:
+        frozen = freeze_contract(raw)
+    except ContractCompileError as exc:
+        return {"contract_gate": {"passed": False, "issues": [str(exc)], "metrics": {}, "code": "contract_gap"}, "contract_error": str(exc), "error_code": "contract_gap", "status": "failed", "_agent": "ContractGateAgent", "_logs": [f"contract freeze failed: {exc}"]}
+    views = derive_contract_views(frozen)
+    frozen_payload = frozen.model_dump(mode="json")
+    design_view = contract_to_design_payload(frozen)
+    spec_view = contract_to_spec_payload(frozen)
+    result = gate.to_dict()
+    result["passed"] = True
+    result["metrics"] = {**result.get("metrics", {}), "contract_hash": frozen.meta.contract_hash}
+    return {
+        "design_contract": frozen_payload,
+        "contract_hash": frozen.meta.contract_hash,
+        "contract_revision": frozen.meta.revision,
+        "contract_gate": result,
+        "contract_error": None,
+        "design_execution_view": design_view,
+        "spec_execution_view": spec_view,
+        "sprite_demand_manifest": views["sprite_demand_manifest"],
+        "asset_batch_specs": views["asset_batch_specs"],
+        "style_bible": views["style_bible"],
+        "author_role_contracts": views["author_role_contracts"],
+        "acceptance_plan": views["acceptance_plan"],
+        "runtime_asset_requirements": views["runtime_asset_requirements"],
+        "_agent": "ContractGateAgent",
+        "_logs": [
+            f"contract gate passed: {frozen.meta.contract_id} v{frozen.meta.revision}",
+            f"frozen contract hash: {frozen.meta.contract_hash}",
+            f"derived views: {len(views['sprite_demand_manifest'].get('demands') or [])} semantic asset demand(s) in {len(views['asset_batch_specs'].get('batches') or [])} batch(es), {len(views['acceptance_plan'].get('tests') or [])} acceptance test(s)",
+        ],
+    }
+
+
 def feedback_understanding_node(state: dict) -> dict:
     feedback = state.get("source_feedback") or state.get("prompt") or ""
     tokens = 0
@@ -400,6 +540,18 @@ def should_continue_after_safety(state: dict) -> str:
     return "memory_retrieval"
 
 
+def should_continue_after_contract_gate(state: dict) -> str:
+    if state.get("task_kind") in {"revision", "remix"}:
+        if not (state.get("contract_gate") or {}).get("passed"):
+            return "failed"
+        return "asset_processing" if (state.get("contract_diff") or {}).get("asset_impacted") else "code_revision"
+    return "asset_processing" if (state.get("contract_gate") or {}).get("passed") else "failed"
+
+
+def should_continue_after_asset_generation(state: dict) -> str:
+    return "code_revision" if state.get("task_kind") in {"revision", "remix"} else "code_generation"
+
+
 __all__ = [
     "intent_spec_node",
     "gameplay_planning_node",
@@ -408,8 +560,12 @@ __all__ = [
     "game_design_node",
     "content_plan_node",
     "balance_plan_node",
+    "design_contract_node",
+    "contract_gate_node",
     "feedback_understanding_node",
     "failed_node",
     "done_node",
     "should_continue_after_safety",
+    "should_continue_after_contract_gate",
+    "should_continue_after_asset_generation",
 ]

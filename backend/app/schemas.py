@@ -540,6 +540,7 @@ class TaskStepOut(BaseModel):
     attempt: int | None = None
     caused_by_step_id: str | None = None
     contract_version: str | None = None
+    contract_hash: str | None = None
     prompt_version: str | None = None
     model: str | None = None
     provider: str | None = None
@@ -578,6 +579,8 @@ class TaskOut(BaseModel):
     failed_stage: str | None = None
     idea: str
     dimension: str
+    contract_hash: str | None = None
+    contract_revision: int | None = None
     created_at: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
@@ -589,6 +592,7 @@ class TaskOut(BaseModel):
     step_summaries: list[TaskStepSummaryOut]
     game: GameDetailOut | None = None
     design: DesignPreviewOut | None = None
+    design_contract: dict[str, Any] | None = None
     assets: list[TaskAssetOut] | None = None
     logs: list[AgentLogItemOut] | None = None
     steps: list[TaskStepOut] | None = None

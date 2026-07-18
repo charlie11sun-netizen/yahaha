@@ -3,10 +3,12 @@ import io
 from PIL import Image, ImageDraw
 
 from app.services.sprite_pipeline import (
+    BatchSpec,
     SpriteDemandManifest,
     apply_programmatic_variant,
     audit_frame,
     build_batch_specs,
+    build_cell_regeneration_specs,
     build_sprite_demand_manifest,
     pack_atlas,
 )
@@ -49,6 +51,40 @@ def test_frame_audit_flags_multiple_subjects_in_one_cell():
     assert result["detected_object_count"] == 2
     assert "single_expected_object" in result["failed_checks"]
     assert not result["passed"]
+
+
+def test_regeneration_plan_retries_only_failed_cell_with_same_batch_and_style():
+    batch = BatchSpec(
+        batch_id="city-buildings",
+        group="residential",
+        semantic_ids=("residential.level_1", "residential.level_2"),
+        rows=1,
+        columns=2,
+        style_group="city-night",
+    )
+    audit = {
+        "failed_frame_ids": ["residential.level_2"],
+        "frames": [
+            {"semantic_id": "residential.level_1", "passed": True},
+            {
+                "semantic_id": "residential.level_2",
+                "passed": False,
+                "failed_checks": ["single_expected_object"],
+            },
+        ],
+    }
+    retries = build_cell_regeneration_specs(
+        audit,
+        batch,
+        style_bible={"theme": "neon city"},
+        contract_hash="sha256:contract",
+    )
+    assert [item.semantic_id for item in retries] == ["residential.level_2"]
+    retry = retries[0].to_dict()
+    assert retry["source_batch"] == batch.to_dict()
+    assert retry["reference_semantic_ids"] == ["residential.level_1"]
+    assert retry["replacement"]["semantic_ids"] == ["residential.level_2"]
+    assert retry["contract_hash"] == "sha256:contract"
 
 
 def test_pack_atlas_and_programmatic_variant_produce_runtime_safe_mapping():

@@ -1,5 +1,13 @@
 """Code generation and revision nodes for the GameWeave LangGraph pipeline."""
 # ruff: noqa: F401,F403,F405
+import json
+
+from app.agents.design_contract import (
+    enforce_execution_boundary,
+    execution_design_from_state,
+    execution_spec_from_state,
+    revision_directive_from_state,
+)
 from app.agents.nodes_common import *
 from app.services.artifacts import runtime_artifact
 from app.services.phaser_projects import create_modular_phaser_project
@@ -17,6 +25,8 @@ def _should_inject(state: dict) -> bool:
     from app.core.config import settings
 
     if not settings.DEMO_FAULT_INJECTION:
+        return False
+    if state.get("design_contract"):
         return False
     p = (state.get("normalized_prompt") or state.get("prompt") or "").lower()
     if "force-replan" in p:
@@ -156,8 +166,8 @@ def _reference_for(spec: dict) -> str | None:
 
 
 def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[dict], int, str, list[str]]:
-    spec = state.get("game_spec") or {}
-    design = state.get("game_design") or {}
+    spec = execution_spec_from_state(state)
+    design = execution_design_from_state(state)
     title = str(spec.get("title") or "GameWeave Game")
     agent_logs: list[str] = []
 
@@ -178,6 +188,12 @@ def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[d
                         repair_error,
                         dimension="3d",
                         asset_manifest=state.get("asset_manifest"),
+                        design_contract=state.get("design_contract"),
+                        execution_views={
+                            "style_bible": state.get("style_bible") or {},
+                            "author_role_contracts": state.get("author_role_contracts") or {},
+                            "acceptance_plan": state.get("acceptance_plan") or {},
+                        },
                     ),
                     timeout=settings.OPENAI_CODE_TIMEOUT,
                     allow_partial=settings.OPENAI_ALLOW_PARTIAL_CODE_STREAM,
@@ -186,6 +202,11 @@ def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[d
                 bundle = _extract_bundle(raw)
                 js = bundle.get("game.js", "")
                 files = _assemble_bundle(bundle, title, dimension="3d")
+                if state.get("design_contract"):
+                    files.append({
+                        "path": "design-contract.json",
+                        "content": json.dumps(state["design_contract"], ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                    })
                 if js and len(js) > 400:
                     partial = "partial " if getattr(result, "partial", False) else ""
                     mode = f"model ({partial}full 3D bundle)" if bundle.get("index.html") else f"model ({partial}3D game.js)"
@@ -210,6 +231,12 @@ def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[d
         state.get("balance_config") or {},
         state.get("asset_manifest") or {},
     )
+    if state.get("design_contract"):
+        files = [item for item in files if item.get("path") != "src/contracts/DesignContract.json"]
+        files.append({
+            "path": "src/contracts/DesignContract.json",
+            "content": json.dumps(state["design_contract"], ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        })
     tokens = 0
     mode = "modular TypeScript template"
     if state.get("use_real") and not state.get("use_template_code"):
@@ -221,6 +248,12 @@ def _generate_code(state: dict, repair_error: str | None = None) -> tuple[list[d
                 "runtime": "phaser-vite",
                 "dimension": "2d",
                 "qa_feedback": qa_feedback or None,
+                "design_contract": state.get("design_contract"),
+                "execution_views": {
+                    "style_bible": state.get("style_bible") or {},
+                    "author_role_contracts": state.get("author_role_contracts") or {},
+                    "acceptance_plan": state.get("acceptance_plan") or {},
+                },
             }
             if state.get("planning_transcript"):
                 # Hand the design-contract agent the planning conversation as
@@ -292,6 +325,9 @@ def _revision_file_map(files: list[dict] | None) -> dict[str, str]:
 def _generate_revision_code(
     state: dict, repair_error: str | None = None
 ) -> tuple[list[dict], int, list[str], str]:
+    design = execution_design_from_state(state)
+    spec = execution_spec_from_state(state)
+    feedback = revision_directive_from_state(state)
     source_files = (
         state.get("project_files") or state.get("generated_files")
         if repair_error and (state.get("project_files") or state.get("generated_files"))
@@ -300,7 +336,6 @@ def _generate_revision_code(
     source = _revision_file_map(source_files)
     source_items = {str(file.get("path")): dict(file) for file in source_files if file.get("path")}
     if is_vite_project(source_files):
-        feedback = str(state.get("source_feedback") or state.get("prompt") or "")
         if not state.get("use_real"):
             marker_path = "src/config/gameConfig.ts"
             if marker_path in source:
@@ -316,8 +351,9 @@ def _generate_revision_code(
             outcome = code_agent.run_revision(
                 editable,
                 feedback=feedback,
-                spec=state.get("game_spec") or {},
-                design=state.get("game_design") or {},
+                spec=spec,
+                design=design,
+                **({"design_contract": state.get("design_contract")} if state.get("design_contract") else {}),
             )
             if outcome and outcome.checks_ok:
                 for item in outcome.files:
@@ -340,7 +376,7 @@ def _generate_revision_code(
         )
     if not state.get("use_real"):
         merged = dict(source)
-        feedback = _clip(state.get("source_feedback") or state.get("prompt") or "", 180)
+        feedback = _clip(feedback, 180)
         if "game.js" in merged:
             marker = re.sub(r"[\r\n]+", " ", feedback)
             merged["game.js"] = f"{merged['game.js']}\n// GameWeave offline {state.get('task_kind', 'revision')} note: {marker}\n"
@@ -355,13 +391,14 @@ def _generate_revision_code(
     result = llm.chat(
         prompts.CODE_REVISION_SYSTEM_PROMPT,
         prompts.build_code_revision_prompt(
-            state.get("source_feedback") or state.get("prompt") or "",
+            feedback,
             state.get("feedback_brief") or "",
-            state.get("game_spec") or {},
-            state.get("game_design") or {},
+            spec,
+            design,
             source_files,
             repair_error,
             state.get("memory_context") or "",
+            state.get("design_contract"),
         ),
         timeout=settings.OPENAI_CODE_TIMEOUT,
         allow_partial=settings.OPENAI_ALLOW_PARTIAL_CODE_STREAM,
@@ -384,17 +421,22 @@ def _generate_revision_code(
 
 
 def code_revision_node(state: dict) -> dict:
+    enforce_execution_boundary(state)
     try:
         files, tokens, changed, mode = _generate_revision_code(state)
     except Exception as exc:  # noqa: BLE001
         if state.get("use_real"):
             _real_model_fallback_or_raise("CodeRevisionAgent", exc, exc)
         files, tokens, changed, mode = state.get("existing_files") or [], 0, [], f"revision failed: {_clip(exc, 160)}"
-    vite = is_vite_project(files)
+    prepared = _prepare_generated_artifacts(files, state)
+    asset_changes = [
+        str(item.get("path"))
+        for item in (state.get("generated_assets") or [])
+        if item.get("path")
+    ]
+    changed = list(dict.fromkeys([*changed, *asset_changes]))
     return {
-        "generated_files": [] if vite else files,
-        "project_files": files if vite else [],
-        "artifact_format": VITE_PROJECT_FORMAT if vite else "legacy-bundle/v1",
+        **prepared,
         "code_source": "revision",
         "revision_result": {"changed_files": changed, "base_version": state.get("base_version")},
         "_agent": "CodeRevisionAgent",
@@ -402,19 +444,23 @@ def code_revision_node(state: dict) -> dict:
         "_logs": [
             f"base version: {state.get('base_version')}",
             f"revision mode: {mode}",
-            "changed files: " + (", ".join(changed) if changed else "none"),
+            "changed files/assets: " + (", ".join(changed) if changed else "none"),
         ] + _file_log_lines(files),
     }
 
 
 def _prepare_generated_artifacts(files: list[dict], state: dict) -> dict:
-    spec = state.get("game_spec") or {}
+    spec = execution_spec_from_state(state)
     generated_assets = state.get("generated_assets") or []
     if is_vite_project(files):
-        existing_paths = {str(item.get("path") or "") for item in files}
-        project_files = list(files) + [
-            dict(item) for item in generated_assets if item.get("path") not in existing_paths
-        ]
+        generated_paths = {
+            str(item.get("path") or "") for item in generated_assets if item.get("path")
+        }
+        project_files = [
+            dict(item)
+            for item in files
+            if str(item.get("path") or "") not in generated_paths
+        ] + [dict(item) for item in generated_assets]
         return {
             "generated_files": [],
             "project_files": project_files,
@@ -439,9 +485,15 @@ def _prepare_generated_artifacts(files: list[dict], state: dict) -> dict:
             "artifact_format": VITE_PROJECT_FORMAT,
             "build_result": {},
         }
-    existing_paths = {str(item.get("path") or "") for item in files}
     runtime_assets = [runtime_artifact(item) for item in generated_assets]
-    files = list(files) + [item for item in runtime_assets if item.get("path") not in existing_paths]
+    runtime_paths = {
+        str(item.get("path") or "") for item in runtime_assets if item.get("path")
+    }
+    files = [
+        dict(item)
+        for item in files
+        if str(item.get("path") or "") not in runtime_paths
+    ] + runtime_assets
     return {
         "generated_files": files,
         "project_files": [],
@@ -451,9 +503,10 @@ def _prepare_generated_artifacts(files: list[dict], state: dict) -> dict:
 
 
 def code_generation_node(state: dict) -> dict:
+    enforce_execution_boundary(state)
     files, tokens, mode, agent_logs = _generate_code(state)
-    spec = state.get("game_spec") or {}
-    design = state.get("game_design") or {}
+    spec = execution_spec_from_state(state)
+    design = execution_design_from_state(state)
     if state.get("dimension") == "3d":
         scene = design.get("scene") if isinstance(design.get("scene"), dict) else {}
         logs = [

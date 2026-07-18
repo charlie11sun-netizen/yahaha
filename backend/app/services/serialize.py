@@ -424,6 +424,8 @@ def task_out(
         "error": t.error, "error_code": t.error_code,
         "failed_stage": getattr(t, "failed_stage", None), "idea": t.idea,
         "dimension": getattr(t, "dimension", "2d") or "2d",
+        "contract_hash": getattr(t, "contract_hash", None),
+        "contract_revision": getattr(t, "contract_revision", None),
         "created_at": _iso(t.created_at), "started_at": _iso(t.started_at),
         "finished_at": _iso(t.finished_at), "updated_at": _iso(latest_event_at),
         "progress": progress, "game_title": game_title,
@@ -436,6 +438,7 @@ def task_out(
 
     logs_by_step, logs_page = _task_log_page(t, limit=logs_limit, before=logs_before)
     out["design"] = _design_preview(spec, design)
+    out["design_contract"] = _parse(getattr(t, "contract_json", None))
     out["assets"] = [
         {"name": a.filename, "type": "uploaded", "status": "已上传",
          "kind": a.kind, "scan_status": a.scan_status, "url": presigned_asset_url(a)}
@@ -447,6 +450,7 @@ def task_out(
          "tokens": getattr(s, "tokens", 0), "attempt": getattr(s, "attempt", 1),
          "caused_by_step_id": getattr(s, "caused_by_step_id", None),
          "contract_version": getattr(s, "contract_version", None),
+         "contract_hash": getattr(s, "contract_hash", None),
          "prompt_version": getattr(s, "prompt_version", None),
          "model": getattr(s, "model", None),
          "provider": getattr(s, "provider", None),

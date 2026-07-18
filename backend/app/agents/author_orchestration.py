@@ -40,6 +40,14 @@ from .author_prompts import (
     _TOKENS_PER_TURN_BUDGET, _RoleCandidate, _RoleDefinition,
 )
 
+
+def _with_design_contract_file(files: list[dict], contract: dict) -> list[dict]:
+    """Add the frozen domain contract without replacing the role contract."""
+    payload = json.dumps(contract, ensure_ascii=False, indent=2, sort_keys=True)
+    output = [dict(item) for item in files if str(item.get("path") or "") != "src/contracts/DesignContract.json"]
+    output.append({"path": "src/contracts/DesignContract.json", "content": payload + "\n"})
+    return output
+
 @dataclass(frozen=True)
 class _TurnPlan:
     planner: int
@@ -196,6 +204,8 @@ def run_project_author_team(
     team_changed_file_budget: int | None = None,
     deadline_at: float | None = None,
     planning_context: dict | None = None,
+    design_contract: dict | None = None,
+    execution_views: dict | None = None,
     _execute_agent_fn=None,
     _tracing=None,
 ) -> RepairOutcome | None:
@@ -255,52 +265,50 @@ def run_project_author_team(
         status="running",
     )
 
-    architect_session = RepairSession.from_files(files, live_step_id=live_step_id)
-    _emit(
-        live_step_id,
-        "role_started",
-        "author team role started: DesignContractAgent",
-        role="DesignContractAgent",
-        turns_limit=plan.planner,
-        status="running",
-    )
     planning_items = list((planning_context or {}).get("items") or [])
-    architect_kwargs = {
-        "agent_name": "DesignContractAgent",
-        "instructions": _DESIGN_CONTRACT_INSTRUCTIONS,
-        "author_tools": False,
-        "tool_policy": _READ_ONLY_POLICY,
-        "task_input": _contract_input(
-            spec, design, runtime, dimension, qa_feedback,
-            chained=bool(planning_items),
-        ),
-        "turns_limit": plan.planner,
-        "workflow_name": "gameweave-author-design-contract",
-        "final_output_limit": _CONTRACT_CAPTURE_LIMIT,
-        "operation": "authoring",
-        "output_type": _DesignContractOutput,
-        "deadline_at": budget.deadline_at,
-        "terminal_completion": False,
-        "safe_partial_stream_retry": True,
-        "workspace_tools": False,
-    }
-    if planning_items:
-        # Replay the planning conversation ahead of the contract prompt so the
-        # architect inherits the brief/mechanic/design rationale verbatim.
-        architect_kwargs["context_items"] = planning_items
-        architect_kwargs["chained_from_response_id"] = (
-            planning_context or {}
-        ).get("response_id")
-    architect = execute_agent(architect_session, **architect_kwargs)
-    budget.observe(architect)
-    if architect is None:
-        budget.turns_used += plan.planner
-    _emit_role_result(live_step_id, "DesignContractAgent", architect)
-    if architect:
-        team_logs.extend(architect.logs)
-    raw_contract = (
-        _structured_contract_payload(architect.raw_output) if architect else None
-    )
+    architect = None
+    if not design_contract:
+        architect_session = RepairSession.from_files(files, live_step_id=live_step_id)
+        _emit(
+            live_step_id,
+            "role_started",
+            "author team role started: DesignContractAgent",
+            role="DesignContractAgent",
+            turns_limit=plan.planner,
+            status="running",
+        )
+        architect_kwargs = {
+            "agent_name": "DesignContractAgent",
+            "instructions": _DESIGN_CONTRACT_INSTRUCTIONS,
+            "author_tools": False,
+            "tool_policy": _READ_ONLY_POLICY,
+            "task_input": _contract_input(
+                spec, design, runtime, dimension, qa_feedback,
+                chained=bool(planning_items),
+            ),
+            "turns_limit": plan.planner,
+            "workflow_name": "gameweave-author-design-contract",
+            "final_output_limit": _CONTRACT_CAPTURE_LIMIT,
+            "operation": "authoring",
+            "output_type": _DesignContractOutput,
+            "deadline_at": budget.deadline_at,
+            "terminal_completion": False,
+            "safe_partial_stream_retry": True,
+            "workspace_tools": False,
+        }
+        if planning_items:
+            # Replay the planning conversation ahead of the contract prompt so the
+            # architect inherits the brief/mechanic/design rationale verbatim.
+            architect_kwargs["context_items"] = planning_items
+            architect_kwargs["chained_from_response_id"] = (planning_context or {}).get("response_id")
+        architect = execute_agent(architect_session, **architect_kwargs)
+        budget.observe(architect)
+        if architect is None:
+            budget.turns_used += plan.planner
+        _emit_role_result(live_step_id, "DesignContractAgent", architect)
+        if architect:
+            team_logs.extend(architect.logs)
+    raw_contract = _structured_contract_payload(architect.raw_output) if architect else None
     contract_error: str | None = None
     try:
         contract = _freeze_contract(raw_contract, spec, design)
@@ -312,8 +320,10 @@ def run_project_author_team(
     contract_hash = hashlib.sha256(
         _canonical_json(contract_payload).encode("utf-8")
     ).hexdigest()
-    contract_source = "model" if raw_contract else "deterministic fallback"
+    contract_source = "model" if raw_contract else ("pipeline-frozen" if design_contract else "deterministic fallback")
     contract_files = _with_contract_file(files, contract, contract_hash)
+    if design_contract:
+        contract_files = _with_design_contract_file(contract_files, design_contract)
     base_revision = _snapshot_revision(contract_files)
     orchestrator_changes = _actual_changes(files, contract_files)
     budget.observe(None, changed=orchestrator_changes)
@@ -366,7 +376,9 @@ def run_project_author_team(
                 base_revision,
                 qa_feedback,
                 (item.get("path") for item in contract_files),
-            ),
+            )
+            + ("\nFrozen DesignContract (唯一执行事实源):\n" + json.dumps(design_contract, ensure_ascii=False) if design_contract else "")
+            + ("\nDerived read-only views:\n" + json.dumps(execution_views, ensure_ascii=False) if execution_views else ""),
             turns_limit=turns,
             workflow_name=role.workflow_name,
             operation="authoring",

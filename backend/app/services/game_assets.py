@@ -29,6 +29,7 @@ border-connected flood fill for light/checkerboard backdrops).
 from __future__ import annotations
 
 import io
+import json
 import re
 import time
 import hashlib
@@ -37,6 +38,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from app.core.config import settings
+from app.agents.design_contract import contract_to_design_payload, contract_to_spec_payload, derive_sprite_demand_manifest
 from app.agents.decision_trace import asset_trace_record
 from app.services.artifacts import artifact_bytes, binary_artifact
 from app.services.provider_router import (
@@ -54,9 +56,11 @@ from app.services.tilemaps import (
     generate_tilemap_artifacts,
 )
 from app.services.sprite_pipeline import (
+    BatchSpec,
     SpriteDemand,
     SpriteDemandManifest,
     audit_frame,
+    build_cell_regeneration_specs,
     build_sprite_demand_manifest,
 )
 
@@ -660,7 +664,23 @@ def _style_line(spec: dict, design: dict) -> str:
         colors = [str(v) for v in palette.values() if isinstance(v, str) and v.startswith("#")]
         if colors:
             hint = f" Palette accents: {', '.join(colors[:5])}."
-    return f"{style} 2D game art, crisp silhouettes with dark outlines, consistent style, palette and lighting across ALL sprites.{hint}"
+    visual_terms = (
+        "visual", "style", "art", "sprite", "palette", "color", "lighting",
+        "appearance", "texture", "画风", "视觉", "美术", "素材", "颜色", "色彩",
+        "光照", "外观", "贴图", "像素",
+    )
+    visual_requirements = [
+        str(item.get("statement") or "")
+        for item in (design.get("requirements") or [])
+        if isinstance(item, dict)
+        and any(term in str(item.get("statement") or "").lower() for term in visual_terms)
+    ]
+    requirement_hint = (
+        " Visual contract requirements: " + _clip_text("; ".join(visual_requirements), 320) + "."
+        if visual_requirements
+        else ""
+    )
+    return f"{style} 2D game art, crisp silhouettes with dark outlines, consistent style, palette and lighting across ALL sprites.{hint}{requirement_hint}"
 
 
 def _grid_position_word(col: float, row: float, cols: int, rows: int) -> str:
@@ -777,11 +797,22 @@ def _sheet_prompt(spec: dict, design: dict, cells: tuple[SheetCell, ...], page: 
 
 
 def plan_game_assets(state: dict) -> list[PlannedAsset]:
-    spec = state.get("game_spec") or {}
-    design = state.get("game_design") or {}
+    spec = state.get("spec_execution_view") or {}
+    if not spec and not state.get("design_contract"):
+        spec = state.get("game_spec") or {}
+    # Once the gate has passed, the frozen contract projection is the only
+    # design input.  The legacy fallback keeps standalone asset tests and old
+    # revision tasks compatible when no contract exists yet.
+    design = state.get("design_execution_view") or {}
+    if not design and not state.get("design_contract"):
+        design = state.get("game_design") or {}
     title = str(spec.get("title") or "GameWeave game")
     theme = str(spec.get("theme") or "stylized arcade")
-    prompt = str(state.get("normalized_prompt") or state.get("prompt") or "")
+    prompt = (
+        json.dumps({"requirements": (state.get("design_contract") or {}).get("requirements") or [], "systems": design.get("systems") or []}, ensure_ascii=False)
+        if state.get("design_contract")
+        else str(state.get("normalized_prompt") or state.get("prompt") or "")
+    )
     pages = _plan_sheet_pages(spec, design)
     explicit_consumers = state.get("runtime_consumers")
     if isinstance(explicit_consumers, dict):
@@ -1302,12 +1333,22 @@ def generate_game_assets(state: dict, router: ProviderRouter | None = None) -> d
     asset_trace: list[dict] = []
     logs: list[str] = []
 
-    spec = state.get("game_spec") or {}
-    design = state.get("game_design") or {}
-    sprite_demand_manifest = build_sprite_demand_manifest(
-        design,
-        state.get("runtime_consumers") or design.get("runtime_consumers"),
-    )
+    contract = state.get("design_contract")
+    if contract:
+        spec = state.get("spec_execution_view") or contract_to_spec_payload(contract)
+        design = state.get("design_execution_view") or contract_to_design_payload(contract)
+        sprite_demand_manifest = SpriteDemandManifest.from_dict(
+            state.get("sprite_demand_manifest") or derive_sprite_demand_manifest(contract)
+        )
+    else:
+        # Compatibility for direct callers and historical revisions.  New
+        # generation tasks always arrive here after Contract Gate.
+        spec = state.get("game_spec") or {}
+        design = state.get("game_design") or {}
+        sprite_demand_manifest = build_sprite_demand_manifest(
+            design,
+            state.get("runtime_consumers") or design.get("runtime_consumers"),
+        )
     tilemap_wanted = (
         settings.TILEMAP_GENERATION_ENABLED
         and state.get("dimension") != "3d"
@@ -1405,8 +1446,35 @@ def generate_game_assets(state: dict, router: ProviderRouter | None = None) -> d
                 content_type, extension = "image/png", ".png"
                 kind = "spritesheet"
                 entry_extra = _sheet_manifest_extra(item.sheet_cells, item.sheet_groups)
+                if state.get("contract_hash"):
+                    entry_extra["contract_hash"] = state["contract_hash"]
                 frame_audit = _audit_sheet_frames(content, item.sheet_cells)
                 entry_extra["frame_audit"] = frame_audit
+                source_batch = BatchSpec(
+                    batch_id=item.key,
+                    group=item.key,
+                    semantic_ids=tuple(
+                        _cell_demand(cell).semantic_id
+                        for cell in item.sheet_cells
+                        if not cell.name.startswith("bonus_")
+                    ),
+                    rows=SHEET_GRID,
+                    columns=SHEET_GRID,
+                    cell_width=SHEET_CELL,
+                    cell_height=SHEET_CELL,
+                    style_group=str(
+                        (state.get("style_bible") or {}).get("theme") or "default"
+                    ),
+                )
+                entry_extra["regeneration_plan"] = [
+                    retry.to_dict()
+                    for retry in build_cell_regeneration_specs(
+                        frame_audit,
+                        source_batch,
+                        style_bible=state.get("style_bible") or {},
+                        contract_hash=state.get("contract_hash"),
+                    )
+                ]
                 # Keep sheet-local semantic lookups self-contained.  A later
                 # atlas packer may move the frame; the top-level semantic map
                 # is updated from this record, never from a hard-coded index.
@@ -1483,6 +1551,7 @@ def generate_game_assets(state: dict, router: ProviderRouter | None = None) -> d
                 "status": "pending",
                 "reason": "consumer analysis runs after code generation",
             },
+            contract_hash=state.get("contract_hash"),
         )
         trace["output_artifact_id"] = (
             f"output:{runtime_path}:{hashlib.sha256(content).hexdigest()[:24]}"
@@ -1568,6 +1637,7 @@ def generate_game_assets(state: dict, router: ProviderRouter | None = None) -> d
                             "status": "pending",
                             "reason": "consumer analysis runs after code generation",
                         },
+                        contract_hash=state.get("contract_hash"),
                     )
                     trace["output_artifact_id"] = (
                         f"output:assets/tileset.png:{hashlib.sha256(tileset_png).hexdigest()[:24]}"
@@ -1579,7 +1649,12 @@ def generate_game_assets(state: dict, router: ProviderRouter | None = None) -> d
                         f"{_clip_text(exc, 220)}. Generation is paused; waiting for manual retry."
                     ) from exc
         screen_width, screen_height = _screen_size(design)
-        seed = str(state.get("task_id") or state.get("prompt") or archetype)
+        seed = str(
+            state.get("task_id")
+            or state.get("contract_hash")
+            or state.get("prompt")
+            or archetype
+        )
         tilemap = generate_tilemap_artifacts(
             archetype,
             seed,
@@ -1612,6 +1687,7 @@ def generate_game_assets(state: dict, router: ProviderRouter | None = None) -> d
                         requested_states=["world"],
                         postprocess_checks={"generated": True, "normalized": True},
                         coverage_result={"status": "pending", "reason": "consumer analysis runs after code generation"},
+                        contract_hash=state.get("contract_hash"),
                     )
                     trace["output_artifact_id"] = (
                         f"output:{entry.get('path')}:{hashlib.sha256(raw).hexdigest()[:24]}"
@@ -1676,6 +1752,8 @@ def generate_game_assets(state: dict, router: ProviderRouter | None = None) -> d
         sprite_demand_manifest.schema_version,
     )
     sprite_demand_payload = sprite_demand_manifest.to_dict()
+    if state.get("contract_hash"):
+        sprite_demand_payload["contract_hash"] = state["contract_hash"]
     sprite_demand_payload["runtime_manifest"] = semantic_runtime_map
     sprite_demand_payload["metrics"]["required_asset_coverage"] = (
         1.0

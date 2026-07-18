@@ -40,6 +40,8 @@ _START_HINTS = {
     "Game Design": "planning screen layout, entities, rules, and HUD behavior",
     "Content Plan": "building waves, pickups, hazards, tutorial beats, and puzzle content",
     "Balance Plan": "setting round length, score target, lives, spawn rate, and difficulty thresholds",
+    "Design Contract": "compiling the complete frozen design contract from planning evidence",
+    "Contract Gate": "checking schema, intent coverage, runtime consumers, and acceptance mappings",
     "Code Generation": "rendering HTML, CSS, and game.js for the browser runtime",
     "Project Build": "building a generated Phaser/Vite source project into static dist artifacts",
     "Build Validation": "checking required files, forbidden APIs, references, and bundle size",
@@ -172,6 +174,7 @@ def _apply_decision(step: AgentStep, decision: dict | None) -> None:
     if not decision:
         return
     step.contract_version = decision.get("contract_version")
+    step.contract_hash = decision.get("contract_hash")
     step.prompt_version = decision.get("prompt_version")
     step.model = decision.get("model")
     step.provider = decision.get("provider")

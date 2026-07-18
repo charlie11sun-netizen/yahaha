@@ -1,6 +1,6 @@
 """固定 LangGraph 顶层工作流（docs/multi-agent_design.md §7.2）。
 
-safety_intake → intent_spec → gameplay_planning → archetype_router → asset_processing → game_design → code_generation → build_validation
+safety_intake → intent_spec → gameplay_planning → archetype_router → game_design → content_plan → balance_plan → design_contract → contract_gate → asset_processing → asset_generation → code_generation → build_validation
 build_validation 失败：repair_code（≤2）→ 仍失败则 replan_game_design（≤1）→ 仍失败则 failed。
 gameplay_qa 失败：gameplay_repair（≤2）——浏览器运行时报错先走内层 agent 最小 patch，
 patch 成功带产物回 build_validation 复检；玩法指标问题调 balance 后回 code_generation 重生成。
@@ -27,6 +27,8 @@ def build_graph(*, checkpointer=None):
     g.add_node("game_design", logged("game_design")(nodes.game_design_node))
     g.add_node("content_plan", logged("content_plan")(nodes.content_plan_node))
     g.add_node("balance_plan", logged("balance_plan")(nodes.balance_plan_node))
+    g.add_node("design_contract", logged("design_contract")(nodes.design_contract_node))
+    g.add_node("contract_gate", logged("contract_gate")(nodes.contract_gate_node))
     g.add_node("code_generation", logged("code_generation")(nodes.code_generation_node))
     g.add_node("project_build", logged("project_build")(nodes.project_build_node))
     g.add_node("build_validation", logged("build_validation")(nodes.build_validation_node))
@@ -52,12 +54,19 @@ def build_graph(*, checkpointer=None):
                             {"intent_spec": "intent_spec", "feedback_understanding": "feedback_understanding"})
     g.add_edge("intent_spec", "gameplay_planning")
     g.add_edge("gameplay_planning", "archetype_router")
-    g.add_edge("archetype_router", "asset_processing")
-    g.add_edge("asset_processing", "game_design")
+    g.add_edge("archetype_router", "game_design")
     g.add_edge("game_design", "content_plan")
     g.add_edge("content_plan", "balance_plan")
-    g.add_edge("balance_plan", "asset_generation")
-    g.add_edge("asset_generation", "code_generation")
+    g.add_edge("balance_plan", "design_contract")
+    g.add_edge("design_contract", "contract_gate")
+    g.add_conditional_edges("contract_gate", nodes.should_continue_after_contract_gate,
+                            {"asset_processing": "asset_processing", "code_revision": "code_revision", "failed": "failed"})
+    g.add_edge("asset_processing", "asset_generation")
+    g.add_conditional_edges(
+        "asset_generation",
+        nodes.should_continue_after_asset_generation,
+        {"code_generation": "code_generation", "code_revision": "code_revision"},
+    )
     g.add_edge("code_generation", "project_build")
     g.add_edge("project_build", "build_validation")
     g.add_conditional_edges("build_validation", nodes.should_continue_after_validation,
@@ -72,9 +81,9 @@ def build_graph(*, checkpointer=None):
                              "publish_remix": "publish_remix", "revision_repair": "revision_repair",
                              "failed": "failed"})
     g.add_conditional_edges("gameplay_repair", nodes.next_after_gameplay_repair,
-                            {"project_build": "project_build", "code_generation": "code_generation"})
+                            {"project_build": "project_build", "balance_plan": "balance_plan", "code_generation": "code_generation"})
     g.add_edge("publish_artifact", "memory_update")
-    g.add_edge("feedback_understanding", "code_revision")
+    g.add_edge("feedback_understanding", "design_contract")
     g.add_edge("code_revision", "project_build")
     g.add_edge("revision_repair", "project_build")
     g.add_edge("publish_revision", "memory_update")

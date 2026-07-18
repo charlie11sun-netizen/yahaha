@@ -1462,6 +1462,8 @@ def run_author(
     max_turns: int | None = None,
     deadline_at: float | None = None,
     planning_context: dict | None = None,
+    design_contract: dict | None = None,
+    execution_views: dict | None = None,
 ) -> RepairOutcome | None:
     """作者模式：从骨架 bundle 起步，agent 自定文件结构逐文件写出完整游戏。
 
@@ -1493,6 +1495,10 @@ def run_author(
         }
         if planning_context:
             team_kwargs["planning_context"] = planning_context
+        if design_contract:
+            team_kwargs["design_contract"] = design_contract
+        if execution_views:
+            team_kwargs["execution_views"] = execution_views
         return run_project_author_team(files, **team_kwargs)
 
     session = RepairSession.from_files(files, live_step_id=tracing.current_step_id())
@@ -1501,7 +1507,8 @@ def run_author(
         agent_name="GameCodeAuthor",
         instructions=_AUTHOR_INSTRUCTIONS,
         author_tools=True,
-        task_input=_build_author_input(files, spec, design, runtime, dimension, qa_feedback),
+        task_input=_build_author_input(files, spec, design, runtime, dimension, qa_feedback)
+        + (f"\nFrozen DesignContract:\n{json.dumps(design_contract, ensure_ascii=False)}" if design_contract else ""),
         turns_limit=max_turns or settings.CODE_AGENT_AUTHOR_MAX_TURNS,
         workflow_name="gameweave-author",
         operation="authoring",
@@ -1517,6 +1524,7 @@ def run_revision(
     design: dict,
     max_turns: int | None = None,
     deadline_at: float | None = None,
+    design_contract: dict | None = None,
 ) -> RepairOutcome | None:
     """Run a bounded, tool-using revision over a modular Vite project."""
     from app.services.vite_projects import is_vite_project
@@ -1529,6 +1537,7 @@ def run_revision(
             f"User feedback to implement:\n{feedback}",
             f"GameSpec:\n{json.dumps(spec, ensure_ascii=False)}",
             f"GameDesign:\n{json.dumps(design, ensure_ascii=False)}",
+            (f"Frozen DesignContract:\n{json.dumps(design_contract, ensure_ascii=False)}" if design_contract else ""),
             _bundle_context_text(files),
             "Begin with list_files, search for the affected feature, read the relevant modules together with read_files, patch incrementally, and run_checks.",
         ]

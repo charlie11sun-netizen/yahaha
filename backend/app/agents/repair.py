@@ -1,5 +1,6 @@
 """Repair and replan nodes for the GameWeave LangGraph pipeline."""
 from app.agents.codegen import _generate_code, _generate_revision_code, _prepare_generated_artifacts
+from app.agents.design_contract import execution_design_from_state, execution_spec_from_state
 from app.agents.nodes_common import (
     MAX_GAMEPLAY_REPAIR,
     MAX_REPAIR,
@@ -420,13 +421,18 @@ def gameplay_repair_node(state: dict) -> dict:
             "code agent disabled (needs CODE_AGENT_ENABLED=true and a real-model task); "
             "falling back to balance repair + regeneration"
         )
-    spec = state.get("game_spec") or {}
-    archetype = spec.get("archetype") or (state.get("game_design") or {}).get("archetype") or "topdown_collect"
-    balance = _repair_balance(state.get("balance_config") or (state.get("game_design") or {}).get("balance") or {}, archetype, attempts)
-    design = _merge_balance_into_design(state.get("game_design") or _heuristic_design(spec), archetype, balance)
+    spec = execution_spec_from_state(state)
+    current_design = execution_design_from_state(state)
+    archetype = spec.get("archetype") or current_design.get("archetype") or "topdown_collect"
+    balance = _repair_balance(state.get("balance_config") or current_design.get("balance") or {}, archetype, attempts)
+    design = _merge_balance_into_design(current_design or _heuristic_design(spec), archetype, balance)
     return {
         "balance_config": balance,
         "game_design": design,
+        "generated_assets": [],
+        "asset_manifest": {},
+        "sprite_demand_manifest": {},
+        "asset_batch_specs": {},
         "generated_files": [],
         "project_files": [],
         "build_result": {},
@@ -457,8 +463,8 @@ def replan_game_design_node(state: dict) -> dict:
             raw, tokens = llm.chat(
                 sys_prompt,
                 prompts.build_replan_prompt(
-                    state.get("game_spec"),
-                    state.get("game_design"),
+                    execution_spec_from_state(state),
+                    execution_design_from_state(state),
                     state.get("last_error"),
                 ),
                 timeout=max(30, int(settings.OPENAI_PLANNING_STREAM_IDLE_TIMEOUT or 180)),
@@ -469,15 +475,21 @@ def replan_game_design_node(state: dict) -> dict:
                 # global key never serves user content on this gateway.
                 cache_task_scoped=True,
             )
-            design = _coerce_design(_parse_json(raw), state.get("game_spec"))
+            design = _coerce_design(_parse_json(raw), execution_spec_from_state(state))
             extra = {"_tokens_delta": tokens}
         except Exception as exc:
             _real_model_fallback_or_raise("GameDesignAgentReplan", exc, exc)
-            design = _simplify_design_3d(state.get("game_design")) if is_3d else _simplify_design(state.get("game_design"))
+            current_design = execution_design_from_state(state)
+            design = _simplify_design_3d(current_design) if is_3d else _simplify_design(current_design)
     else:
-        design = _simplify_design_3d(state.get("game_design")) if is_3d else _simplify_design(state.get("game_design"))
+        current_design = execution_design_from_state(state)
+        design = _simplify_design_3d(current_design) if is_3d else _simplify_design(current_design)
     out = {
         "game_design": design,
+        "generated_assets": [],
+        "asset_manifest": {},
+        "sprite_demand_manifest": {},
+        "asset_batch_specs": {},
         # The replan prompt is a fresh conversation. Do not let a later
         # DesignContractAgent accidentally chain to the superseded design.
         "planning_transcript": None,
@@ -514,7 +526,11 @@ def replan_game_design_node(state: dict) -> dict:
 def next_after_gameplay_repair(state: dict) -> str:
     # patch 路径带着修好的 bundle 回外层门禁复检；重生成路径已清空
     # generated_files，回 code_generation 整包重做。
-    return "project_build" if state.get("generated_files") or state.get("project_files") else "code_generation"
+    if state.get("generated_files") or state.get("project_files"):
+        return "project_build"
+    # A balance/design repair creates a new contract revision before code is
+    # regenerated. Legacy states without a contract retain the old route.
+    return "balance_plan" if state.get("design_contract") else "code_generation"
 
 
 __all__ = [

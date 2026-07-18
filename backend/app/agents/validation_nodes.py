@@ -1,6 +1,13 @@
 """Build validation and gameplay QA nodes for the GameWeave LangGraph pipeline."""
 # ruff: noqa: F401,F403,F405
+import json
+
 from app.agents.nodes_common import *
+from app.agents.design_contract import (
+    enforce_execution_boundary,
+    execution_design_from_state,
+    execution_spec_from_state,
+)
 from app.services.vite_projects import phaser_input_binding_errors
 
 
@@ -557,8 +564,8 @@ def _gameplay_qa(state: dict) -> dict:
     """Model-first smoke QA: prove the artifact is a real, runnable game without
     second-guessing how the model wrote it. Hard-fail only on "this isn't a game";
     quality gaps become warnings that never degrade the bundle to a template."""
-    spec = state.get("game_spec") or {}
-    design = state.get("game_design") or {}
+    spec = execution_spec_from_state(state)
+    design = execution_design_from_state(state)
     archetype = spec.get("archetype") or design.get("archetype") or ("webgl_3d" if state.get("dimension") == "3d" else "canvas_arcade")
     validation_result = state.get("validation_result") or {}
     files = state.get("generated_files") or []
@@ -733,8 +740,8 @@ def _gameplay_qa(state: dict) -> dict:
                     elif state.get("use_real") and settings.VISUAL_REVIEW_ENABLED:
                         visual_verdict = visual_review.review_screenshot(
                             screenshot_b64,
-                            state.get("game_spec") or {},
-                            state.get("game_design") or {},
+                            execution_spec_from_state(state),
+                            execution_design_from_state(state),
                         )
                         if visual_verdict is None:
                             warnings.append("visual review unavailable; screenshot not judged")
@@ -805,7 +812,7 @@ def _gameplay_qa(state: dict) -> dict:
                     )
                 # 布局契约:设计给了 level_layout(背景图按它构图),玩法却完全
                 # 不消费——画面与关卡几何必然脱节(地图沦为无关贴图)。
-                if (state.get("game_design") or {}).get("level_layout") and "levellayout" not in gameplay_low:
+                if execution_design_from_state(state).get("level_layout") and "levellayout" not in gameplay_low:
                     issues.append(
                         "design provides a structured level_layout but gameplay never consumes it: build the "
                         "level geometry from gameConfig.levelLayout (LevelLayout.buildStatics / paths / points) "
@@ -954,9 +961,15 @@ def _gameplay_qa(state: dict) -> dict:
                 ),
                 "",
             )
-            request_low = str(
-                state.get("normalized_prompt") or state.get("prompt") or ""
-            ).lower()
+            if state.get("design_contract"):
+                request_low = json.dumps(
+                    (state.get("design_contract") or {}).get("requirements") or [],
+                    ensure_ascii=False,
+                ).lower()
+            else:
+                request_low = str(
+                    state.get("normalized_prompt") or state.get("prompt") or ""
+                ).lower()
             persistence_requested = any(
                 token in request_low
                 for token in (
@@ -1263,7 +1276,7 @@ def _gameplay_qa(state: dict) -> dict:
             # 设计敌人名册 vs 运行时 spawn 探针：声明了 >=2 种敌人却零 spawn 上报,
             # 要么开局数秒无战斗、要么 spawn 点没接 Probe.spawn —— 两者都值得修,
             # 但都不该硬失败(沙箱窗口短)。
-            design_entities = (state.get("game_design") or {}).get("entities") or []
+            design_entities = execution_design_from_state(state).get("entities") or []
             enemy_roster = [
                 str(entity.get("name") or entity.get("id") or "").strip()
                 for entity in design_entities
@@ -1287,9 +1300,10 @@ def _gameplay_qa(state: dict) -> dict:
                 # 全灭说明玩法退化成了别的游戏,升级为可修复 issue;模板类保持
                 # 软告警(沙箱窗口短,波次可能真的没开打)。
                 requires_genre_fidelity = bool(
-                    (((state.get("game_design") or {}).get("balance") or {}).get("qa") or {}).get(
-                        "requires_genre_fidelity"
-                    )
+                    (
+                        (execution_design_from_state(state).get("balance") or {}).get("qa")
+                        or {}
+                    ).get("requires_genre_fidelity")
                 )
                 if authored_code and requires_genre_fidelity:
                     issues.append(roster_msg)
@@ -1301,7 +1315,7 @@ def _gameplay_qa(state: dict) -> dict:
             # 覆盖各类型的自然命名(platformer 写 platforms、breakout 写 brick)。
             from app.services.game_assets import design_obstacles
 
-            if design_obstacles(state.get("game_design") or {}) and not _has_any(
+            if design_obstacles(execution_design_from_state(state)) and not _has_any(
                 gameplay_low,
                 ["obstacle", "cover", "barrier", "crate", "barricade", "wall", "platform", "block", "brick", "terrain", "掩体"],
             ):
@@ -1450,6 +1464,7 @@ def _gameplay_qa_log_lines(result: dict) -> list[str]:
 
 
 def build_validation_node(state: dict) -> dict:
+    enforce_execution_boundary(state)
     result = validation.validate_files(
         state.get("generated_files") or [],
         bundle_type=str(state.get("artifact_format") or "legacy-bundle/v1"),
@@ -1463,6 +1478,23 @@ def build_validation_node(state: dict) -> dict:
         result = dict(result)
         result["valid"] = False
         result["errors"] = list(result.get("errors") or []) + [f"{state.get('task_kind')} produced no file changes"]
+    # Contract provenance is part of build acceptance.  A generated bundle or
+    # asset manifest from another revision must never silently pass validation.
+    contract_hash = state.get("contract_hash")
+    if contract_hash:
+        asset_manifest = state.get("asset_manifest") or {}
+        asset_hash = asset_manifest.get("contract_hash")
+        if asset_hash and asset_hash != contract_hash:
+            result = dict(result)
+            result["valid"] = False
+            result["errors"] = list(result.get("errors") or []) + [
+                f"contract hash mismatch: assets={asset_hash} contract={contract_hash}"
+            ]
+        sprite_metrics = (asset_manifest.get("sprite_demand_manifest") or {}).get("metrics") or {}
+        if int(sprite_metrics.get("orphan_semantic_id") or 0) > 0:
+            result = dict(result)
+            result["valid"] = False
+            result["errors"] = list(result.get("errors") or []) + ["orphan semantic ID in SpriteDemandManifest"]
     if result["valid"]:
         return {
             "validation_result": result,
@@ -1481,8 +1513,24 @@ def build_validation_node(state: dict) -> dict:
 
 
 def gameplay_qa_node(state: dict) -> dict:
+    enforce_execution_boundary(state)
     result = _gameplay_qa(state)
     failed = not result.get("passed")
+    acceptance_tests = list((state.get("acceptance_plan") or {}).get("tests") or [])
+    if acceptance_tests:
+        result["acceptance_results"] = [
+            {
+                "id": test.get("id"),
+                "requirement_ids": list(test.get("requirement_ids") or []),
+                "passed": not failed,
+                "verification": test.get("verification"),
+                "evidence": "gameplay_qa_result",
+            }
+            for test in acceptance_tests
+        ]
+        result.setdefault("metrics", {})["required_acceptance_pass"] = (
+            1.0 if not failed else 0.0
+        )
     output = {
         "gameplay_qa_result": result,
         "error_code": None,
