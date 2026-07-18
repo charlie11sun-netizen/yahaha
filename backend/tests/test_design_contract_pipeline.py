@@ -174,6 +174,31 @@ def test_scope_exceeded_is_explicit_instead_of_silently_clipping_entities():
         )
 
 
+def test_non_latin_entity_names_get_distinct_stable_semantic_ids():
+    kwargs = {
+        "spec": {"title": "城市模拟"},
+        "design": {
+            "entities": [
+                {"name": "住宅", "role": "building"},
+                {"name": "商业区", "role": "building"},
+                {"name": "道路", "role": "infrastructure"},
+            ]
+        },
+        "intent_record": IntentRecord(
+            raw_prompt="建设城市",
+            normalized_prompt="建设城市",
+        ),
+    }
+
+    first = compile_design_contract(**kwargs)
+    second = compile_design_contract(**kwargs)
+    first_ids = [entity.id for entity in first.entities]
+
+    assert len(first_ids) == len(set(first_ids)) == 3
+    assert first_ids == [entity.id for entity in second.entities]
+    assert all(entity_id.startswith("game-") for entity_id in first_ids)
+
+
 def test_contract_gate_never_reuses_parent_after_revision_compile_error():
     parent = freeze_contract(_contract())
     result = contract_gate_node(

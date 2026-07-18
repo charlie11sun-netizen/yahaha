@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping, Sequence
 
@@ -181,8 +182,17 @@ def _items(value: Any) -> list[Any]:
 
 
 def _slug(value: Any, fallback: str = "game") -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
-    return slug or fallback
+    raw = unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
+    slug = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+    if slug:
+        return slug
+    if not raw:
+        return fallback
+    # Semantic IDs stay ASCII for runtime/tool compatibility, while a stable
+    # digest prevents distinct CJK (or other non-Latin) names collapsing to
+    # the same generic fallback such as ``game``.
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:10]
+    return f"{fallback}-{digest}"
 
 
 def _canonical(value: Any) -> str:
