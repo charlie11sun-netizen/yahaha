@@ -19,7 +19,7 @@ from app.core.config import settings
 from app.core.telemetry import get_context
 from app.db.session import SessionLocal
 from app.models import AgentTraceEvent
-from app.agents.decision_trace import json_text
+from app.agents.decision_trace import AGENT_STEP_CONTRACT_VERSION, json_text
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +157,7 @@ class TraceRecorder:
         self.agent = agent
         self.model = model
         self.provider = provider or "openai"
-        self.contract_version = contract_version or "agent-step/v1"
+        self.contract_version = contract_version or AGENT_STEP_CONTRACT_VERSION
         self.prompt_version = prompt_version or "prompt/v1"
         self.run_id = str(uuid.uuid4())
         self._seq = 0

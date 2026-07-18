@@ -13,7 +13,8 @@ from typing import Any, Iterable
 from app.core.config import settings
 from app.services.artifacts import artifact_sha256, artifact_text
 
-DECISION_TRACE_SCHEMA_VERSION = "gameweave.agent-decision/1.0"
+DECISION_TRACE_SCHEMA_VERSION = "gameweave.agent-decision/2.0"
+AGENT_STEP_CONTRACT_VERSION = "agent-step/v2"
 ASSET_TRACE_SCHEMA_VERSION = "gameweave.asset-generation/1.0"
 
 
@@ -251,11 +252,32 @@ def build_decision(
     contract_hash = result.get("contract_hash") or state.get("contract_hash")
     if not contract_hash and isinstance(manifest, dict):
         contract_hash = manifest.get("contract_hash")
+    design_contract = result.get("design_contract") or state.get("design_contract") or {}
+    contract_meta = design_contract.get("meta") if isinstance(design_contract, dict) else {}
+    contract_meta = contract_meta if isinstance(contract_meta, dict) else {}
+    contract_revision = (
+        result.get("contract_revision")
+        or state.get("contract_revision")
+        or contract_meta.get("revision")
+    )
+    contract_schema_version = contract_meta.get("schema_version")
+    contract_diff = result.get("contract_diff") or state.get("contract_diff")
+    contract_gate = result.get("contract_gate") or state.get("contract_gate")
     model = result.get("model") or state.get("model") or settings.CODE_AGENT_MODEL or settings.MODEL_NAME
     provider = result.get("provider") or state.get("provider") or "openai"
+    trace_contract_version = (
+        result.get("trace_contract_version")
+        or state.get("trace_contract_version")
+        or result.get("contract_version")
+        or state.get("contract_version")
+        or AGENT_STEP_CONTRACT_VERSION
+    )
     decision = {
         "schema_version": DECISION_TRACE_SCHEMA_VERSION,
-        "contract_version": result.get("contract_version") or state.get("contract_version") or "agent-step/v1",
+        # Backward-compatible alias for API/database consumers.  This describes
+        # the decision envelope, never the DesignContract revision.
+        "contract_version": trace_contract_version,
+        "trace_contract_version": trace_contract_version,
         "prompt_version": result.get("prompt_version") or state.get("prompt_version") or "prompt/v1",
         "agent": agent,
         "display_name": display_name,
@@ -274,6 +296,12 @@ def build_decision(
         "runtime_consumed": runtime_consumed,
         "asset_trace": assets,
         "contract_hash": contract_hash,
+        "contract_revision": contract_revision,
+        "design_contract_hash": contract_hash,
+        "design_contract_revision": contract_revision,
+        "design_contract_schema_version": contract_schema_version,
+        "contract_diff": contract_diff,
+        "contract_gate": contract_gate,
     }
     return decision
 
@@ -320,6 +348,7 @@ def asset_trace_record(
 
 
 __all__ = [
+    "AGENT_STEP_CONTRACT_VERSION",
     "ASSET_TRACE_SCHEMA_VERSION",
     "DECISION_TRACE_SCHEMA_VERSION",
     "annotate_asset_consumption",

@@ -63,10 +63,19 @@ game-generation:<游戏标题>
 当前 schema 版本：
 
 ```text
-gameweave.opik.generation/1.0
+gameweave.opik.generation/2.0
 ```
 
 以后新增或改变字段时，应升级该值，并在数据导出程序中保留兼容处理。
+
+v2 在根 trace 和阶段 span 上增加可搜索的 DesignContract 字段：
+
+- 身份：`contract_hash`、`contract_revision`、`design_contract_schema_version`；
+- Gate：`contract_gate_passed`、`contract_gate_code`、覆盖率和孤立 semantic ID 指标；
+- Diff：资产、代码、验收影响标志，以及 semantic ID / requirement 变更计数；
+- Acceptance：测试数、结果数、失败数和 `required_acceptance_pass`；
+- FrameAudit：审计资产数、失败帧数、`failed_semantic_ids`、覆盖率、重生成数量和 `regeneration_semantic_ids`；
+- 版本语义：`contract_version` / `trace_contract_version` 表示 `agent-step/v2` trace envelope；DesignContract 修订号只使用 `contract_revision` / `design_contract_revision`。
 
 ### 4.1 根 trace
 
@@ -184,9 +193,10 @@ spans = client.search_spans(
 
 ## 8. 验证记录
 
-- 回归测试：`38 passed`
+- 回归测试：`112 passed`（103 个合同/管线回归 + 9 个容器内 Opik 回归）
 - 已验证容器内创建根 trace、阶段 span，并可按 `metadata.task_id` 查询
 - 已验证根 trace 最终回填 `game_id`、`version`、`status` 和 `thread_id`
+- 已从 Opik 反查 smoke trace，确认 v2 schema、合同 hash/revision、Gate、Acceptance 和 FrameAudit 字段已落库
 - Worker 已重启，当前 Docker Compose 服务正常运行
 - 使用合成 smoke trace 验证，未触发真实模型生成，不产生额外模型调用成本
 
@@ -196,4 +206,3 @@ spans = client.search_spans(
 2. 按 `status:failed` 和 `failed_stage` 聚合失败，建立失败预测和修复样本集。
 3. 按 `model`、prompt 版本、代码版本和产物版本切分实验，比较成功率、延迟、token 和缓存命中率。
 4. 将人工反馈或自动评分写入 trace feedback，再导出为 SFT、DPO 或 tool-use 评测数据。
-

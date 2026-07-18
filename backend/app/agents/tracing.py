@@ -387,12 +387,16 @@ def logged(node_name: str):
             started = time.perf_counter()
             if not state.get("use_real"):
                 time.sleep(0.45)  # mock 节点太快，停顿让 running 态可见
+            initial_contract_metadata = opik_integration.contract_observability_metadata(
+                state=state
+            )
             with opik_integration.generation_span(
                 node_name=node_name,
                 task_id=task_id,
                 step_id=sid,
                 agent=agent,
                 display_name=display,
+                metadata=initial_contract_metadata,
             ), agent_span(
                 f"agent.{node_name}",
                 {"agent": agent, "task_id": task_id, "step_id": sid},
@@ -401,11 +405,6 @@ def logged(node_name: str):
                     result = fn(state)
                 except Exception as exc:  # noqa: BLE001
                     span.record_exception(exc)
-                    opik_integration.update_generation_span(
-                        output={"status": "failed", "error": str(exc)[:500]},
-                        metadata={"failed": True},
-                        tags=["status:failed"],
-                    )
                     decision = build_decision(
                         state,
                         {"error_message": str(exc), "status": "failed"},
@@ -413,7 +412,31 @@ def logged(node_name: str):
                         display_name=display,
                         latency_ms=int((time.perf_counter() - started) * 1000),
                     )
+                    contract_metadata = opik_integration.contract_observability_metadata(
+                        state=state,
+                        result={"error_message": str(exc), "status": "failed"},
+                        decision=decision,
+                    )
+                    contract_tags = opik_integration.contract_observability_tags(
+                        contract_metadata
+                    )
+                    opik_integration.update_generation_span(
+                        output={
+                            "status": "failed",
+                            "error": str(exc)[:500],
+                            "decision_chain": decision,
+                            "contract_observability": contract_metadata,
+                        },
+                        metadata={"failed": True, **contract_metadata},
+                        tags=[
+                            "gameweave-stage",
+                            f"agent:{agent}",
+                            "status:failed",
+                            *contract_tags,
+                        ],
+                    )
                     finish_step(task_id, sid, [f"error: {exc}"], failed=True, decision=decision)
+                    opik_integration.update_generation_trace(metadata=contract_metadata or None)
                     bind_context(step_id=None, agent=None, node_name=None)
                     raise
                 tokens = int(result.get("_tokens_delta", 0) or 0)
@@ -440,6 +463,14 @@ def logged(node_name: str):
                     display_name=display,
                     latency_ms=int((time.perf_counter() - started) * 1000),
                 )
+                contract_metadata = opik_integration.contract_observability_metadata(
+                    state=state,
+                    result=result,
+                    decision=decision,
+                )
+                contract_tags = opik_integration.contract_observability_tags(
+                    contract_metadata
+                )
                 opik_integration.update_generation_span(
                     output={
                         "status": stage_status,
@@ -447,6 +478,7 @@ def logged(node_name: str):
                         "repair_attempts": repair_total,
                         "replan_attempts": result.get("replan_attempts"),
                         "decision_chain": decision,
+                        "contract_observability": contract_metadata,
                     },
                     metadata={
                         "failed": failed,
@@ -454,6 +486,7 @@ def logged(node_name: str):
                         "repair_attempts": repair_total,
                         "replan_attempts": result.get("replan_attempts"),
                         "contract_version": decision.get("contract_version"),
+                        "trace_contract_version": decision.get("trace_contract_version"),
                         "prompt_version": decision.get("prompt_version"),
                         "model": decision.get("model"),
                         "provider": decision.get("provider"),
@@ -468,9 +501,16 @@ def logged(node_name: str):
                         "latency_ms": decision.get("latency_ms"),
                         "cost_usd": decision.get("cost_usd"),
                         "runtime_consumed": decision.get("runtime_consumed"),
+                        **contract_metadata,
                     },
-                    tags=[f"status:{stage_status}"],
+                    tags=[
+                        "gameweave-stage",
+                        f"agent:{agent}",
+                        f"status:{stage_status}",
+                        *contract_tags,
+                    ],
                 )
+                opik_integration.update_generation_trace(metadata=contract_metadata or None)
                 finish_step(
                     task_id, sid, result.get("_logs"), tokens,
                     repair=repair_total, replan=result.get("replan_attempts"),

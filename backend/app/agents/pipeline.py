@@ -11,7 +11,10 @@ from psycopg import Error as PsycopgError
 from psycopg_pool import PoolTimeout
 
 from app.agents import opik_integration
-from app.agents.decision_trace import DECISION_TRACE_SCHEMA_VERSION
+from app.agents.decision_trace import (
+    AGENT_STEP_CONTRACT_VERSION,
+    DECISION_TRACE_SCHEMA_VERSION,
+)
 from app.agents.state import STEP_META
 from app.agents.tracing import TaskBudgetExceededError, TaskCancelledError
 from app.core.checkpointing import CheckpointStorageError, checkpoint_config, open_checkpointer
@@ -198,6 +201,11 @@ def _run_generation(task_id: str, expected_dispatch_generation: int | None = Non
         spec = _json_object(task.spec_json)
         design = _json_object(task.design_json)
         saved_contract = _json_object(getattr(task, "contract_json", None))
+        saved_contract_meta = (
+            dict(saved_contract.get("meta") or {})
+            if isinstance(saved_contract.get("meta"), dict)
+            else {}
+        )
         user_id = task.user_id
         dimension = task.dimension or "2d"
         asset_ids = [a.id for a in task.assets]
@@ -223,8 +231,19 @@ def _run_generation(task_id: str, expected_dispatch_generation: int | None = Non
             "game_id": trace_game_id,
             "model": settings.MODEL_NAME,
             "decision_schema_version": DECISION_TRACE_SCHEMA_VERSION,
+            "trace_contract_version": AGENT_STEP_CONTRACT_VERSION,
+            "contract_hash": getattr(task, "contract_hash", None),
+            "contract_revision": getattr(task, "contract_revision", None),
+            "design_contract_hash": getattr(task, "contract_hash", None),
+            "design_contract_revision": getattr(task, "contract_revision", None),
+            "design_contract_schema_version": saved_contract_meta.get("schema_version"),
         },
-        tags=[f"task-kind:{task_kind}", f"dimension:{dimension}"],
+        tags=[
+            "gameweave",
+            "game-generation",
+            f"task-kind:{task_kind}",
+            f"dimension:{dimension}",
+        ],
         thread_id=f"game:{trace_game_id}" if trace_game_id else None,
     )
 
@@ -310,7 +329,8 @@ def _run_generation(task_id: str, expected_dispatch_generation: int | None = Non
                     "prompt": feedback_text if _uses_existing_bundle(task_kind) else idea,
                     "asset_ids": asset_ids,
                     "dimension": dimension,
-                    "contract_version": DECISION_TRACE_SCHEMA_VERSION,
+                    "contract_version": AGENT_STEP_CONTRACT_VERSION,
+                    "trace_contract_version": AGENT_STEP_CONTRACT_VERSION,
                     "prompt_version": "generation-prompts/v1",
                     "model": settings.MODEL_NAME,
                     "provider": "openai",
@@ -436,7 +456,17 @@ def _finalize_generation_trace(task_id: str) -> None:
             "error_code": task.error_code,
             "failed_stage": task.failed_stage,
             "decision_schema_version": DECISION_TRACE_SCHEMA_VERSION,
+            "trace_contract_version": AGENT_STEP_CONTRACT_VERSION,
         }
+        contract = _json_object(getattr(task, "contract_json", None))
+        contract_metadata = opik_integration.contract_observability_metadata(
+            state={
+                "design_contract": contract,
+                "contract_hash": getattr(task, "contract_hash", None),
+                "contract_revision": getattr(task, "contract_revision", None),
+            }
+        )
+        metadata.update(contract_metadata)
         output = {
             "status": status,
             "game_id": game_id,
@@ -444,13 +474,25 @@ def _finalize_generation_trace(task_id: str) -> None:
             "tokens": int(task.tokens_used or 0),
             "cost_usd": float(task.cost_usd) if task.cost_usd is not None else None,
             "error_code": task.error_code,
+            "contract_hash": getattr(task, "contract_hash", None),
+            "contract_revision": getattr(task, "contract_revision", None),
+            "design_contract_schema_version": contract_metadata.get(
+                "design_contract_schema_version"
+            ),
         }
         display_name = game.title if game and game.title else task.id
         opik_integration.update_generation_trace(
             name=f"game-generation:{display_name}",
             output=output,
             metadata=metadata,
-            tags=[f"status:{status}"],
+            tags=[
+                "gameweave",
+                "game-generation",
+                f"task-kind:{task.task_kind or 'generation'}",
+                f"dimension:{task.dimension}",
+                f"status:{status}",
+                *opik_integration.contract_observability_tags(contract_metadata),
+            ],
             thread_id=f"game:{game_id}" if game_id else f"task:{task.id}",
         )
     finally:

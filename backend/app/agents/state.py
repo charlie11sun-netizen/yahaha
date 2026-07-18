@@ -43,6 +43,7 @@ class GenerationState(TypedDict, total=False):
     dimension: str  # "2d" | "3d"
     task_kind: str  # "generation" | "revision" | "remix"
     contract_version: str
+    trace_contract_version: str
     prompt_version: str
     model: str
     provider: str
