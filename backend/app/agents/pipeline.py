@@ -436,6 +436,13 @@ def _run_generation(task_id: str, expected_dispatch_generation: int | None = Non
                     task.result_game_id = final["game_id"]
                     task.version_id = final.get("version_id")
                     task.status = TaskStatus.SUCCEEDED
+                    # Repairable stage failures may have populated these fields
+                    # earlier in the same run.  They describe terminal failures,
+                    # so retaining them on a successful task corrupts failure-rate
+                    # analysis in both SQL and the finalized Opik root trace.
+                    task.error = None
+                    task.error_code = None
+                    task.failed_stage = None
                     _delete_checkpoint_best_effort(checkpointer, task_id)
                 else:
                     task.status = TaskStatus.FAILED
@@ -463,6 +470,9 @@ def _finalize_generation_trace(task_id: str) -> None:
         game = db.get(Game, game_id) if game_id else None
         version = db.get(GameVersion, task.version_id) if task.version_id else None
         status = str(task.status or "unknown")
+        succeeded = task.status == TaskStatus.SUCCEEDED or status == "succeeded"
+        trace_error_code = None if succeeded else task.error_code
+        trace_failed_stage = None if succeeded else task.failed_stage
         metadata = {
             "task_id": task.id,
             "task_kind": task.task_kind or "generation",
@@ -472,8 +482,8 @@ def _finalize_generation_trace(task_id: str) -> None:
             "version": version.version if version else task.base_version,
             "version_id": task.version_id,
             "dimension": task.dimension,
-            "error_code": task.error_code,
-            "failed_stage": task.failed_stage,
+            "error_code": trace_error_code,
+            "failed_stage": trace_failed_stage,
             "decision_schema_version": DECISION_TRACE_SCHEMA_VERSION,
             "trace_contract_version": AGENT_STEP_CONTRACT_VERSION,
             "opik_trace_id": getattr(task, "opik_trace_id", None),
@@ -499,7 +509,7 @@ def _finalize_generation_trace(task_id: str) -> None:
             "version": version.version if version else task.base_version,
             "tokens": int(task.tokens_used or 0),
             "cost_usd": float(task.cost_usd) if task.cost_usd is not None else None,
-            "error_code": task.error_code,
+            "error_code": trace_error_code,
             "contract_hash": getattr(task, "contract_hash", None),
             "contract_revision": getattr(task, "contract_revision", None),
             "design_contract_schema_version": contract_metadata.get(

@@ -334,6 +334,9 @@ def test_finalize_root_trace_exposes_contract_identity(db_session_factory, monke
         contract_hash="root-contract-hash",
         contract_revision=7,
         opik_trace_id="11111111-2222-4333-8444-555555555555",
+        error="a repairable stage failed before the task recovered",
+        error_code="GAMEPLAY_QA_FAILED",
+        failed_stage="Gameplay QA",
     )
     db.add(task)
     db.flush()
@@ -370,10 +373,13 @@ def test_finalize_root_trace_exposes_contract_identity(db_session_factory, monke
     assert captured["metadata"]["design_contract_schema_version"] == 1
     assert captured["metadata"]["trace_contract_version"] == AGENT_STEP_CONTRACT_VERSION
     assert captured["metadata"]["opik_trace_id"] == task.opik_trace_id
+    assert captured["metadata"]["error_code"] is None
+    assert captured["metadata"]["failed_stage"] is None
     assert captured["metadata"]["llm_cache_hit_rate"] == 0.75
     assert captured["metadata"]["llm_cache_read_reported_count"] == 1
     assert captured["output"]["contract_hash"] == "root-contract-hash"
     assert captured["output"]["contract_revision"] == 7
+    assert captured["output"]["error_code"] is None
     assert captured["output"]["cache_observability"]["cached_tokens"] == 75
     assert "contract-revision:7" in captured["tags"]
 
