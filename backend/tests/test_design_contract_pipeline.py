@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from app.agents.design_contract import (
@@ -15,6 +17,8 @@ from app.agents.design_contract import (
 )
 from app.agents.planning_nodes import (
     contract_gate_node,
+    design_contract_node,
+    feedback_understanding_node,
     should_continue_after_contract_gate,
 )
 from app.agents.codegen import _prepare_generated_artifacts
@@ -140,6 +144,179 @@ def test_contract_diff_routes_visual_amendments_through_asset_invalidation():
         _contract(parent=parent, feedback=["Award ten points after each upgrade."])
     )
     assert not diff_design_contracts(parent, rules_revision)["asset_impacted"]
+
+
+def test_feedback_understanding_returns_llm_asset_judgment_with_current_context(monkeypatch):
+    parent = freeze_contract(_contract())
+    captured = {}
+
+    def fake_chat(system, user, **kwargs):
+        captured.update({"system": system, "user": user, **kwargs})
+        return (
+            json.dumps(
+                {
+                    "change_goal": "修复道路连接方向，不替换现有图片。",
+                    "preserve": ["现有像素素材和城市布局"],
+                    "likely_impact": ["道路邻接计算", "道路渲染映射"],
+                    "uncertainties": [],
+                    "asset_impact": {
+                        "requires_generation": False,
+                        "affected_semantic_ids": ["road.idle"],
+                        "rationale": "现有道路素材可以复用，只需修改代码映射。",
+                        "confidence": 0.94,
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            123,
+        )
+
+    monkeypatch.setattr("app.agents.planning_nodes.llm.chat", fake_chat)
+    result = feedback_understanding_node(
+        {
+            "use_real": True,
+            "source_feedback": "修复道路贴图方向，不要生成新图片。",
+            "game_spec": {"title": "City Builder"},
+            "game_design": {},
+            "design_contract": parent.model_dump(mode="json"),
+            "existing_files": [
+                {"path": "public/assets/road.webp", "content": "binary"},
+                {"path": "src/scenes/PlayScene.ts", "content": "source"},
+            ],
+        }
+    )
+
+    assert result["feedback_asset_impact"] == {
+        "requires_generation": False,
+        "affected_semantic_ids": ["road.idle"],
+        "rationale": "现有道路素材可以复用，只需修改代码映射。",
+        "confidence": 0.94,
+        "source": "llm",
+    }
+    assert "修复道路连接方向" in result["feedback_brief"]
+    assert result["_tokens_delta"] == 123
+    assert captured["response_format"] == {"type": "json_object"}
+    assert captured["recover_partial_json"] is True
+    assert "residential.level_1" in captured["user"]
+    assert "public/assets/road.webp" in captured["user"]
+    assert "Do not decide from a UI focus/category" in captured["system"]
+
+
+def test_revision_asset_route_uses_llm_judgment_not_visual_keywords():
+    parent = freeze_contract(_contract())
+    state = {
+        "task_kind": "revision",
+        "prompt": "Change the texture selection logic without replacing image assets.",
+        "source_feedback": "Change the texture selection logic without replacing image assets.",
+        "game_spec": {
+            "title": "City Builder",
+            "must_haves": ["REQ-HOUSING"],
+            "must_not_haves": ["instant bankruptcy"],
+            "win_condition": "reach five stars",
+            "lose_condition": "bankruptcy",
+        },
+        "game_design": {
+            "player": {"visual": "mayor", "states": ["idle", "selected"]},
+            "entities": [
+                {
+                    "id": "residential",
+                    "role": "placeable_building",
+                    "states": [
+                        {
+                            "id": "level_1",
+                            "semantic_id": "residential.level_1",
+                            "structure_change": True,
+                        },
+                        {
+                            "id": "level_2",
+                            "semantic_id": "residential.level_2",
+                            "structure_change": True,
+                        },
+                    ],
+                }
+            ],
+            "requirements": [
+                {
+                    "id": "REQ-HOUSING",
+                    "statement": "Housing has two visibly distinct levels.",
+                    "source_refs": ["intent:paragraph_1"],
+                    "resolved_as": ["residential.level_1", "residential.level_2"],
+                }
+            ],
+        },
+        "design_contract": parent.model_dump(mode="json"),
+        "feedback_asset_impact": {
+            "requires_generation": False,
+            "affected_semantic_ids": ["residential.level_1"],
+            "rationale": "The existing texture remains valid; only lookup code changes.",
+            "confidence": 0.91,
+            "source": "llm",
+        },
+    }
+
+    result = design_contract_node(state)
+    diff = result["contract_diff"]
+    # The deterministic audit detects the word "texture" as a visual
+    # amendment, while the contextual LLM judgment correctly routes this as a
+    # code-only change.  Both values remain visible for later analysis.
+    assert diff["contract_asset_impacted"] is True
+    assert diff["asset_impacted"] is False
+    assert diff["asset_impact_source"] == "llm"
+    assert diff["llm_affected_semantic_ids"] == ["residential.level_1"]
+    assert result["contract_revision"] == 2
+    assert result["design_contract"]["meta"]["parent_hash"] == parent.meta.contract_hash
+    assert should_continue_after_contract_gate(
+        {
+            "task_kind": "revision",
+            "contract_gate": {"passed": True},
+            "contract_diff": diff,
+        }
+    ) == "code_revision"
+
+
+def test_revision_asset_route_honors_positive_llm_judgment():
+    parent = freeze_contract(_contract())
+    result = design_contract_node(
+        {
+            "task_kind": "revision",
+            "prompt": "Replace the residential art with hand-painted buildings.",
+            "source_feedback": "Replace the residential art with hand-painted buildings.",
+            "game_spec": {"title": "City Builder"},
+            "game_design": {
+                "entities": [
+                    {
+                        "id": "residential",
+                        "role": "placeable_building",
+                        "states": [
+                            {"id": "level_1", "semantic_id": "residential.level_1"},
+                            {"id": "level_2", "semantic_id": "residential.level_2"},
+                        ],
+                    }
+                ]
+            },
+            "design_contract": parent.model_dump(mode="json"),
+            "feedback_asset_impact": {
+                "requires_generation": True,
+                "affected_semantic_ids": [
+                    "residential.level_1",
+                    "residential.level_2",
+                ],
+                "rationale": "The requested art does not exist in the current inventory.",
+                "confidence": 0.97,
+                "source": "llm",
+            },
+        }
+    )
+    diff = result["contract_diff"]
+    assert diff["asset_impacted"] is True
+    assert diff["asset_impact_source"] == "llm"
+    assert should_continue_after_contract_gate(
+        {
+            "task_kind": "revision",
+            "contract_gate": {"passed": True},
+            "contract_diff": diff,
+        }
+    ) == "asset_processing"
 
 
 def test_frozen_contract_hash_detects_mutation_and_mixed_view_hashes():

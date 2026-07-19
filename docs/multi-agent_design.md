@@ -297,7 +297,7 @@ flowchart TD
 | `gameplay_qa`        | GameplayQAAgent             | 玩法冒烟 + V8 运行时冒烟         |
 | `gameplay_repair`    | GameplayRepairAgent         | 运行时报错先内层 agent 定点 patch，玩法指标调安全数值重生成（≤2） |
 | `publish_artifact`   | PublishArtifactAgent        | 上传产物，生成 manifest，写库     |
-| `feedback_understanding` | FeedbackUnderstandingAgent | 解析 revision 反馈 |
+| `feedback_understanding` | FeedbackUnderstandingAgent | 解析 revision 反馈，并基于反馈、父合同及现有媒体清单输出结构化资产影响判断；不按前端 focus/category 写死路由 |
 | `code_revision`      | CodeRevisionAgent           | 基于 base version 修改源码 |
 | `revision_repair`    | CodeRevisionRepairAgent     | 修复 revision 的构建/QA 失败 |
 | `publish_revision`   | PublishRevisionAgent        | 写入原游戏的新版本 |

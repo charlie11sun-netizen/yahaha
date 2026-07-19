@@ -455,6 +455,9 @@ def _completed_preview(client, db_session_factory, headers):
     task.version_id = version.id
     task.spec_json = '{"title":"Revision Test","genre":"arcade"}'
     task.design_json = '{"rules":{"win":"score"}}'
+    task.contract_json = '{"meta":{"contract_hash":"source-contract-hash","revision":3}}'
+    task.contract_hash = "source-contract-hash"
+    task.contract_revision = 3
     db.commit()
     result = task.id, game.id, version.id
     db.close()
@@ -481,6 +484,9 @@ def test_create_revision_task_preserves_raw_feedback(client, db_session_factory)
     assert revision.base_version == "v1"
     assert revision.result_game_id == game_id
     assert revision.spec_json == '{"title":"Revision Test","genre":"arcade"}'
+    assert revision.contract_json == '{"meta":{"contract_hash":"source-contract-hash","revision":3}}'
+    assert revision.contract_hash == "source-contract-hash"
+    assert revision.contract_revision == 3
     event = db.query(GenerationDispatchOutbox).filter_by(task_id=revision.id).one()
     assert revision.dispatch_generation == event.dispatch_generation == 1
     db.close()

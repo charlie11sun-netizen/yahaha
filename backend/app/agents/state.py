@@ -53,6 +53,11 @@ class GenerationState(TypedDict, total=False):
     normalized_prompt: str
     source_feedback: str
     feedback_brief: str
+    # Structured judgment emitted by FeedbackUnderstandingAgent.  Revision
+    # routing consumes this instead of inferring asset work from UI categories
+    # or keyword lists; the deterministic contract diff is retained alongside
+    # it as auditable evidence and as a fallback for legacy/offline runs.
+    feedback_asset_impact: dict
     retrieved_memory_profiles: list
     retrieved_memories: list
     memory_context: str

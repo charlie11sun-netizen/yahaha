@@ -75,6 +75,7 @@ v2 在根 trace 和阶段 span 上增加可搜索的 DesignContract 字段；v2.
 - Diff：资产、代码、验收影响标志，以及 semantic ID / requirement 变更计数；
 - Acceptance：测试数、结果数、失败数和 `required_acceptance_pass`；
 - FrameAudit：审计资产数、失败帧数、`failed_semantic_ids`、覆盖率、重生成数量和 `regeneration_semantic_ids`；
+- Revision 资产路由：`contract_diff_asset_impacted` 是最终路由值，`contract_diff_contract_asset_impacted` 保留纯合同 diff 原值，`contract_diff_asset_impact_source=llm` 表示由 FeedbackUnderstandingAgent 根据反馈、父合同和现有资产清单做出判断；理由和置信度分别记录在 `contract_diff_asset_impact_rationale` / `contract_diff_asset_impact_confidence`；
 - 版本语义：`contract_version` / `trace_contract_version` 表示 `agent-step/v2` trace envelope；DesignContract 修订号只使用 `contract_revision` / `design_contract_revision`。
 - 直接关联：`opik_trace_id` 同时保存在 `generation_tasks`、根 trace metadata/output 和任务 API 中；
 - Cache 汇总：`llm_call_count`、`llm_prompt_tokens`、`llm_cached_tokens`、`llm_uncached_tokens`、`llm_cache_hit_rate`、`llm_cache_write_rate`、retry/latency/cost 和 provider 上报覆盖数。阶段 span 是 step 汇总，根 trace 是整个 task 汇总。

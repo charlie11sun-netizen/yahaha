@@ -1,5 +1,7 @@
 """LangGraph node adapters for the pure planning services."""
 
+from pathlib import PurePosixPath
+
 from app.agents.nodes_common import (
     MAX_GAMEPLAY_REPAIR,
     MAX_REPAIR,
@@ -372,6 +374,27 @@ def design_contract_node(state: dict) -> dict:
             parent=parent_contract,
         )
         contract_diff = diff_design_contracts(parent_contract, contract)
+        if state.get("task_kind") == "revision":
+            # Preserve the deterministic diff as evidence, but let the model's
+            # contextual judgment decide whether this user amendment actually
+            # requires new file-backed media.  This deliberately does not
+            # inspect UI focus values or maintain a category/keyword table.
+            deterministic_asset_impact = bool(contract_diff.get("asset_impacted"))
+            impact = state.get("feedback_asset_impact") or {}
+            llm_requires_assets = impact.get("requires_generation")
+            contract_diff["contract_asset_impacted"] = deterministic_asset_impact
+            if isinstance(llm_requires_assets, bool):
+                contract_diff["asset_impacted"] = llm_requires_assets
+                contract_diff["asset_impact_source"] = "llm"
+                contract_diff["asset_impact_rationale"] = str(
+                    impact.get("rationale") or ""
+                )[:1000]
+                contract_diff["asset_impact_confidence"] = impact.get("confidence")
+                contract_diff["llm_affected_semantic_ids"] = list(
+                    impact.get("affected_semantic_ids") or []
+                )[:100]
+            else:
+                contract_diff["asset_impact_source"] = "contract_diff_fallback"
         payload = contract.model_dump(mode="json")
         return {
             "intent_record": record.model_dump(mode="json"),
@@ -479,6 +502,85 @@ def contract_gate_node(state: dict) -> dict:
     }
 
 
+_MEDIA_SUFFIXES = {
+    ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg",
+    ".mp3", ".wav", ".ogg", ".m4a", ".mp4", ".webm",
+}
+
+
+def _feedback_asset_context(state: dict) -> dict:
+    contract = state.get("design_contract") or {}
+    semantic_ids = [
+        str(item.get("semantic_id"))
+        for entity in (contract.get("entities") or [])
+        if isinstance(entity, dict)
+        for item in (entity.get("states") or [])
+        if isinstance(item, dict) and item.get("semantic_id")
+    ]
+    asset_paths = []
+    for item in state.get("existing_files") or []:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "")
+        if PurePosixPath(path).suffix.lower() in _MEDIA_SUFFIXES:
+            asset_paths.append(path)
+    return {
+        "contract_hash": ((contract.get("meta") or {}).get("contract_hash")),
+        "contract_revision": ((contract.get("meta") or {}).get("revision")),
+        "visual_style": contract.get("visual_style") or {},
+        "semantic_asset_ids": semantic_ids[:200],
+        "existing_media_paths": asset_paths[:200],
+    }
+
+
+def _brief_list(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _structured_feedback(raw: str, feedback: str) -> tuple[str, dict]:
+    parsed = _parse_json(raw)
+    goal = str(parsed.get("change_goal") or "").strip()
+    preserve = _brief_list(parsed.get("preserve"))
+    likely = _brief_list(parsed.get("likely_impact"))
+    uncertainties = _brief_list(parsed.get("uncertainties"))
+    asset = parsed.get("asset_impact")
+    asset = asset if isinstance(asset, dict) else {}
+    requires_generation = asset.get("requires_generation")
+    confidence = asset.get("confidence")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        confidence = None
+    elif confidence is not None:
+        confidence = max(0.0, min(1.0, float(confidence)))
+    semantic_ids = _brief_list(asset.get("affected_semantic_ids"))[:100]
+    rationale = str(asset.get("rationale") or "").strip()
+    decision = {
+        "requires_generation": (
+            requires_generation if isinstance(requires_generation, bool) else None
+        ),
+        "affected_semantic_ids": semantic_ids,
+        "rationale": rationale,
+        "confidence": confidence,
+        "source": "llm" if isinstance(requires_generation, bool) else "contract_diff_fallback",
+    }
+    if not goal:
+        return (
+            raw.strip()
+            or f"Change goal\n{feedback}\n\nPreserve\nAll behavior not mentioned by the player.",
+            decision,
+        )
+    lines = ["Change goal", goal, "", "Preserve"]
+    lines.extend(preserve or ["All behavior not mentioned by the player."])
+    lines.extend(["", "Likely impact"])
+    lines.extend(likely or ["Implementation details to be determined from the existing project."])
+    lines.extend(["", "Uncertainties"])
+    lines.extend(uncertainties or ["None identified."])
+    return "\n".join(lines), decision
+
+
 def feedback_understanding_node(state: dict) -> dict:
     feedback = state.get("source_feedback") or state.get("prompt") or ""
     tokens = 0
@@ -491,21 +593,47 @@ def feedback_understanding_node(state: dict) -> dict:
                     state.get("game_spec") or {},
                     state.get("game_design") or {},
                     state.get("memory_context") or "",
+                    _feedback_asset_context(state),
                 ),
                 timeout=max(30, int(settings.OPENAI_PLANNING_STREAM_IDLE_TIMEOUT or 180)),
+                response_format={"type": "json_object"},
+                recover_partial_json=True,
             )
+            brief, impact = _structured_feedback(brief, feedback)
         except Exception as exc:  # noqa: BLE001
             _real_model_fallback_or_raise("FeedbackUnderstandingAgent", exc, exc)
             brief = f"Change goal\n{feedback}\n\nPreserve\nAll behavior not mentioned by the player.\n\nUncertainties\nModel interpretation failed: {_clip(exc, 120)}"
+            impact = {
+                "requires_generation": None,
+                "affected_semantic_ids": [],
+                "rationale": "LLM impact judgment unavailable; use the deterministic contract diff.",
+                "confidence": None,
+                "source": "contract_diff_fallback",
+            }
     else:
         brief = f"Change goal\n{feedback}\n\nPreserve\nAll behavior not mentioned by the player.\n\nUncertainties\nNone inferred in offline mode."
+        impact = {
+            "requires_generation": None,
+            "affected_semantic_ids": [],
+            "rationale": "No real LLM was enabled; use the deterministic contract diff.",
+            "confidence": None,
+            "source": "contract_diff_fallback",
+        }
     return {
         "feedback_brief": brief,
+        "feedback_asset_impact": impact,
         "_agent": "FeedbackUnderstandingAgent",
         "_tokens_delta": tokens,
         "_logs": [
             f"preserved raw feedback: {_clip(feedback, 180)}",
             f"natural-language change brief: {_clip(brief, 240)}",
+            "asset impact judgment: "
+            + (
+                f"llm requires_generation={str(impact['requires_generation']).lower()}, "
+                f"confidence={impact.get('confidence')}, rationale={_clip(impact.get('rationale'), 180)}"
+                if impact.get("source") == "llm"
+                else "deterministic contract diff fallback"
+            ),
         ],
     }
 

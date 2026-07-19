@@ -226,6 +226,12 @@ def revise_task(db: Session, task_id: str, body: TaskRevisionIn, user, *, queue)
         status=TaskStatus.PENDING,
         spec_json=source.spec_json,
         design_json=source.design_json,
+        # The current frozen contract is the parent of the revision contract.
+        # Without it every semantic asset appears newly added, which routes even
+        # a code-only fix through unnecessary image generation.
+        contract_json=source.contract_json,
+        contract_hash=source.contract_hash,
+        contract_revision=source.contract_revision,
     )
     revision.assets = list(source.assets)
     db.add(revision)

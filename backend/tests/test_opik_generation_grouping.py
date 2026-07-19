@@ -136,7 +136,12 @@ def test_contract_observability_metadata_flattens_gate_acceptance_and_frame_audi
             "contract_hash": "contract-hash",
             "contract_revision": 4,
             "contract_diff": {
-                "asset_impacted": True,
+                "asset_impacted": False,
+                "contract_asset_impacted": True,
+                "asset_impact_source": "llm",
+                "asset_impact_rationale": "Existing media can be reused.",
+                "asset_impact_confidence": 0.93,
+                "llm_affected_semantic_ids": ["player.idle"],
                 "code_impacted": True,
                 "acceptance_impacted": False,
                 "added_semantic_ids": ["player.victory"],
@@ -179,6 +184,12 @@ def test_contract_observability_metadata_flattens_gate_acceptance_and_frame_audi
     assert metadata["contract_hash"] == "contract-hash"
     assert metadata["design_contract_revision"] == 4
     assert metadata["contract_gate_passed"] is True
+    assert metadata["contract_diff_asset_impacted"] is False
+    assert metadata["contract_diff_contract_asset_impacted"] is True
+    assert metadata["contract_diff_asset_impact_source"] == "llm"
+    assert metadata["contract_diff_asset_impact_rationale"] == "Existing media can be reused."
+    assert metadata["contract_diff_asset_impact_confidence"] == 0.93
+    assert metadata["contract_diff"]["llm_affected_semantic_ids"] == ["player.idle"]
     assert metadata["contract_diff_changed_semantic_count"] == 1
     assert metadata["acceptance_failed_count"] == 1
     assert metadata["required_acceptance_pass"] == 0.5

@@ -188,6 +188,13 @@ def _build_contract_observability_metadata(
     if contract_diff:
         diff_summary = {
             "asset_impacted": contract_diff.get("asset_impacted"),
+            "contract_asset_impacted": contract_diff.get("contract_asset_impacted"),
+            "asset_impact_source": contract_diff.get("asset_impact_source"),
+            "asset_impact_rationale": contract_diff.get("asset_impact_rationale"),
+            "asset_impact_confidence": contract_diff.get("asset_impact_confidence"),
+            "llm_affected_semantic_ids": list(
+                contract_diff.get("llm_affected_semantic_ids") or []
+            )[:100],
             "code_impacted": contract_diff.get("code_impacted"),
             "acceptance_impacted": contract_diff.get("acceptance_impacted"),
             "added_semantic_ids": list(contract_diff.get("added_semantic_ids") or [])[:100],
@@ -200,6 +207,18 @@ def _build_contract_observability_metadata(
         metadata.update(
             {
                 "contract_diff_asset_impacted": contract_diff.get("asset_impacted"),
+                "contract_diff_contract_asset_impacted": contract_diff.get(
+                    "contract_asset_impacted"
+                ),
+                "contract_diff_asset_impact_source": contract_diff.get(
+                    "asset_impact_source"
+                ),
+                "contract_diff_asset_impact_rationale": contract_diff.get(
+                    "asset_impact_rationale"
+                ),
+                "contract_diff_asset_impact_confidence": contract_diff.get(
+                    "asset_impact_confidence"
+                ),
                 "contract_diff_code_impacted": contract_diff.get("code_impacted"),
                 "contract_diff_acceptance_impacted": contract_diff.get("acceptance_impacted"),
                 "contract_diff_added_semantic_count": len(
