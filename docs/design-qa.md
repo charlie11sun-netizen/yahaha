@@ -2,7 +2,7 @@
 
 Date: 2026-06-19
 
-Reference: `<external-reference>\ChatGPT Image Jun 19, 2026, 09_01_27 AM.png`
+Reference: external design image (not committed)
 
 Implementation checked: `http://localhost:3000/create` at 1512 x 982
 

@@ -54,9 +54,9 @@ game-generation:<游戏标题>
 
 实现位置：
 
-- 根 trace、阶段 span 和更新函数：[backend/app/agents/opik_integration.py](<<repo>/backend/app/agents/opik_integration.py:83>)
-- 生成任务生命周期和最终元数据回填：[backend/app/agents/pipeline.py](<<repo>/backend/app/agents/pipeline.py:400>)
-- LangGraph 阶段 span：[backend/app/agents/tracing.py](<<repo>/backend/app/agents/tracing.py:253>)
+- 根 trace、阶段 span 和更新函数：[backend/app/agents/opik_integration.py](../backend/app/agents/opik_integration.py#L83)
+- 生成任务生命周期和最终元数据回填：[backend/app/agents/pipeline.py](../backend/app/agents/pipeline.py#L400)
+- LangGraph 阶段 span：[backend/app/agents/tracing.py](../backend/app/agents/tracing.py#L253)
 
 ## 4. Schema 版本
 

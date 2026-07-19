@@ -1,8 +1,8 @@
 # Activity Command Center Design QA
 
-- Source visual truth path: `<repo>\frontend\design\activity-redesign-selected.png`
-- Implementation screenshot path: `<repo>\frontend\design\activity-implementation.png`
-- Responsive implementation screenshot path: `<repo>\frontend\design\activity-implementation-1024.png`
+- Source visual truth path: `frontend/design/activity-redesign-selected.png`
+- Implementation screenshot path: `frontend/design/activity-implementation.png`
+- Responsive implementation screenshot path: `frontend/design/activity-implementation-1024.png`
 - Viewport: 1536 x 1024 desktop, with an additional 1024 x 768 responsive check.
 - State: authenticated `/create?task=a5d9791e-0bf7-4402-91ce-4f2794fd0fd3`, succeeded task, Activity tab selected, All agents selected, first two timeline events expanded.
 - Full-view comparison evidence: the source and final implementation were opened together at original resolution in the same comparison input.
@@ -38,8 +38,8 @@
    - Added the identity divider, increased header breathing room, matched the 44px brand mark, and switched to underline tabs.
    - Moved the three-column breakpoint to 1280px and ordered the timeline first below that breakpoint.
 3. Post-fix visual evidence:
-   - Desktop: `<repo>\frontend\design\activity-implementation.png`
-   - Responsive: `<repo>\frontend\design\activity-implementation-1024.png`
+   - Desktop: `frontend/design/activity-implementation.png`
+   - Responsive: `frontend/design/activity-implementation-1024.png`
    - The final desktop capture preserves the reference composition while showing four real timeline stages above the fold; the responsive capture keeps the timeline readable without overlapping controls.
 
 **Primary Interactions Tested**

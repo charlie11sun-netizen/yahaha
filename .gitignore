@@ -44,6 +44,14 @@ graphify-out/*
 /scripts/prompt_iter*.txt
 /scripts/prompt_probe*.txt
 /scripts/*_traces.jsonl
+/.mock-api.*.log
+/.playwright-cli/
+/qa/forensic-*/traces.jsonl
+/qa/forensic-*/writes.b64
+/qa/forensic-*/writes.jsonl
+/qa/forensic-*/oplog.json
+/qa/forensic-*/pytest-full.txt
+/qa/forensic-*/export-err.txt
 
 # Stray nested Graphify output; the canonical graph lives at the repo root.
 /backend/graphify-out/
