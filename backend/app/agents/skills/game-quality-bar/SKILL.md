@@ -21,6 +21,11 @@ is to wire them into every meaningful event.
 - `src/systems/Bounds.ts` — world-edge handling: `Bounds.collideWorld(actor, bounce?)`,
   `Bounds.clamp(scene, actor)`, `Bounds.wrap(scene, actor)`,
   `Bounds.despawnOutside(scene, group, margin?)`.
+- `src/systems/AreaHint.ts` — keyed in-world range/area affordances:
+  `AreaHint.circle(scene, key, x, y, radius, style?)`,
+  `AreaHint.rect(scene, key, x, y, w, h, style?)` (redrawing the same key just
+  moves it — safe from hover/drag handlers), `AreaHint.hide(scene, key)`,
+  `AreaHint.clear(scene)`. Palette-styled, reports `hint:area` probes to QA.
 - `src/config/gameConfig.ts` — `gameConfig.palette` (bg/surface/primary/accent/danger,
   the game's visual identity — use it for EVERY color), `param(name, fallback)`
   for free-form tuning numbers, and `gameConfig.sheet` (generated sprite sheet, see below).
@@ -61,7 +66,7 @@ rules-owned state or visible actor, not just that `addKey` appears in source.
 
 ## UI panels & world input — build once, layer correctly
 
-Four interaction defects reliably reach players and are all QA-gated at runtime:
+These interaction defects reliably reach players and are QA-gated at runtime:
 
 1. **Never rebuild UI per frame.** A panel or button that is destroyed and
    recreated inside an update path renders normally but NEVER becomes
@@ -99,6 +104,146 @@ Four interaction defects reliably reach players and are all QA-gated at runtime:
    looks healthy. Give every non-operating building a badge naming the missing
    prerequisite ("no road" / "out of power range" / "no water"): income sits at
    zero forever exactly when players cannot see why.
+6. **Spatial extents are visible, not guessed.** Every range/radius/area number
+   a rule consults (attack/effect radius, aura, blast area, service coverage,
+   aggro distance) gets an in-world affordance at the moment the player can act
+   on it: selecting or hovering an entity draws `AreaHint.circle(scene,
+   "sel-range", ent.x, ent.y, ent.range)`, a placement preview draws the
+   coverage BEFORE the player commits money, an active aura shows its extent,
+   and the inspect/tooltip panel states the number itself. Call it from the
+   hover/selection handler (redrawing a key is cheap), `AreaHint.hide` on
+   deselect. QA reconciles `hint:area` probes against designs with ranged
+   mechanics — rules the player cannot see read as a broken game.
+7. **Spending is a deal the player can read before taking it.** Every control
+   that spends or refunds currency (build, upgrade, sell, unlock, craft) shows
+   its exact price on or beside the control, updated live for the selected
+   target, and the benefit it buys. For upgrades that means current→next of
+   every stat that changes, sourced from the same rules/content data the
+   simulation consults (never a hard-coded copy in UI):
+
+   ```ts
+   const next = towerData.levels[tower.level + 1];
+   if (!next) {
+     upgradeBtn.setLabel("MAX").disable();          // maxed: price replaced by MAX
+   } else {
+     upgradeBtn.setLabel(`升级 ${next.cost}G`);
+     infoPanel.setText([
+       `伤害 ${cur.damage} → ${next.damage}`,
+       `射程 ${cur.range} → ${next.range}`,
+     ]);
+     if (gold < next.cost) upgradeBtn.dim(`还差 ${next.cost - gold}G`);
+   }
+   ```
+
+   Sell shows its refund amount the same way. A bare "升级" button whose cost
+   and effect only reveal themselves after clicking reads as an unfinished
+   game — players refuse to spend into the unknown.
+
+## Mechanic geometry is one shared truth
+
+For every mechanically distinct spatial or timed interaction, create one
+content-owned interaction profile. It must bind:
+
+- the required player action;
+- input semantics: edge/tap, hold, toggle, buffered, continuous, or automatic;
+- the visible envelope and anchor used to render the target;
+- the collision/interaction envelope used by rules;
+- the clearance and activation window, including action duration/hold behavior,
+  earliest/latest useful activation, target occupancy/transit at worst-case
+  speed, recovery, and cue timing;
+- the resolution lifecycle (persist, transform, disable, or despawn); and
+- worst-case feasibility using both the subject and target extents.
+
+Rendering, physics/rules, telegraphing, and feedback consume that same profile.
+Do not hand-write a sprite size in the factory, a second hitbox in the scene,
+and a third timing number in a rules class. Those copies drift.
+
+Different required responses need visibly different envelopes. A low obstacle
+to jump over belongs on the floor and must fit under the implemented jump arc;
+an obstacle to duck under belongs overhead and must leave a visible passage.
+The same principle applies across genres: melee versus ranged targets, click
+versus drag affordances, placement footprints, rhythm timing bands, cover
+versus passable terrain, and attack versus dodge telegraphs must look like the
+actions they require.
+
+Never resolve a spatial result from a center-line crossing plus a semantic
+label:
+
+```ts
+// WRONG: visible bodies may still overlap, yet rules report success.
+if (target.x <= player.x + 10) rules.resolve(player.posture, target.kind);
+```
+
+Use Phaser overlap/collider, bounds intersection, or a swept interaction window
+that consumes both bodies' extents. Apply the current frame's action state
+before resolving contact. An imperative cue ("jump now", "slide", "parry",
+"tap") may appear only while the action can remain active through resolution;
+an earlier cue says "prepare" or the input must support hold/buffering. Emit
+`Probe.action` when input reaches rules, `Probe.window` when the actionable
+interval opens/closes, and `Probe.outcome` only after geometry/legality
+resolves success, failure, or blocked. Each distinct action needs its own
+reachable success and failure acceptance evidence; "exercise primary action"
+is not sufficient.
+
+## Resolved entities leave play
+
+Every transient entity uses one stable id across rules and integration. When a
+pickup, consumable, projectile, defeated actor, spent card, destroyed object,
+or one-shot trigger resolves, remove or deactivate its renderer and
+collision/input body in the same logical tick, remove it from future
+interaction queries, then call `Probe.despawn(category, id, reason)`. Updating
+score, adding the id to a resolved set, or waiting for off-screen cleanup while
+the entity remains visible/collidable is incomplete.
+
+## Production UI contains no QA evidence
+
+Normal HUD, prompt, pause, result, and button copy tells the player what
+happened or what to do. Never show collision pixels, coordinates, hitbox/body
+math, rule-layer/physics/state-machine notes, Probe/QA/debug labels, acceptance
+arithmetic, or developer instructions. Keep diagnostics in probes or behind an
+explicit debug-only surface that is false in the published build.
+
+## Balance numbers have ONE home
+
+Every mechanic-relevant stat table — movement and geometry, timing windows,
+puzzle data, card or board values, tower/unit levels, enemy HP, wave
+compositions, economy, prices, progression — is exported by exactly one
+content-owned module. The rules simulation imports it to resolve game state;
+the HUD imports it (or reads it through rules accessors) to display the same
+numbers. The moment a second hand-written copy exists, the two drift (a real
+shipped case: the panel advertised a 34-damage cannon while the simulation
+dealt 30, and the sell dialog quoted a refund 4 gold off from what was paid).
+If you find yourself typing a number that already exists in another module,
+import it instead.
+
+Treat every `rules.win_feasibility_ledger.checks` entry generically as
+required capability versus available capability. Preserve its unit and
+minimum ratio in content, simulation, acceptance evidence, and HUD where the
+threshold is player-facing. A runner may prove available track distance and
+jump reach; a puzzle may prove move or board capacity; a rhythm game may prove
+timing windows; an economy game may prove bootstrap cash flow. Do not invent
+combat quantities for a non-combat game, and never use zero as an "N/A"
+placeholder. Omit a check when that quantitative mechanic does not apply.
+
+When the game has authored combat waves or phases, their compositions are part
+of the design's capacity ledger — the
+arithmetic that proved the heaviest wave is beatable with ~30% headroom.
+Implement exactly the declared composition. Adding "a few more elites", extra
+healer stacking, or an extra spawn group feels like flavor but silently blows
+past the proven budget: support units multiply effective HP (healing x
+lifetime x targets), and the endgame loadout's real on-target uptime is well
+under 100%, so the margin is thinner than it looks. If a wave feels too easy,
+tune within the ledger (or update the ledger arithmetic first) — never pile on
+units ad hoc.
+
+The ledger's supply side is range GEOMETRY: an enemy is only under fire along
+the chord its path cuts through an attacker's range circle —
+`2*sqrt(range² − distance²)` of path, divided by enemy speed. A 120-range
+tower 48px off the path covers 220px ≈ 5.8s per enemy at speed 38 — not the
+enemy's 26s full walk (a shipped opening "held wave 1 on paper" and killed
+3 of 10 in play). So when you tune enemy `speed`, tower `range`, spawn
+`intervalSeconds`, or path layout, you are moving chord seconds — recheck the
+opening-vs-wave-1 and heaviest-wave numbers before shipping the change.
 
 ## Design for the embedded play surface
 
@@ -107,6 +252,16 @@ sprites that look acceptable at source resolution shrink by roughly one third:
 
 - essential HUD, objective, and control text: at least 18px source size;
 - secondary labels and tooltips: at least 16px source size;
+- verify the effective rendered size after canvas and container scaling: aim for
+  at least 16 CSS pixels for primary repeated gameplay text and 14 CSS pixels
+  for secondary labels; source size alone is not evidence;
+- keep outlines proportional to the rendered glyphs. For dense CJK, Japanese,
+  or Korean text at 16-24px, prefer no outline or 1px and never exceed 10% of
+  the font size. For Latin text never exceed 16%. Fill and outline must have
+  clearly opposite luminance; a dark fill with a dark outline turns glyphs
+  into blobs. Prefer a solid or translucent contrast panel to a heavy outline;
+- measure text after wrapping and grow, reflow, or paginate its panel. Merely
+  increasing the font inside a fixed-height card creates clipping and overlap;
 - generated player/threat art: size by the visible opaque silhouette, not the
   padded sprite-sheet cell; aim for a clearly readable ~28-36 CSS-pixel actor;
 - keep instructions short and progressive instead of one dense line of controls.
@@ -163,8 +318,33 @@ Rules: real sprites beat procedural circles — use the sheet for player, enemie
 pickups and the `explosion`/`flash`/`projectile` frames for effects (they also
 work as particle textures). Frames from ONE animations group always share a
 texture; for anything else use `sheetFrame("name")` which searches every sheet.
-`setDisplaySize` sprites down to gameplay scale (~40-64px). Gameplay QA fails
-authored games that preload the sheet without using it.
+Gameplay QA fails authored games that preload the sheet without using it.
+
+### Display size = logical footprint (the #1 scale trap)
+
+Sheet frames are large SOURCE art (typically 256px); an actor's rendered size
+must come from the logical footprint it occupies — the grid cell or placement
+slot it sits on (`gameConfig.levelLayout.cellWidth/cellHeight` when a grid
+exists), its collision body, or gameplay scale (~40-90px) — never from the raw
+art resolution. Normalize once with `setDisplaySize`, and make every LATER
+size change relative to that base:
+
+```ts
+tower.setDisplaySize(cell, cell);            // scale is now cell/256 ≈ 0.19
+tower.setData("baseScale", tower.scaleX);    // remember the normalized base
+
+// upgrade level bump — RELATIVE to the base:
+tower.setScale(tower.getData("baseScale") * (1 + (level - 1) * 0.1));
+
+// WRONG: tower.setScale(1 + (level - 1) * 0.1)
+// setScale is ABSOLUTE (relative to the NATIVE 256px frame, not to the
+// normalized display size): the tower snaps back to raw art resolution and
+// covers several grid cells while still occupying one logical slot.
+```
+
+`Juice.pulse` is already relative — safe on normalized sprites. QA probes both
+failure modes at runtime: `scale:conflict` (setDisplaySize later wiped by an
+absolute setScale) and `scale:native` (large frames rendering at scale ≈ 1).
 
 ## Scene variants — the stage must evolve
 
@@ -183,13 +363,21 @@ no background was generated — never replace it with a flat fill.
 ## Runtime probes — QA replays the game and checks content actually happens
 
 `src/systems/Probe.ts` reports runtime behavior to the QA sandbox. Scene
-transitions, `anims.play`, and `Backdrop.draw` report automatically. You add
-exactly two kinds of calls:
+transitions, `anims.play`, and `Backdrop.draw` report automatically. Add these
+bounded calls at the real lifecycle points:
 
 - `Probe.spawn("enemy", definition.id)` (or `"boss"`) whenever an actor enters
   play — put it in the content factory or the scene spawn helper, once per
   spawn.
 - `Probe.emit("projectile:spawn", projectileId)` when a projectile is fired.
+- `Probe.action(actionId, "attempt"|"start"|"triggered"|"end")` when a mapped
+  input reaches rules-owned action handling.
+- `Probe.window(interactionId, "open"|"close")` around a duration-bound useful
+  activation interval.
+- `Probe.outcome(interactionId, "success"|"failure"|"blocked")` only after the
+  rules resolve the interaction from geometry, timing, or legality.
+- `Probe.despawn(category, stableEntityId, reason)` only after the matching
+  renderer and collision/input body have left play.
 
 QA drives the built game for a few seconds and reconciles probes against the
 design roster: a backdrop that never draws in the gameplay scene, animation
@@ -292,7 +480,22 @@ Show the multiplier in the HUD and celebrate milestones with `floatText` + `puls
 - Hard fail (runtime input probes): pointer presses reach the page but no scene
   processes them; interactive objects re-registered every frame during the quiet
   observation window (UI rebuilt per tick = unclickable buttons); any `addKey`
-  call that resolved to no key code.
+  call that resolved to no key code; a normalized display size wiped by a later
+  absolute `setScale` (`scale:conflict` — actors ballooning to raw art size).
+- Hard fail (mechanic fidelity): spatial outcomes dispatched from semantic
+  labels or a center-line crossing without consuming both visible bodies'
+  geometry. Use overlap/bounds or a swept interaction window from the shared
+  interaction profile.
+- Hard fail (interaction evidence): repeated authored actions resolve only as
+  blocked; a pickup/consumable success has no matching despawn; or integration
+  acknowledges a terminal entity but leaves it visible/collidable.
+- Hard fail (production UI): player-visible strings expose debug, collision,
+  QA, acceptance, or implementation prose.
 - Warnings that reviewers read: no audio usage, flat art (no glow/gradient/tint),
   shooters without projectiles or a boss climax, a canvas measuring 0x0 after
-  load (stylesheet race), animation groups that never play, dead exports.
+  load (stylesheet race), animation groups that never play, dead exports, large
+  art frames rendered at near-native scale (`scale:native`), rule-consulted
+  range/radius data with no visible affordance (no AreaHint, no ring drawing,
+  zero `hint:area` probes), and spend/upgrade/sell controls with no visible
+  price or benefit preview (the screenshot review flags commerce buttons that
+  carry no cost label).

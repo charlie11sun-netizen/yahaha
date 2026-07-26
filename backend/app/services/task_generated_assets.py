@@ -4,22 +4,12 @@ from __future__ import annotations
 import base64
 from pathlib import PurePosixPath
 
-from app.core.checkpointing import checkpoint_config, open_checkpointer
 from app.services.artifacts import artifact_bytes, artifact_content_type, normalize_artifact_path
 
 
-def _checkpoint_values(task_id: str) -> dict:
-    # Use LangGraph's public state API rather than depending on saver internals;
-    # this works for both the in-memory test saver and PostgresSaver.
-    from app.agents.graph import build_graph
+def generated_image_previews(values: dict) -> list[dict]:
+    """Build API-safe image previews from an already-read checkpoint state."""
 
-    with open_checkpointer() as saver:
-        snapshot = build_graph(checkpointer=saver).get_state(checkpoint_config(task_id))
-        return dict(snapshot.values or {})
-
-
-def generated_image_previews(task_id: str) -> list[dict]:
-    values = _checkpoint_values(task_id)
     artifacts = list(values.get("generated_assets") or [])
     manifest = dict(values.get("asset_manifest") or {})
     entries = list(manifest.get("assets") or [])

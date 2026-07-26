@@ -41,6 +41,7 @@ function CreatePageInner() {
   const { user, loading } = useAuth();
   const now = useNow(1000);
   const taskParam = searchParams.get("task");
+  const workspaceView = searchParams.get("view") === "assets" ? "assets" : "overview";
   const resumeLast = searchParams.get("resume") === "1";
   const remixSourceId = searchParams.get("remix");
   const remixSourceTitle = searchParams.get("sourceTitle") || "this game";
@@ -247,6 +248,13 @@ function CreatePageInner() {
     router.replace("/create");
   };
 
+  const setWorkspaceView = (view: "overview" | "assets") => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (view === "assets") params.set("view", "assets");
+    else params.delete("view");
+    router.replace(`/create?${params.toString()}`);
+  };
+
   const resumeTask = (id: string) => {
     setTaskId(id);
     localStorage.setItem(LAST_TASK_KEY, id);
@@ -270,10 +278,12 @@ function CreatePageInner() {
             }
             files={files}
             generatedAssets={generatedAssets}
+            onBackToOverview={() => setWorkspaceView("overview")}
             now={now}
             onCancel={cancelTask}
             onEditBrief={editBrief}
             onOpenActivity={() => setActivityOpen(true)}
+            onOpenAssets={() => setWorkspaceView("assets")}
             onPreview={openPreview}
             onPublish={publishGame}
             onRevision={reviseGame}
@@ -281,6 +291,7 @@ function CreatePageInner() {
             publishing={publishing}
             revising={revising}
             task={task}
+            view={workspaceView}
           />
         ) : (
           <CreateInput

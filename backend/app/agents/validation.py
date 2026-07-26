@@ -6,6 +6,7 @@
 import hashlib
 import re
 
+from app.generation.source_policy import FORBIDDEN_PATTERNS
 from app.services.artifacts import (
     ArtifactError,
     artifact_bytes,
@@ -20,23 +21,6 @@ from app.services.vite_projects import (
 )
 
 # (正则, 展示名)
-FORBIDDEN_PATTERNS = [
-    (r"eval\s*\(", "eval()"),
-    (r"new\s+Function", "new Function"),
-    (r"document\.cookie", "document.cookie"),
-    (r"window\.(parent|top)(?!\s*\.\s*postMessage)", "parent/top access"),
-    (r"\blocalStorage\b", "localStorage"),
-    (r"\bsessionStorage\b", "sessionStorage"),
-    (r"fetch\s*\(", "fetch()"),
-    (r"XMLHttpRequest", "XMLHttpRequest"),
-    (r"\bWebSocket\b", "WebSocket"),
-    (r"\bimport\s*\(", "dynamic import()"),
-    (r"\bnavigator\.sendBeacon\b", "sendBeacon"),
-    (r"\bEventSource\b", "EventSource"),
-    (r"<script[^>]+src=[\"']https?://", "external script"),
-    (r"https?://(?!www\.w3\.org)", "external URL"),
-]
-
 REQUIRED_FILES = {"index.html", "style.css", "game.js"}
 MAX_FILE_BYTES = 400_000
 MAX_RUNTIME_FILE_BYTES = MAX_PROJECT_FILE_BYTES

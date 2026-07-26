@@ -28,19 +28,29 @@ border-connected flood fill for light/checkerboard backdrops).
 """
 from __future__ import annotations
 
+import contextvars
 import io
 import json
-import re
+import logging
 import time
 import hashlib
-from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import replace
 
 from app.core.config import settings
-from app.agents.design_contract import contract_to_design_payload, contract_to_spec_payload, derive_sprite_demand_manifest
-from app.agents.decision_trace import asset_trace_record
+from app.generation.design_contract import (
+    contract_to_design_payload,
+    contract_to_spec_payload,
+    derive_sprite_demand_manifest,
+)
+from app.observability import opik_integration
+from app.observability.decision_trace import asset_trace_record
 from app.services.artifacts import artifact_bytes, binary_artifact
+from app.services.asset_semantic_review import (
+    AssetSemanticReviewError,
+    review_spritesheet,
+    review_spritesheet_layout,
+)
 from app.services.provider_router import (
     MediaRequest,
     ProviderConfigurationError,
@@ -49,8 +59,6 @@ from app.services.provider_router import (
     ProviderStreamProtocolError,
 )
 from app.services.tilemaps import (
-    TILE_SIZE,
-    TILEMAP_ARCHETYPES,
     TILESET_GRID,
     TILESET_IMAGE_SIZE,
     generate_tilemap_artifacts,
@@ -59,1207 +67,652 @@ from app.services.sprite_pipeline import (
     BatchSpec,
     SpriteDemand,
     SpriteDemandManifest,
-    audit_frame,
     build_cell_regeneration_specs,
     build_sprite_demand_manifest,
+    strip_ui_overlay_demands,
 )
 
-SHEET_GRID = 4
-SHEET_CELL = 256
-SHEET_SIZE = SHEET_GRID * SHEET_CELL
-# 同一角色的动画帧(敌人攻击帧、道具激活帧)要引用它前一格的画面;规划期还不
-# 知道最终分页格位,先埋占位符,_sheet_prompt 按落定的格位替换成 row/column。
-_PREV_REF = "@PREV_CELL@"
-
-
-def _sheet_pages_cap() -> int:
-    """图集页数上限(每页一次图像调用,16 格)。钳位防配置手滑打爆图像账单。"""
-    return max(1, min(12, int(settings.ASSET_SHEET_MAX_PAGES)))
-
-
-@dataclass(frozen=True)
-class SheetCell:
-    name: str  # semantic frame name, e.g. "player_idle"
-    desc: str  # what to draw in this cell
-    # 作者可读的帧语义(manifest frame_meta)。帧名(entity_3)本身不携带含义,
-    # 丢掉描述作者只能按顺序瞎猜——像素都市计划把住/商/电/水整体错位一格
-    # (2026-07-17)。空则回退 desc。
-    meta: str = ""
-    # 可连接图块族(道路/管道/铁轨):非空时本格是族内一个变体。tile_base 是
-    # 族基准帧名(=straight 格帧名),tile_slot ∈ _TILE_SLOTS 槽位。族格同页
-    # 但不进动画组——它们是邻接变体,不是动画帧。
-    tile_base: str = ""
-    tile_slot: str = ""
-    # Semantic identity is deliberately separate from the legacy frame name.
-    # Existing Phaser projects can keep loading `frames[name]`, while new
-    # projects resolve `semantic_frames["residential.level_3"]`.
-    semantic_id: str = ""
-    required: bool = True
-    consumer_refs: tuple[str, ...] = ()
-    variant_strategy: str = "generated"
-    expected_object_count: int = 1
-
-
-@dataclass(frozen=True)
-class PlannedAsset:
-    key: str
-    modality: str
-    prompt: str
-    size: str = "1024x1024"
-    duration_seconds: int = 4
-    extra: dict | None = None
-    sheet_cells: tuple[SheetCell, ...] = ()
-    # 本页上多帧角色的帧名组(首帧在前):manifest 的 animations 映射由此而来,
-    # gameplay 代码据此建动画。组内帧保证同页(Phaser 动画帧必须同纹理)。
-    sheet_groups: tuple[tuple[str, ...], ...] = ()
-
-
-class AssetGenerationRetryRequired(RuntimeError):
-    """A required image exhausted its automatic retry and needs user action."""
-
-
-def _slug(value: str) -> str:
-    clean = re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
-    return clean[:48]
-
-
-def _frame_name(value: str, taken: set[str], default: str = "sprite") -> str:
-    # 中日韩名字整串被 slug 清空(如"突击兵"),退回语义化 default
-    # (enemy_3/obstacle_1...),而不是一堆 sprite_2/sprite_3。
-    base = _slug(value).replace("-", "_") or _slug(default).replace("-", "_") or "sprite"
-    name = base
-    counter = 2
-    while name in taken:
-        name = f"{base}_{counter}"
-        counter += 1
-    taken.add(name)
-    return name
-
-
-def _frame_semantic_id(name: str) -> str:
-    """Map legacy frame keys to stable semantic IDs.
-
-    This is intentionally deterministic and conservative.  A future design
-    may provide an explicit ``semantic_id`` on ``SheetCell``; generated legacy
-    keys still get a useful dotted ID so runtime code never has to depend on a
-    numeric sheet index.
-    """
-    value = str(name or "").strip().lower()
-    if not value or value.startswith("bonus_"):
-        return ""
-    if value.startswith("player_"):
-        return "player." + value[len("player_") :]
-    if value.startswith(("projectile", "explosion", "flash", "prop")):
-        return "effect." + value.replace("_", ".")
-    if value.endswith("_b"):
-        return value[:-2] + ".attack"
-    if value.endswith("_c"):
-        return value[:-2] + ".special"
-    if value.endswith("_move"):
-        return value[:-5] + ".move"
-    if value.endswith("_activated"):
-        return value[: -len("_activated")] + ".activated"
-    if "_level_" in value:
-        left, level = value.split("_level_", 1)
-        return f"{left}.level_{level}"
-    if value.endswith("_idle"):
-        return value[:-5] + ".idle"
-    return value + ".default"
-
-
-def _cell_demand(cell: SheetCell) -> SpriteDemand:
-    semantic_id = cell.semantic_id or _frame_semantic_id(cell.name) or cell.name
-    state = semantic_id.rsplit(".", 1)[-1] if "." in semantic_id else "default"
-    object_name = semantic_id.rsplit(".", 1)[0] if "." in semantic_id else semantic_id
-    return SpriteDemand(
-        semantic_id=semantic_id,
-        frame_id=cell.name,
-        object_name=object_name,
-        state=state,
-        consumer_refs=cell.consumer_refs or ((f"design:{object_name}",) if cell.required else ()),
-        required=cell.required and not cell.name.startswith("bonus_"),
-        animated=state not in {"default", "idle"},
-        batch_group=object_name,
-        expected_object_count=max(1, int(cell.expected_object_count or 1)),
-        variant_strategy=cell.variant_strategy,
-        metadata={"description": cell.desc, "meta": cell.meta},
-    )
-
-
-def _clip_text(value, limit: int) -> str:
-    """Whitespace-normalize and hard-cap a prompt fragment.
-
-    Design fields arrive with full gameplay rule text (timers, drop rates,
-    multi-sentence behavior specs). Uncapped they ballooned a sheet prompt to
-    5KB+ and slowed generation past the provider timeout (2026-07-13 incident).
-    """
-    text = " ".join(str(value or "").split())
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1].rstrip() + "…"
-
-
-def _entity_text(entity: dict) -> str:
-    name = str(entity.get("name") or "").strip()
-    # 画图提示词要的是外观：优先 visual,behavior 只在没有外观描述时兜底
-    #（behavior 里常是"每2.2秒发射/35%概率掉落"这类数值规则,对图像模型是噪声）。
-    desc = str(entity.get("visual") or "").strip() or str(entity.get("behavior") or "").strip()
-    return _clip_text(", ".join(part for part in (name, desc) if part), 110)
-
-
-# 实体分桶不做语义猜测:GameDesign 提示词强制 role 以这些小写英文标签开头
-# (后可跟任意语言修饰语),这里只做标签前缀精确匹配。管线真正区分的桶只有
-# 5 个;标签是给设计模型用的别名词表,按游戏类型自然表达(塔防的 structure、
-# 平台跳跃的 platform、打砖块的 block...)。没带标签/词表外的标签一律进中性
-# others 桶——照样分格子,但绝不冒充敌人;所以词表遗漏最坏也只是中性命名。
-_ROLE_TAG_BUCKETS = {
-    "player": "player",
-    # 敌意实体:主动伤害玩家的东西
-    "enemy": "enemy",
-    "boss": "enemy",
-    "hazard": "enemy",
-    # 阻挡类场景:掩体/墙/平台/砖块——都参与"设计了就必须实现"的 QA 门禁
-    "obstacle": "obstacle",
-    "wall": "obstacle",
-    "platform": "obstacle",
-    "barrier": "obstacle",
-    "block": "obstacle",
-    "terrain": "obstacle",
-    # 可拾取
-    "pickup": "item",
-    "item": "item",
-    "powerup": "item",
-    "collectible": "item",
-    # 中性:友方/装置/目标物/弹体/装饰
-    "npc": "other",
-    "ally": "other",
-    "structure": "other",
-    "projectile": "other",
-    "objective": "other",
-    "decoration": "other",
-}
-
-
-def _entity_bucket(entity: dict) -> str:
-    role = str(entity.get("role") or entity.get("type") or "").strip().lower()
-    for tag, bucket in _ROLE_TAG_BUCKETS.items():
-        if role == tag or (role.startswith(tag) and not role[len(tag)].isalnum()):
-            return bucket
-    return "other"
-
-
-# 可连接结构(玩家延展的道路/管道/铁轨)需要一整族邻接变体图块:单格素材
-# 拼不出连续路网(2026-07-17 像素都市计划:全城道路=同一块十字贴图)。槽位
-# 的画布朝向是运行时 tileVariant() 旋转表的契约,两边必须保持一致:
-# straight=左右贯通、end=只开右口、corner=右+下、tee=左+右+下、cross=四向。
-_TILE_SLOTS = (
-    ("straight", "the STRAIGHT piece: its surface runs horizontally, entering the exact middle of the LEFT and RIGHT cell edges"),
-    ("end", "the DEAD-END cap piece: the surface enters only the exact middle of the RIGHT cell edge and terminates in a closed cap near the cell center"),
-    ("corner", "the 90-degree CORNER piece: the surface enters the exact middle of the RIGHT and BOTTOM cell edges and turns smoothly between them"),
-    ("tee", "the T-JUNCTION piece: the surface enters the exact middle of the LEFT, RIGHT and BOTTOM cell edges"),
-    ("cross", "the 4-WAY CROSSING piece: the surface enters the exact middle of ALL FOUR cell edges"),
+# ── 拆分兼容面(2026-07-26)──────────────────────────────────────────────
+# 规划(asset_planning)、像素后处理(asset_postprocess)、复用门禁
+# (asset_reuse)已按职责拆入独立模块;这里显式回导,既是编排的真实依赖,也
+# 保持既有调用方/测试从本模块导入(含下划线名)的契约不变。monkeypatch 打在
+# 本模块上的 _audit_sheet_frames / review_spritesheet(_layout) /
+# _transparent_param_unsupported 仍然生效:它们的全部调用方都留在本模块,按
+# 模块全局名解析。
+from app.services.asset_planning import (  # noqa: F401 —— 兼容回导
+    SHEET_CELL,
+    SHEET_GRID,
+    SHEET_SIZE,
+    AssetGenerationRetryRequired,
+    PlannedAsset,
+    SheetCell,
+    _cell_demand,
+    _clip_text,
+    _layout_brief,
+    _sheet_manifest_extra,
+    _tileset_prompt,
+    design_obstacles,
+    plan_game_assets,
 )
-_CONNECT_NAME_TOKENS = (
-    "道路", "公路", "马路", "管道", "铁轨", "轨道", "铁路", "传送带",
-    "road", "pipe", "rail", "track", "conveyor",
+from app.services.asset_postprocess import (  # noqa: F401 —— 兼容回导
+    _BG_MIN_LUMA,
+    _audit_sheet_frames,
+    _compress_image_asset,
+    _normalize_repair_cell,
+    _normalize_spritesheet_canvas,
+    _postprocess_background,
+    _postprocess_spritesheet,
+    _postprocess_tileset,
+    _resegment_spritesheet,
 )
-_CONNECT_VISUAL_TOKENS = (
-    "直线", "转角", "丁字", "十字", "图块",
-    "autotile", "auto-tile", "straight", "corner", "junction", "crossroad",
+from app.services.asset_reuse import (  # noqa: F401 —— 兼容回导
+    _append_carried_asset,
+    _artifacts_by_path,
+    _entry_artifact,
+    _generated_manifest_entries,
+    _tilemap_family_entries,
+    _tilemap_wanted_for,
+    stale_planned_keys,
 )
 
+logger = logging.getLogger(__name__)
 
-def _is_connectable(entity: dict) -> bool:
-    """玩家延展的网络结构(道路/管道/铁轨):要整族邻接变体而不是单格。
 
-    优先认设计合同的显式 connects 标记(GAME_DESIGN_SYSTEM_PROMPT);旧设计
-    回退到名称/外观词表——只扫 visual 不扫 behavior:"必须正交邻接道路"这类
-    规则文本出现在每个建筑的 behavior 里,扫了会全体误报。
+def _merge_semantic_review_into_audit(audit: dict, semantic_review: dict) -> dict:
+    """Fold semantic verdicts into the frame audit.
+
+    fail → hard frame failure (feeds the repair loop and the release gate).
+    uncertain → soft defect: recorded in ``soft_frame_ids`` for the background
+    regeneration queue, never a hard failure. 第十二轮(2026-07-19)教训:
+    uncertain 当硬失败 + 低置信度降 uncertain 的组合让 16 格全过的概率结构性
+    偏低,把重试从兜底变成了标准流程。
     """
-    if bool(entity.get("connects")):
-        return True
-    name = str(entity.get("name") or "").lower()
-    if any(token in name for token in _CONNECT_NAME_TOKENS):
-        return True
-    visual = str(entity.get("visual") or "").lower()
-    return any(token in visual for token in _CONNECT_VISUAL_TOKENS)
 
-
-def _tile_family_group(base: str, desc: str, taken: set[str]) -> list[SheetCell]:
-    """一个可连接结构的 5 格图块族(直/端/角/丁/十,_paginate 保证同页)。
-
-    基准格(straight)持有完整外观描述,其余格引用前一格画风。族格的连接面
-    必须贴到格边缘,_sheet_prompt 对含族的页面放开"70% 居中"约束。
-    """
-    cells: list[SheetCell] = []
-    for order, (slot, slot_desc) in enumerate(_TILE_SLOTS):
-        name = base if order == 0 else _frame_name(f"{base}_{slot}", taken)
-        if order == 0:
-            text = (
-                f"SEAMLESS CONNECTABLE TILE ({desc}): {slot_desc}. "
-                "The connecting surface touches the exact cell edges at full width so adjacent copies join seamlessly"
-            )
-        else:
-            text = (
-                f"SEAMLESS CONNECTABLE TILE, the SAME construction style, width and colors as {_PREV_REF}: {slot_desc}. "
-                "Connecting ends touch the exact cell edges"
-            )
-        cells.append(
-            SheetCell(
-                name,
-                text,
-                meta=f"{desc} — {slot} piece of a connectable tile family",
-                tile_base=base,
-                tile_slot=slot,
-                semantic_id=f"{base}.{slot}",
-            )
-        )
-    return cells
-
-
-def _is_boss(entity: dict) -> bool:
-    """Boss 拿第三帧(特技姿势)。role 前缀合同 + boss 字段合成实体的 behavior 标记。"""
-    role = str(entity.get("role") or entity.get("type") or "").strip().lower()
-    if role == "boss" or (role.startswith("boss") and not role[4:5].isalnum()):
-        return True
-    return str(entity.get("behavior") or "").strip().lower() == "boss"
-
-
-def design_obstacles(design: dict) -> list[dict]:
-    """Obstacle/cover entities declared by the design (shared with gameplay QA)."""
-    return [
-        entity
-        for entity in (design or {}).get("entities") or []
-        if isinstance(entity, dict) and _entity_bucket(entity) == "obstacle"
-    ]
-
-
-def _design_roster(design: dict) -> tuple[str, list[dict], list[str], list[dict], list[dict]]:
-    """Extract (player desc, enemies, item descs, obstacles, neutral entities).
-
-    分桶按 role 的规范标签前缀(生成合同,见 GAME_DESIGN_SYSTEM_PROMPT),
-    不做语义猜测。任何实体都会拿到图集格子:旧实现把非白名单 role 直接丢掉,
-    中文设计的 8 种敌人一个都没画进图集(2026-07-12 火线武装实测);未带
-    标签的实体现在进中性 others 桶(entity_N)——有格子但不冒充敌人。
-    """
-    player_desc = ""
-    player = design.get("player")
-    if isinstance(player, dict):
-        player_desc = str(player.get("visual") or "").strip()
-    enemies: list[dict] = []
-    items: list[str] = []
-    obstacles: list[dict] = []
-    others: list[dict] = []
-    for entity in design.get("entities") or []:
-        if not isinstance(entity, dict):
+    review_by_id = {
+        str(item.get("semantic_id")): item
+        for item in (semantic_review.get("frames") or [])
+        if isinstance(item, dict) and item.get("semantic_id")
+    }
+    soft_frame_ids: list[str] = []
+    for frame in audit.get("frames") or []:
+        if not frame.get("required", True):
             continue
-        bucket = _entity_bucket(entity)
-        if bucket == "player":
-            if not player_desc:
-                player_desc = _entity_text(entity)
-        elif bucket == "obstacle":
-            obstacles.append(entity)
-        elif bucket == "item":
-            items.append(_entity_text(entity))
-        elif bucket == "enemy":
-            enemies.append(entity)
-        else:
-            others.append(entity)
-    boss = design.get("boss")
-    if isinstance(boss, dict) and boss.get("name"):
-        # 设计里 boss 常同时出现在 entities（role=boss）和 boss 字段:去重,
-        # 否则同一个 Boss 占掉两个敌人格子（2026-07-13 实测事故）。
-        boss_name = str(boss.get("name")).strip().casefold()
-        if all(str(e.get("name") or "").strip().casefold() != boss_name for e in enemies + others):
-            enemies.append({"name": boss.get("name"), "visual": boss.get("visual"), "behavior": "boss"})
-    for item in (design.get("powerups") or []) + (design.get("reward_items") or []):
-        if isinstance(item, dict) and item.get("name"):
-            desc = str(item.get("name"))
-            if item.get("effect"):
-                desc += f" ({item.get('effect')})"
-            items.append(_clip_text(desc, 90))
-        elif isinstance(item, str):
-            items.append(_clip_text(item, 90))
-    return player_desc, enemies, items, obstacles, others
-
-
-def _combat_arena(spec: dict, design: dict) -> bool:
-    """枪战/射击/竞技场类:这些类型没有掩体就没有战术,图集必须画掩体格。
-
-    只看 genre/archetype——两者都是上游提示词约定的规范标签(IntentSpec 的
-    genre 词表、路由的 archetype 集合),不去扫标题/简介猜语义。
-    """
-    text = " ".join(
-        str(value or "")
-        for value in (spec.get("genre"), spec.get("archetype"), (design or {}).get("archetype"))
-    ).lower()
-    return any(word in text for word in ("shoot", "shooter", "battle", "arena", "gun"))
-
-
-def _builder_management(spec: dict, design: dict) -> bool:
-    """建造/经营/模拟类:玩家自己放置建筑,背景画进任何建成物都会与玩家的
-    放置物混同(2026-07-17 像素都市计划:背景整座建成城市,放置物全被淹没)。
-
-    与 _combat_arena 同规矩:只看 genre/archetype 规范标签字段,不扫标题。
-    """
-    text = " ".join(
-        str(value or "")
-        for value in (
-            spec.get("genre"),
-            spec.get("archetype"),
-            (design or {}).get("archetype"),
-            ((design or {}).get("balance") or {}).get("genre"),
-        )
-    ).lower()
-    return any(word in text for word in ("simulation", "builder", "tycoon", "management", "city", "farm", "colony"))
-
-
-def _default_cover(title: str) -> list[dict]:
-    return [
-        {"name": "cover_block", "visual": f"a sturdy waist-high cover block / armored crate fitting {title}"},
-        {"name": "cover_barrier", "visual": f"a wide barricade / sandbag wall segment fitting {title}"},
-    ]
-
-
-def _plan_sheet_pages(spec: dict, design: dict) -> list[tuple[tuple[SheetCell, ...], tuple[tuple[str, ...], ...]]]:
-    """Roster → 16-cell pages plus the per-page animation frame groups.
-
-    每个角色规划成一个"帧组":玩家 idle/move/action 核心姿势 + 设计驱动的
-    技能/受伤姿势,敌人 idle+攻击帧(Boss 再加特技帧),道具 idle+激活帧。
-    核心格(每个设计实体至少 1 格)先占预算,剩余容量按"玩家看得最多的先
-    动起来"的优先级升级成动画帧;超出预算的升级直接放弃,设计实体绝不因
-    动画帧被挤掉。
-    """
-    taken: set[str] = set()
-    title = str(spec.get("title") or "the game")
-    player_desc, enemies, items, obstacles, others = _design_roster(design)
-    if not obstacles and _combat_arena(spec, design):
-        # 枪战/竞技场设计缺掩体实体时补默认掩体格:游戏逻辑门禁要求真的用上。
-        obstacles = _default_cover(title)
-    player = _clip_text(player_desc, 160) or f"the hero of {title}"
-    # abilities 是列表:逐条截断。直接 str(list) 会把 Python repr
-    #（含整段玩法规则）泄进画图提示词（2026-07-13 实测事故）。
-    raw_abilities = (design.get("player") or {}).get("abilities")
-    if isinstance(raw_abilities, (list, tuple)):
-        abilities = [text for text in (_clip_text(a, 60) for a in raw_abilities) if text]
-    else:
-        abilities = [text for text in [_clip_text(raw_abilities, 60)] if text]
-    action = abilities[0] if abilities else "using the main ability"
-    # 玩家外观只完整描述一次;后续姿势格引用第一格,避免同一段长描述重复 N 遍。
-    # 玩家组永远是第一组,从第 1 页第 1 格起排,所以 row 1 column 1 引用恒成立。
-    player_group: list[SheetCell] = [
-        SheetCell(_frame_name("player_idle", taken), f"THE PLAYER: {player}. Idle standing pose", semantic_id="player.idle"),
-        SheetCell(_frame_name("player_move_a", taken), "the SAME player character as row 1 column 1, moving, animation frame A", semantic_id="player.move_a"),
-        SheetCell(_frame_name("player_move_b", taken), "the SAME player character as row 1 column 1, moving, animation frame B (legs opposite to frame A)", semantic_id="player.move_b"),
-        SheetCell(_frame_name("player_action", taken), f"the SAME player character as row 1 column 1, action pose: {action}", semantic_id="player.action"),
-    ]
-    groups: list[list[SheetCell]] = [player_group]
-    enemy_groups: list[list[SheetCell]] = []
-    enemy_descs: list[str] = []
-    boss_flags: list[bool] = []
-    for index, source in enumerate(enemies[:12]):
-        desc = _entity_text(source) or "hostile creature"
-        enemy_descs.append(desc)
-        boss_flags.append(_is_boss(source))
-        enemy_frame = _frame_name(str(source.get("name") or ""), taken, default=f"enemy_{index + 1}")
-        enemy_semantic = _frame_semantic_id(enemy_frame)
-        if enemy_semantic.endswith(".default"):
-            enemy_semantic = enemy_semantic[: -len(".default")] + ".idle"
-        group = [SheetCell(enemy_frame, desc, semantic_id=enemy_semantic)]
-        enemy_groups.append(group)
-        groups.append(group)
-    for index, source in enumerate(obstacles[:4]):
-        desc = _entity_text(source) or f"a solid blocking obstacle fitting {title}"
-        groups.append(
-            [
-                SheetCell(
-                    _frame_name(str(source.get("name") or ""), taken, default=f"obstacle_{index + 1}"),
-                    f"OBSTACLE / SOLID SCENERY: {desc}. A blocking object with a clean readable silhouette",
-                    semantic_id=(
-                        _frame_semantic_id(_frame_name(str(source.get("name") or ""), set(), default=f"obstacle_{index + 1}"))
-                    ),
-                )
+        review = review_by_id.get(str(frame.get("semantic_id")))
+        if review is None:
+            continue
+        frame["semantic_review"] = review
+        verdict = str(review.get("verdict") or "uncertain")
+        frame["checks"]["semantic_match"] = verdict == "pass"
+        if verdict == "pass" and "single_expected_object" in (frame.get("failed_checks") or []):
+            # 语义评审能区分"一个主体+挥砍特效/粒子"与"两个主体",像素连通域
+            # 计数不能——后者的误报曾把 7 个健康格推进修复循环(2026-07-19
+            # 像素防线)。语义 pass 时该项以 VLM 为准;尺寸/越界/透明底等几何
+            # 检查仍由确定性审计一票否决。
+            frame["failed_checks"] = [
+                check for check in frame["failed_checks"] if check != "single_expected_object"
             ]
-        )
-    item_groups: list[list[SheetCell]] = []
-    for index, desc in enumerate(items[:6]):
-        # 道具描述是 "名字, 外观" 或 "名字 (效果)":帧名只取名字段。
-        label = desc.split("(")[0].split(",")[0]
-        item_frame = _frame_name(label, taken, default=f"item_{index + 1}")
-        item_semantic = _frame_semantic_id(item_frame)
-        if item_semantic.endswith(".default"):
-            item_semantic = item_semantic[: -len(".default")] + ".idle"
-        group = [SheetCell(item_frame, desc, semantic_id=item_semantic)]
-        item_groups.append(group)
-        groups.append(group)
-    # 中性实体(npc/未带 role 标签的旧设计):有格子,但绝不标成 enemy_N,
-    # 也不吃动画帧升级。旧设计整批落在这个桶里,上限给到 8。
-    # 可连接结构(道路/管道/铁轨)升级成 5 格图块族;族上限 2 防格子爆炸。
-    families = 0
-    for index, source in enumerate(others[:8]):
-        desc = _entity_text(source) or f"a neutral character or device fitting {title}"
-        base = _frame_name(str(source.get("name") or ""), taken, default=f"entity_{index + 1}")
-        if families < 2 and _is_connectable(source):
-            families += 1
-            groups.append(_tile_family_group(base, desc, taken))
-        else:
-            groups.append([SheetCell(base, desc, semantic_id=_frame_semantic_id(base))])
-    for name, desc in (
-        ("projectile", "the main projectile / bullet / thrown object, small and readable"),
-        ("explosion", "impact explosion / burst effect"),
-        ("flash", "action flash / sparkle / hit effect"),
-        ("prop", f"a themed environment prop for {title}"),
-    ):
-        frame_name = _frame_name(name, taken)
-        groups.append([SheetCell(frame_name, desc, semantic_id=f"effect.{name}", required=False, variant_strategy="programmatic")])
-
-    # —— 动画帧升级:核心格之外的剩余容量,优先级 = 玩家技能/受伤姿势 →
-    # Boss 攻击+特技帧 → 普通敌人攻击帧 → 道具激活帧。预算耗尽即止。
-    budget = SHEET_GRID * SHEET_GRID * _sheet_pages_cap() - sum(len(g) for g in groups)
-    upgrades: list[tuple[list[SheetCell], str, str]] = []
-    for order, ability in enumerate(abilities[1:3], start=2):
-        upgrades.append(
-            (player_group, f"player_skill_{order}", f"the SAME player character as row 1 column 1, alternate skill pose: {ability}")
-        )
-    upgrades.append((player_group, "player_hurt", "the SAME player character as row 1 column 1, hurt / knockback pose, flinching"))
-    for i in sorted(range(len(enemy_groups)), key=lambda idx: not boss_flags[idx]):
-        base = enemy_groups[i][0].name
-        upgrades.append((enemy_groups[i], f"{base}_b", f"the SAME character as {_PREV_REF}, attack / action pose, animation frame B"))
-        if boss_flags[i]:
-            upgrades.append(
-                (enemy_groups[i], f"{base}_c", f"the SAME character as {_PREV_REF}, unleashing its special skill, dramatic charged-up pose, animation frame C")
-            )
-    for group in item_groups:
-        upgrades.append((group, f"{group[0].name}_b", f"the SAME item as {_PREV_REF}, activated state, glowing and sparkling, animation frame B"))
-    # —— 第二梯队(容量富余时,页数上限高的环境才吃得到):玩家通用动作姿势、
-    # 第 4-5 个技能、全体敌人移动帧。顺序仍按"玩家看得最多的先动起来"。
-    upgrades.append((player_group, "player_jump", "the SAME player character as row 1 column 1, jumping / airborne pose"))
-    upgrades.append((player_group, "player_death", "the SAME player character as row 1 column 1, defeated / knocked-down pose"))
-    upgrades.append((player_group, "player_victory", "the SAME player character as row 1 column 1, victory celebration pose"))
-    for order, ability in enumerate(abilities[3:5], start=4):
-        upgrades.append(
-            (player_group, f"player_skill_{order}", f"the SAME player character as row 1 column 1, alternate skill pose: {ability}")
-        )
-    for i in sorted(range(len(enemy_groups)), key=lambda idx: not boss_flags[idx]):
-        base = enemy_groups[i][0].name
-        upgrades.append(
-            (enemy_groups[i], f"{base}_move", f"the SAME character as {_PREV_REF}, moving / walking, mid-stride, movement animation frame")
-        )
-    for group, seed, desc in upgrades:
-        if budget <= 0:
-            break
-        frame_name = _frame_name(seed, taken)
-        if group is player_group:
-            semantic_id = f"player.{frame_name.removeprefix('player_')}"
-        elif group in item_groups:
-            semantic_id = f"{group[0].semantic_id.split('.', 1)[0]}.activated"
-        else:
-            semantic_id = _frame_semantic_id(frame_name)
-        group.append(SheetCell(frame_name, desc, semantic_id=semantic_id))
-        budget -= 1
-
-    # 补缝/补满用的中性内容:已付费的画布不留空白品红格。
-    # A 4x4 provider canvas may have unused slots.  They are transparent
-    # placeholders, never semantic assets: the formal manifest excludes them
-    # and no runtime consumer may bind to a `bonus_*` frame.
-    fillers = ["EMPTY atlas slot: transparent padding only"]
-    return _paginate(groups, fillers, taken)
-
-
-def _prune_pages_to_consumers(
-    pages: list[tuple[tuple[SheetCell, ...], tuple[tuple[str, ...], ...]]],
-    consumers: dict,
-) -> list[tuple[tuple[SheetCell, ...], tuple[tuple[str, ...], ...]]]:
-    """Strict mode: keep only cells with an explicit runtime consumer.
-
-    This is used when a runtime consumer map is already available (for
-    revisions or incremental generation).  Normal first-pass generation uses
-    the design roster as an inferred consumer and is enriched after codegen.
-    """
-    allowed = {str(key) for key, refs in consumers.items() if refs}
-    if not allowed:
-        return []
-    output: list[tuple[tuple[SheetCell, ...], tuple[tuple[str, ...], ...]]] = []
-    for cells, groups in pages:
-        kept = [cell for cell in cells if (_cell_demand(cell).semantic_id in allowed)]
-        if not kept:
-            continue
-        kept_names = {cell.name for cell in kept}
-        kept_groups = tuple(group for group in groups if all(name in kept_names for name in group))
-        # Preserve the page shape for the provider while excluding every
-        # non-consumer from the formal semantic manifest.
-        while len(kept) < SHEET_GRID * SHEET_GRID:
-            kept.append(
-                SheetCell(
-                    f"bonus_{len(kept) + 1}",
-                    "EMPTY atlas slot: transparent padding only",
-                    required=False,
-                    variant_strategy="programmatic",
+            frame["checks"]["single_expected_object"] = True
+            frame["checks"]["single_expected_object_overridden"] = True
+            if not frame["failed_checks"]:
+                frame["passed"] = True
+        if verdict == "fail":
+            frame["failed_checks"] = list(
+                dict.fromkeys(
+                    [
+                        *list(review.get("failed_checks") or []),
+                        "semantic_match",
+                        *list(frame.get("failed_checks") or []),
+                    ]
                 )
             )
-        output.append((tuple(kept[: SHEET_GRID * SHEET_GRID]), kept_groups))
-    return output
-
-
-def _paginate(
-    groups: list[list[SheetCell]], fillers: list[str], taken: set[str]
-) -> list[tuple[tuple[SheetCell, ...], tuple[tuple[str, ...], ...]]]:
-    """Pack frame groups into 16-cell pages; a group never straddles pages
-    (Phaser animations require all frames on one texture).
-
-    页尾装不下下一个帧组时,先把后面的单格组拉上来填缝(真内容优先),
-    还不满再用 filler 格补齐。页数到达上限后丢弃剩余组——升级预算已按
-    总容量收口,只有极端的跨页碎缝才会走到这一步。
-    """
-    page_size = SHEET_GRID * SHEET_GRID
-    pages_cap = _sheet_pages_cap()
-    pages: list[tuple[tuple[SheetCell, ...], tuple[tuple[str, ...], ...]]] = []
-    current: list[SheetCell] = []
-    current_groups: list[tuple[str, ...]] = []
-    bonus = 0
-
-    def close_page() -> None:
-        nonlocal current, current_groups, bonus
-        while len(current) < page_size:
-            current.append(
-                SheetCell(
-                    _frame_name("", taken, default=f"bonus_{bonus + 1}"),
-                    fillers[bonus % len(fillers)],
-                    required=False,
-                    variant_strategy="programmatic",
-                )
+            frame["passed"] = False
+        elif verdict == "uncertain":
+            frame["soft_checks"] = list(
+                dict.fromkeys(list(review.get("failed_checks") or []) or ["semantic_uncertain"])
             )
-            bonus += 1
-        pages.append((tuple(current), tuple(current_groups)))
-        current, current_groups = [], []
-
-    queue = list(groups)
-    index = 0
-    while index < len(queue) and len(pages) < pages_cap:
-        group = queue[index]
-        if len(current) + len(group) <= page_size:
-            current.extend(group)
-            # 图块族多格但不是动画:进 animations 会被作者当帧循环播放。
-            if len(group) > 1 and not group[0].tile_base:
-                current_groups.append(tuple(cell.name for cell in group))
-            index += 1
-            continue
-        scan = index + 1
-        while len(current) < page_size and scan < len(queue):
-            if len(queue[scan]) == 1:
-                current.extend(queue.pop(scan))
-            else:
-                scan += 1
-        close_page()
-    if len(pages) < pages_cap and (current or not pages):
-        close_page()
-    return pages
-
-
-def _style_line(spec: dict, design: dict) -> str:
-    style = _clip_text(spec.get("visual_style") or spec.get("theme") or "vibrant stylized", 120)
-    palette = design.get("palette")
-    hint = ""
-    if isinstance(palette, dict):
-        colors = [str(v) for v in palette.values() if isinstance(v, str) and v.startswith("#")]
-        if colors:
-            hint = f" Palette accents: {', '.join(colors[:5])}."
-    visual_terms = (
-        "visual", "style", "art", "sprite", "palette", "color", "lighting",
-        "appearance", "texture", "画风", "视觉", "美术", "素材", "颜色", "色彩",
-        "光照", "外观", "贴图", "像素",
-    )
-    visual_requirements = [
-        str(item.get("statement") or "")
-        for item in (design.get("requirements") or [])
-        if isinstance(item, dict)
-        and any(term in str(item.get("statement") or "").lower() for term in visual_terms)
+            if frame.get("passed"):
+                soft_frame_ids.append(str(frame.get("semantic_id")))
+    required = [
+        frame
+        for frame in (audit.get("frames") or [])
+        if frame.get("required", True)
     ]
-    requirement_hint = (
-        " Visual contract requirements: " + _clip_text("; ".join(visual_requirements), 320) + "."
-        if visual_requirements
-        else ""
-    )
-    return f"{style} 2D game art, crisp silhouettes with dark outlines, consistent style, palette and lighting across ALL sprites.{hint}{requirement_hint}"
-
-
-def _grid_position_word(col: float, row: float, cols: int, rows: int) -> str:
-    """Cell coordinate → one of 9 coarse position words for image prompts."""
-    horizontal = ("left", "center", "right")[min(2, int(col * 3 / max(1, cols)))]
-    vertical = ("top", "middle", "bottom")[min(2, int(row * 3 / max(1, rows)))]
-    if vertical == "middle":
-        return "center of the scene" if horizontal == "center" else f"{horizontal} side"
-    return f"{vertical}-{horizontal}" if horizontal != "center" else vertical
-
-def _layout_brief(design: dict, builder: bool = False) -> str:
-    """Compact spatial brief of design.level_layout for the background prompt.
-
-    图像模型跟不了精确坐标,但跟得住"哪个区域在画面哪一侧"。把布局翻译成
-    九宫格方位词,背景构图就与运行时碰撞几何共享同一张平面图——这是"生成的
-    地图只是贴图、与关卡无关"问题(2026-07-17 暗影档案实测)的图像侧解法。
-
-    建造/经营类(builder=True)措辞换成纯地形:分区=地面色调差异,墙=天然
-    屏障(河/岩),cover=树木岩石——分区提示词不能引导模型把区画成建成区。
-    """
-    layout = design.get("level_layout") if isinstance(design, dict) else None
-    if not isinstance(layout, dict):
-        return ""
-    grid = layout.get("grid") or {}
-    cols = max(1, int(grid.get("cols") or 24))
-    rows = max(1, int(grid.get("rows") or 14))
-    parts: list[str] = []
-    region_bits = []
-    for region in (layout.get("regions") or [])[:6]:
-        span = region.get("cells") or [0, 0, 0, 0]
-        word = _grid_position_word((span[0] + span[2]) / 2, (span[1] + span[3]) / 2, cols, rows)
-        region_bits.append(f"'{_clip_text(region.get('name'), 40)}' in the {word}")
-    if region_bits:
-        parts.append(
-            (
-                "Distinct districts, each marked ONLY by a subtle shift in natural ground tone/texture: "
-                if builder
-                else "Distinct areas: "
-            )
-            + "; ".join(region_bits)
-            + "."
-        )
-    walls = layout.get("walls") or []
-    if walls:
-        placement = Counter()
-        for span in walls[:40]:
-            orientation = "horizontal" if (span[2] - span[0]) >= (span[3] - span[1]) else "vertical"
-            placement[f"{orientation} wall near the {_grid_position_word((span[0] + span[2]) / 2, (span[1] + span[3]) / 2, cols, rows)}"] += 1
-        wall_bits = [name if count == 1 else f"{count} {name}s" for name, count in placement.most_common(6)]
-        parts.append(
-            (
-                "Impassable natural barriers (water channels / rock ridges), NOT built walls: "
-                if builder
-                else "Solid structural walls: "
-            )
-            + "; ".join(wall_bits)
-            + "."
-        )
-    cover = layout.get("cover") or []
-    if cover:
-        spots = Counter(_grid_position_word(cell[0], cell[1], cols, rows) for cell in cover[:24])
-        parts.append(
-            (
-                "Scattered natural obstacles (trees, boulders) near the "
-                if builder
-                else "Scattered crates/pillars as cover near the "
-            )
-            + ", ".join(name for name, _ in spots.most_common(4))
-            + "."
-        )
-    if not parts:
-        return ""
-    parts.append("All remaining space stays open, buildable natural ground." if builder else "Everything else stays open, walkable floor.")
-    return _clip_text(" ".join(parts), 620)
-
-
-def _sheet_prompt(spec: dict, design: dict, cells: tuple[SheetCell, ...], page: int = 0, pages: int = 1) -> str:
-    series = (
-        ""
-        if pages <= 1
-        else (
-            f" This is sheet {page + 1} of {pages} for the SAME game: keep characters, palette,"
-            " outline weight, and lighting IDENTICAL across all sheets."
-        )
-    )
-    lines = [
-        f"Sprite sheet for the browser game '{spec.get('title') or 'Untitled'}'. {_style_line(spec, design)}{series}",
-        f"EXACTLY a {SHEET_GRID}x{SHEET_GRID} grid of equal {SHEET_CELL}x{SHEET_CELL} cells filling the whole {SHEET_SIZE}x{SHEET_SIZE} canvas.",
-        "Each cell is one explicit semantic state and must contain exactly one subject (expected_object_count=1): "
-        "never combine multiple levels, buildings, actors, or effects in one cell. Center one sprite per cell, "
-        "filling about 70% of its cell, never touching or crossing cell edges.",
+    passed_required = [frame for frame in required if frame.get("passed")]
+    audit["failed_frame_ids"] = [
+        str(frame.get("semantic_id")) for frame in required if not frame.get("passed")
     ]
-    if any(cell.tile_slot for cell in cells):
-        # 图块族格是例外:连接面必须精确贴到格边缘中点,否则拼出的路网
-        # 每格之间留一圈缝(2026-07-17 像素都市计划实测)。仍禁越界。
-        lines.append(
-            "Exception: cells described as SEAMLESS CONNECTABLE TILE must run their connecting "
-            "surfaces all the way to the exact cell edges (still never crossing into a neighbor cell)."
-        )
-    for index, cell in enumerate(cells):
-        row, col = divmod(index, SHEET_GRID)
-        desc = cell.desc
-        if _PREV_REF in desc and index > 0:
-            # 动画帧引用同组前一帧:组不跨页,前一帧必在本页,替换成确切格位。
-            prev_row, prev_col = divmod(index - 1, SHEET_GRID)
-            desc = desc.replace(_PREV_REF, f"the cell at row {prev_row + 1} column {prev_col + 1}")
-        lines.append(f"Cell row {row + 1} column {col + 1}: {desc}.")
-    lines.append(
-        "The ENTIRE background of the whole canvas must be one solid pure magenta color (#FF00FF), "
-        "including between and around sprites. Never use magenta inside any sprite. "
-        "No grid lines, no cell borders, no checkerboard pattern, no text, no labels, no watermark."
-    )
-    return " ".join(lines)
+    audit["soft_frame_ids"] = soft_frame_ids
+    audit["required_asset_coverage"] = round(
+        len(passed_required) / len(required), 4
+    ) if required else 1.0
+    audit["passed"] = not audit["failed_frame_ids"]
+    return audit
 
 
-def plan_game_assets(state: dict) -> list[PlannedAsset]:
-    spec = state.get("spec_execution_view") or {}
-    if not spec and not state.get("design_contract"):
-        spec = state.get("game_spec") or {}
-    # Once the gate has passed, the frozen contract projection is the only
-    # design input.  The legacy fallback keeps standalone asset tests and old
-    # revision tasks compatible when no contract exists yet.
-    design = state.get("design_execution_view") or {}
-    if not design and not state.get("design_contract"):
-        design = state.get("game_design") or {}
-    title = str(spec.get("title") or "GameWeave game")
-    theme = str(spec.get("theme") or "stylized arcade")
-    prompt = (
-        json.dumps({"requirements": (state.get("design_contract") or {}).get("requirements") or [], "systems": design.get("systems") or []}, ensure_ascii=False)
-        if state.get("design_contract")
-        else str(state.get("normalized_prompt") or state.get("prompt") or "")
-    )
-    pages = _plan_sheet_pages(spec, design)
-    explicit_consumers = state.get("runtime_consumers")
-    if isinstance(explicit_consumers, dict):
-        pages = _prune_pages_to_consumers(pages, explicit_consumers)
-    # quality=medium 是硬约束不是省钱：网关经 Cloudflare 代理,~100s 超时墙,
-    # 16 精灵图集按默认质量常需 100-180s 被 524 掐死;medium 实测 ~72s 且
-    # 像素风画质无损（2026-07-13 基准）。不认识该参数的网关会忽略它。
-    planned = [
-        PlannedAsset(
-            "sheet" if index == 0 else f"sheet-{index + 1}",
-            "image",
-            _sheet_prompt(spec, design, cells, index, len(pages)),
-            size=f"{SHEET_SIZE}x{SHEET_SIZE}",
-            extra={"background": "transparent", "quality": "medium"},
-            sheet_cells=cells,
-            sheet_groups=cell_groups,
-        )
-        for index, (cells, cell_groups) in enumerate(pages)
-    ]
-    # 场景背景变体:主场景 / 同场景高压(Boss)阶段 / 换区。gameplay 代码按阶段
-    # 切换 Backdrop(assetKeys.backgrounds),游戏有可感知的场景变化。
-    scene_variants = [
-        ("background", "This is the MAIN gameplay stage in its normal state."),
-        (
-            "background-2",
-            "This is the SAME location as the main stage but in a LATER, high-intensity phase: "
-            "the danger / boss-fight mood comes from COLORED accent lighting (warning lamps, emergency "
-            "strips, energy effects) and small environmental damage — NOT from extra darkness; overall "
-            "brightness stays close to the main scene. Same composition family, clearly the same place.",
-        ),
-        (
-            "background-3",
-            "This is a DIFFERENT area of the same game world, used for a stage change: new landmark "
-            "composition and layout, unmistakably the same world and rendering style.",
-        ),
-    ][: max(1, min(3, int(settings.ASSET_BACKGROUND_VARIANTS)))]
-    # 背景是"空舞台":引擎在其上绘制所有演员。画进图里的守卫/视野锥/光束会
-    # 和真实精灵混在一起变成不可交互的"假实体"(2026-07-17 暗影档案实测);
-    # 压暗交给运行时 Backdrop 的自适应蒙版做,图本身必须保持可读的中间调。
-    # 建造/经营类更进一步:建筑本身就是玩家的放置物,背景必须是纯空地形——
-    # "禁角色/载具/UI"挡不住模型画出一座建成城市(2026-07-17 像素都市计划)。
-    builder = _builder_management(spec, design)
-    layout_brief = _layout_brief(design, builder=builder)
-    stage_line = (
-        "EMPTY BUILDABLE TERRAIN: the player constructs every building in this game, so the land is "
-        "COMPLETELY UNDEVELOPED — absolutely NO buildings, houses, factories, towers, roads, bridges, "
-        "plazas, fences or any other constructed structure anywhere; only natural terrain (grass, soil, "
-        "water, rocks, vegetation, subtle ground variation). Also no characters, no creatures, no "
-        "vehicles, no UI, no HUD icons, no minimap, no text, no watermark — the game engine draws every "
-        "building and actor on top of this image. "
-        if builder
-        else
-        "EMPTY STAGE, environment only: absolutely no characters, no creatures, no guards or "
-        "enemies, no vehicles, no vision cones, no flashlight or spotlight beams cast by anyone, "
-        "no UI, no HUD icons, no minimap, no text, no watermark — the game engine draws every "
-        "actor and effect on top of this image. "
-    )
-    for index, (bg_key, variant) in enumerate(scene_variants):
-        series = (
-            ""
-            if len(scene_variants) <= 1
-            else (
-                f" Scene {index + 1} of {len(scene_variants)} for the SAME game: keep the art style,"
-                " palette, lighting language and rendering IDENTICAL across all scenes."
-            )
-        )
-        # background-3 是"另一区域",不套主关卡的平面图;主图与高压变体共享布局。
-        layout_line = (
-            f" Composition follows this floor plan seen from above: {layout_brief}"
-            if layout_brief and bg_key != "background-3"
-            else ""
-        )
-        planned.append(
-            PlannedAsset(
-                bg_key,
-                "image",
-                (
-                    f"Wide scenic background for the browser game '{title}'. {_style_line(spec, design)} "
-                    f"Theme: {theme}. An atmospheric game environment with depth. {variant}{series}{layout_line} "
-                    + stage_line
-                    + "READABLE lighting: soft ambient light with mid-tone floors and clear local contrast; "
-                    "no large near-black areas even for night scenes; keep the central play space open and "
-                    "low-detail so gameplay sprites stay readable."
-                ),
-                "1536x1024",
-                extra={"quality": "medium"},
-            )
-        )
-    lower = prompt.lower()
-    if any(word in lower for word in ("music", "soundtrack", "bgm", "音乐", "配乐")):
-        planned.append(PlannedAsset("bgm", "audio", f"Short looping {theme} game music for {title}", duration_seconds=8))
-    if any(word in lower for word in ("video background", "animated background", "视频背景", "动态背景")):
-        planned.append(PlannedAsset("background-loop", "video", f"Seamless {theme} animated game background for {title}", duration_seconds=4))
-    return planned[: max(0, int(settings.ASSET_GENERATION_MAX_ITEMS))]
+def _regeneration_plan_audit(frame_audit: dict) -> dict:
+    """Audit view for the background regeneration queue.
 
-
-# 背景亮度底线:prompt 只能"劝"图像模型,压不住暗色题材(潜行/夜战)一路画到
-# 均值 15/255、93% 像素近黑(2026-07-17 暗影档案实测)。生成后确定性检测 +
-# 提亮是硬保证;实测亮度同时写进 manifest,运行时 Backdrop 据此自适应压暗。
-_BG_MIN_LUMA = 44
-_BG_TARGET_LUMA = 64
-# gamma 下限:0.35 时均值 3/255 的近纯黑图也能抬到 ~54,再低会放大噪点。
-_BG_MIN_GAMMA = 0.35
-
-
-def _mean_luma(img) -> float:
-    """Average luminance (0-255) of a downscaled copy — cheap and stable."""
-    from PIL import Image
-
-    sample = img.convert("L").resize((64, 40), Image.BILINEAR)
-    histogram = sample.histogram()
-    total = sum(histogram) or 1
-    return sum(value * count for value, count in enumerate(histogram)) / total
-
-
-def _postprocess_background(
-    raw: bytes, content_type: str, extension: str
-) -> tuple[bytes, str, str, int, int]:
-    """Measure a generated background's brightness; lift it when it is too dark.
-
-    Returns (content, content_type, extension, luma_before, luma_after). A lift
-    is a gamma curve aimed at _BG_TARGET_LUMA — it raises shadows toward the
-    target without clipping highlights, deterministically and cheaply (no
-    regeneration round-trip). Bright enough images pass through byte-for-byte.
+    带伤放行的失败格和 uncertain 软缺陷格都要排进 regeneration_plan;软缺陷
+    格在硬门禁里算通过,但作为补射对象时不能拿自己当参照,故在这个视图里
+    翻成失败。
     """
-    import math
 
-    from PIL import Image
-
-    img = Image.open(io.BytesIO(raw)).convert("RGB")
-    before = _mean_luma(img)
-    if before >= _BG_MIN_LUMA:
-        return raw, content_type, extension, int(round(before)), int(round(before))
-    gamma = math.log(_BG_TARGET_LUMA / 255.0) / math.log(max(before, 1.0) / 255.0)
-    gamma = max(_BG_MIN_GAMMA, min(1.0, gamma))
-    curve = [round(((value / 255.0) ** gamma) * 255.0) for value in range(256)]
-    img = img.point(curve * 3)
-    after = _mean_luma(img)
-    out = io.BytesIO()
-    img.save(out, format="PNG")
-    return out.getvalue(), "image/png", ".png", int(round(before)), int(round(after))
-
-
-def _is_light_bg(r: int, g: int, b: int) -> bool:
-    mx = max(r, g, b)
-    return mx >= 172 and mx - min(r, g, b) <= 48
-
-
-def _magenta_distance(r: int, g: int, b: int) -> int:
-    return (255 - r) + g + (255 - b)
-
-
-def _unmix_magenta(r: int, g: int, b: int, a: int) -> tuple[int, int, int]:
-    """Recover the sprite color from an anti-aliased edge pixel.
-
-    Edge pixels are `a*sprite + (1-a)*magenta`; without unmixing they render as
-    a pink fringe around every sprite. Solve back for the sprite color.
-    """
-    if a <= 0 or a >= 255:
-        return r, g, b
-    inv = 255 - a
-    red = min(255, max(0, (255 * r - 255 * inv) // a))
-    blue = min(255, max(0, (255 * b - 255 * inv) // a))
-    green = min(255, (255 * g) // a)
-    return red, green, blue
-
-
-def _dilate_rgb_into_transparent(data: list, width: int, height: int, passes: int = 2) -> list:
-    """Bleed sprite RGB one ring at a time into fully-transparent neighbors.
-
-    GPU linear filtering samples the RGB of transparent texels next to sprite
-    edges; leaving the keyed backdrop color there produces colored halos.
-    """
-    colored = bytearray(a > 32 for _, _, _, a in data)
-    for _ in range(max(0, passes)):
-        src = list(data)
-        source_mask = bytes(colored)
-        for idx, (r, g, b, a) in enumerate(src):
-            if a != 0 or colored[idx]:
-                continue
-            x, y = idx % width, idx // width
-            rs = gs = bs = count = 0
-            for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
-                if 0 <= nx < width and 0 <= ny < height:
-                    nidx = ny * width + nx
-                    if source_mask[nidx]:
-                        nr, ng, nb, _na = src[nidx]
-                        rs += nr
-                        gs += ng
-                        bs += nb
-                        count += 1
-            if count:
-                data[idx] = (rs // count, gs // count, bs // count, 0)
-                colored[idx] = 1
-    return data
-
-
-_COMPRESS_MIN_BYTES = 262_144
-_COMPRESS_KEEP_RATIO = 0.85
-
-
-def _compress_image_asset(
-    content: bytes, content_type: str, extension: str, *, keep_alpha: bool
-) -> tuple[bytes, str, str]:
-    """Re-encode large raster assets as WebP.
-
-    Provider PNGs run 1.5-2.7MB each; a bundle of sheets and background
-    variants pushed total payloads past 14MB and browser load times past 20s.
-    Sprite sheets keep alpha (lossless vs q95, whichever is smaller); plain
-    backgrounds go lossy q85. The original is kept when WebP does not win by
-    a meaningful margin, so this can never make a bundle worse.
-    """
-    lowered = (content_type or "").lower()
-    if len(content) < _COMPRESS_MIN_BYTES or ("png" not in lowered and "jpeg" not in lowered):
-        return content, content_type, extension
-    try:
-        from PIL import Image
-
-        img = Image.open(io.BytesIO(content))
-        candidates: list[bytes] = []
-        if keep_alpha:
-            rgba = img.convert("RGBA")
-            for kwargs in (
-                {"lossless": True, "method": 4},
-                {"quality": 95, "method": 5},
-            ):
-                out = io.BytesIO()
-                rgba.save(out, format="WEBP", **kwargs)
-                candidates.append(out.getvalue())
-        else:
-            out = io.BytesIO()
-            img.convert("RGB").save(out, format="WEBP", quality=85, method=5)
-            candidates.append(out.getvalue())
-        best = min(candidates, key=len)
-        if len(best) <= len(content) * _COMPRESS_KEEP_RATIO:
-            return best, "image/webp", ".webp"
-    except Exception:  # noqa: BLE001 - compression is best-effort
-        import logging
-
-        logging.getLogger(__name__).exception(
-            "image asset compression failed; keeping original"
-        )
-    return content, content_type, extension
-
-
-def _postprocess_spritesheet(raw: bytes, content_type: str) -> bytes:
-    """Normalize a generated sheet: exact size + real alpha transparency."""
-    if "svg" in (content_type or "").lower():
-        raise ValueError("vector placeholder cannot be sliced into a spritesheet")
-    from PIL import Image
-
-    img = Image.open(io.BytesIO(raw)).convert("RGBA")
-    if img.size != (SHEET_SIZE, SHEET_SIZE):
-        img = img.resize((SHEET_SIZE, SHEET_SIZE), Image.LANCZOS)
-
-    data = list(img.getdata())
-    total = len(data)
-    transparent = sum(1 for _, _, _, a in data if a < 16)
-    if transparent >= total * 0.05:
-        pass  # provider delivered real alpha — keep as-is
-    else:
-        magenta_hits = sum(1 for r, g, b, _ in data if _magenta_distance(r, g, b) <= 120)
-        if magenta_hits >= total * 0.03:
-            # Chroma-key the prompted magenta backdrop: hard-key the flat area,
-            # feather + unmix the anti-aliased edge band, then bleed sprite RGB
-            # into the cleared pixels so linear filtering cannot show pink halos.
-            keyed = []
-            for r, g, b, a in data:
-                dist = _magenta_distance(r, g, b)
-                if dist <= 120:
-                    keyed.append((r, g, b, 0))
-                elif dist <= 200:
-                    alpha = min(a, (dist - 120) * 255 // 80)
-                    keyed.append((*_unmix_magenta(r, g, b, alpha), alpha))
-                else:
-                    keyed.append((r, g, b, a))
-            img.putdata(_dilate_rgb_into_transparent(keyed, img.width, img.height))
-        else:
-            # Fallback: the model painted a light/checkerboard backdrop. Clear
-            # everything light-and-unsaturated that connects to the sheet border;
-            # sprites survive as interior islands behind their dark outlines.
-            width, height = img.size
-            seen = bytearray(total)
-            queue: deque[int] = deque()
-            for x in range(width):
-                for y in (0, height - 1):
-                    idx = y * width + x
-                    if not seen[idx] and _is_light_bg(*data[idx][:3]):
-                        seen[idx] = 1
-                        queue.append(idx)
-            for y in range(height):
-                for x in (0, width - 1):
-                    idx = y * width + x
-                    if not seen[idx] and _is_light_bg(*data[idx][:3]):
-                        seen[idx] = 1
-                        queue.append(idx)
-            while queue:
-                idx = queue.popleft()
-                x, y = idx % width, idx // width
-                for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
-                    if 0 <= nx < width and 0 <= ny < height:
-                        nidx = ny * width + nx
-                        if not seen[nidx] and _is_light_bg(*data[nidx][:3]):
-                            seen[nidx] = 1
-                            queue.append(nidx)
-            cleared = [
-                (r, g, b, 0) if seen[i] else (r, g, b, a)
-                for i, (r, g, b, a) in enumerate(data)
-            ]
-            if sum(1 for flag in seen if flag) < total * 0.02:
-                raise ValueError("could not identify a keyable sheet background")
-            img.putdata(_dilate_rgb_into_transparent(cleared, img.width, img.height))
-
-    out = io.BytesIO()
-    img.save(out, format="PNG")
-    return out.getvalue()
-
-
-def _sheet_manifest_extra(cells: tuple[SheetCell, ...], groups: tuple[tuple[str, ...], ...]) -> dict:
-    cell_demands = [_cell_demand(cell) for cell in cells]
-    extra = {
-        "frame_width": SHEET_CELL,
-        "frame_height": SHEET_CELL,
-        "frames": {cell.name: index for index, cell in enumerate(cells)},
-        "semantic_frames": {
-            demand.semantic_id: {
-                # `frame` is a stable atlas-local identifier; the legacy
-                # Phaser frame key is retained separately for compatibility.
-                "frame": f"f_{index:03d}",
-                "frame_id": f"f_{index:03d}",
-                "legacy_frame": demand.frame_id,
-                "frame_index": index,
-                "required": demand.required,
-                "consumer_refs": list(demand.consumer_refs),
-                "anchor": list(demand.anchor),
+    soft_ids = {str(value) for value in (frame_audit.get("soft_frame_ids") or [])}
+    if not soft_ids:
+        return frame_audit
+    frames = []
+    for frame in frame_audit.get("frames") or []:
+        if str(frame.get("semantic_id")) in soft_ids:
+            frame = {
+                **frame,
+                "passed": False,
+                "failed_checks": list(frame.get("soft_checks") or ["semantic_uncertain"]),
             }
-            for index, (cell, demand) in enumerate(zip(cells, cell_demands))
-            if demand.semantic_id and not cell.name.startswith("bonus_")
-        },
-        "frame_ids": {
-            cell.name: index
-            for index, cell in enumerate(cells)
-            if not cell.name.startswith("bonus_")
-        },
-        # 每个多帧角色一条:首帧名 → 该角色的全部帧(按图集顺序)。gameplay
-        # 代码据此建动画:移动/攻击双帧循环、Boss 特技帧、道具激活态。
-        "animations": {names[0]: list(names) for names in groups if names},
-        # 帧语义直达作者(gameConfig.sheets[].frameMeta):帧名(entity_3)本身
-        # 不携带含义,没有描述作者只能按顺序瞎猜,一步错整局换皮——像素都市
-        # 计划把住/商/电/水全体错位一格(2026-07-17)。
-        "frame_meta": {
-            cell.name: _clip_text(cell.meta or cell.desc, 100)
-            for cell in cells
-            if cell.meta or cell.desc
-        },
-        "frame_semantics": {
-            cell.name: demand.semantic_id
-            for cell, demand in zip(cells, cell_demands)
-            if demand.semantic_id and not cell.name.startswith("bonus_")
-        },
-    }
-    # 可连接图块族:base 帧名 → {slot: 帧名}。只输出五槽齐全的族(组同页,
-    # 正常必齐;页溢出被丢的残族宁可不导出,免得运行时旋转表踩空)。
-    families: dict[str, dict[str, str]] = {}
-    for cell in cells:
-        if cell.tile_base and cell.tile_slot:
-            families.setdefault(cell.tile_base, {})[cell.tile_slot] = cell.name
-    complete = {base: slots for base, slots in families.items() if len(slots) == len(_TILE_SLOTS)}
-    if complete:
-        extra["tile_families"] = complete
-    return extra
-
-
-def _audit_sheet_frames(content: bytes, cells: tuple[SheetCell, ...]) -> dict:
-    """Run the cell-level audit without making provider output a hard gate.
-
-    A provider can legitimately return a sparse/empty cell while an operator
-    is iterating on a batch.  We retain every failure in the manifest so the
-    repair worker can regenerate only those semantic frames; shipping is
-    still blocked later by required-coverage QA.
-    """
-    from PIL import Image
-
-    image = Image.open(io.BytesIO(content)).convert("RGBA")
-    frame_results: list[dict] = []
-    for index, cell in enumerate(cells):
-        row, col = divmod(index, SHEET_GRID)
-        crop = image.crop(
-            (col * SHEET_CELL, row * SHEET_CELL, (col + 1) * SHEET_CELL, (row + 1) * SHEET_CELL)
-        )
-        result = audit_frame(crop, _cell_demand(cell), expected_size=(SHEET_CELL, SHEET_CELL))
-        result["frame_index"] = index
-        frame_results.append(result)
-    required = [item for item in frame_results if not str(item["frame_id"]).startswith("bonus_")]
-    passed_required = [item for item in required if item["passed"]]
-    failed = [item for item in frame_results if not item["passed"] and not str(item["frame_id"]).startswith("bonus_")]
+        frames.append(frame)
     return {
-        "schema_version": "frame-audit/v1",
-        "dimensions": list(image.size),
-        "frame_count": len(frame_results),
-        "frames": frame_results,
-        "failed_frame_ids": [item["semantic_id"] for item in failed],
-        "required_asset_coverage": round(len(passed_required) / len(required), 4) if required else 1.0,
-        "unused_required_frame": 0,
-        "passed": not failed,
+        **frame_audit,
+        "frames": frames,
+        "failed_frame_ids": [
+            *[str(value) for value in (frame_audit.get("failed_frame_ids") or [])],
+            *sorted(soft_ids),
+        ],
     }
 
 
-def _tileset_prompt(spec: dict, design: dict) -> str:
-    """AI tileset in the SAME style pipeline as the sheet/background.
+def _sheet_regen_prompt(item: PlannedAsset, audit: dict, review: dict) -> str:
+    """Full-sheet correction prompt carrying the failed-cell feedback.
 
-    旧实现直接船一张硬编码 2 格 SVG(紫色大 X 占位图),与 AI 图集/背景放在
-    同一个资产面板里画风天差地别(2026-07-12 用户实测反馈)。
+    2026-07-20 用户定调:修复不做单格重画——成本按失败格数倍增(第二跑一轮
+    烧了 8 次图像调用)。整表重掷每轮固定 1 次图像调用,与旧表逐格择优合成;
+    同表重画天然保持角色身份一致,替代文字身份锚定。UI 覆盖物提示照旧剥离。
     """
-    title = str(spec.get("title") or "Untitled")
-    cell_px = SHEET_SIZE // TILESET_GRID
+
+    review_by_id = {
+        str(frame.get("semantic_id")): frame
+        for frame in (review.get("frames") or [])
+        if isinstance(frame, dict) and frame.get("semantic_id")
+    }
+    frames_by_id = {
+        str(frame.get("semantic_id")): frame
+        for frame in (audit.get("frames") or [])
+        if isinstance(frame, dict) and frame.get("semantic_id")
+    }
+    issues: list[str] = []
+    for semantic_id in [str(value) for value in (audit.get("failed_frame_ids") or [])][:8]:
+        checks = ", ".join(
+            str(check) for check in (frames_by_id.get(semantic_id, {}).get("failed_checks") or [])[:3]
+        )
+        hint = strip_ui_overlay_demands(
+            (review_by_id.get(semantic_id) or {}).get("repair_prompt") or ""
+        )
+        entry = f"{semantic_id}: {checks or 'wrong content'}"
+        if hint:
+            entry += f" — {_clip_text(hint, 70)}"
+        issues.append(entry)
     return " ".join(
         [
-            f"Top-down 2D game environment tileset for the browser game '{title}'. {_style_line(spec, design)}",
-            f"EXACTLY a {TILESET_GRID}x{TILESET_GRID} grid of equal {cell_px}x{cell_px} cells filling the whole {SHEET_SIZE}x{SHEET_SIZE} canvas.",
-            "Row 1: four seamless ground/floor tiles filling their cells completely edge-to-edge (base floor, worn variant, detailed variant, floor with glowing accent lines).",
-            "Row 2: four solid structure tiles filling their cells completely edge-to-edge: reinforced wall block, damaged wall block, heavy cover crate, barricade segment.",
-            "Row 3: four standalone props centered in their cells at about 80% cell size: barrel or container, machinery or vent, rubble or debris pile, glowing hazard marker.",
-            "Row 4: four subtle decal tiles: floor crack or stain, warning stripe strip, small light cluster, directional floor marking.",
-            "The backdrop around and between the standalone props and decals of rows 3 and 4 must be one solid pure magenta color (#FF00FF). Never use magenta inside any tile art.",
-            "No grid lines, no cell borders, no checkerboard pattern, no text, no labels, no watermark.",
+            item.prompt,
+            "CORRECTION PASS: the previous canvas failed review for these cells:",
+            "; ".join(issues) + ".",
+            "Redraw the FULL sheet with the same layout and art style.",
+            "Every listed cell must clearly show its required object/state,",
+            "adjacent animation frames must be visibly different poses,",
+            "and every frame of one actor must keep the same character identity.",
         ]
     )
 
 
-def _postprocess_tileset(raw: bytes, content_type: str) -> bytes:
-    """Key the generated tileset like a sheet, then downscale per cell to the
-    runtime tile grid. Per-cell resize keeps LANCZOS from bleeding one cell's
-    colors across its neighbor's border, which would leave semi-transparent
-    seams on adjoining floor tiles."""
+def _slice_sheet_canvas(
+    raw_content: bytes,
+    content_type: str,
+    item: PlannedAsset,
+    review_manifest: SpriteDemandManifest,
+    source_batch: BatchSpec,
+    logs: list[str],
+) -> tuple[bytes, dict, dict]:
+    """Normalize one provider canvas and slice it into the canonical atlas.
+
+    初始画布与修复轮的整表重掷共用这条路径:布局评审→(混合)重切;评审不可
+    用或映射不全时逐级退回网格切割,绝不在切割环节暂停任务。
+    """
+
+    layout_review: dict = {
+        "schema_version": "asset-layout-review/v1",
+        "enabled": False,
+        "status": "disabled",
+        "passed": True,
+        "frames": [],
+        "failed_frame_ids": [],
+        "uncertain_frame_ids": [],
+    }
+    layout_repack: dict = {"resegmented": False}
+    if not settings.ASSET_SEMANTIC_REVIEW_ENABLED:
+        return _postprocess_spritesheet(raw_content, content_type), layout_review, layout_repack
+    # Preserve the provider's original geometry for semantic discovery. The
+    # old path resized first, making a wrong source grid impossible to
+    # recover deterministically.
+    source_image = _normalize_spritesheet_canvas(raw_content, content_type)
+    source_out = io.BytesIO()
+    source_image.save(source_out, format="PNG")
+    source_layout_content = source_out.getvalue()
+    review_error: Exception | None = None
+    for layout_attempt in range(
+        1, max(1, min(4, int(settings.ASSET_SEMANTIC_REVIEW_MAX_RETRIES) + 1)) + 1
+    ):
+        try:
+            layout_review = review_spritesheet_layout(
+                source_layout_content,
+                review_manifest,
+                source_batch,
+                attempt=layout_attempt,
+            )
+            review_error = None
+            break
+        except AssetSemanticReviewError as exc:
+            review_error = exc
+            logs.append(
+                f"{item.key}: layout review attempt {layout_attempt} failed; retrying audit"
+            )
+    if review_error is not None:
+        logs.append(
+            f"{item.key}: layout review unavailable ({_clip_text(review_error, 140)}); "
+            "falling back to fixed-grid slicing"
+        )
+        return (
+            _postprocess_spritesheet(raw_content, content_type),
+            {
+                "enabled": True,
+                "passed": False,
+                "status": "unavailable",
+                "error": _clip_text(review_error, 200),
+            },
+            {"resegmented": False, "fallback": "fixed_grid"},
+        )
+    canonical_index_by_semantic = {
+        _cell_demand(cell).semantic_id: index
+        for index, cell in enumerate(item.sheet_cells)
+        if not cell.name.startswith("bonus_")
+    }
+    for layout_frame in layout_review.get("frames") or []:
+        semantic_id = str(layout_frame.get("semantic_id") or "")
+        if semantic_id in canonical_index_by_semantic:
+            # The review prompt uses a compact semantic list; translate it to
+            # the real atlas index in case a page contains unused bonus slots.
+            layout_frame["target_frame_index"] = canonical_index_by_semantic[semantic_id]
+            layout_frame["frame_index"] = canonical_index_by_semantic[semantic_id]
+    if not layout_review.get("passed"):
+        # 部分映射照用:扔掉 pass 格的 bbox 整表固定切割,曾把 14/16 已映射
+        # 好的格连带切坏(2026-07-20 第二跑,coverage 0.25)。
+        unmapped = list(
+            layout_review.get("failed_frame_ids")
+            or layout_review.get("uncertain_frame_ids")
+            or []
+        )
+        try:
+            content, layout_repack = _resegment_spritesheet(
+                source_layout_content,
+                item.sheet_cells,
+                layout_review,
+                hybrid_fill=True,
+            )
+        except AssetGenerationRetryRequired as exc:
+            logs.append(
+                f"{item.key}: hybrid re-segmentation unavailable ({_clip_text(exc, 140)}); "
+                "falling back to fixed-grid slicing"
+            )
+            return (
+                _postprocess_spritesheet(raw_content, content_type),
+                layout_review,
+                {"resegmented": False, "fallback": "fixed_grid"},
+            )
+        hybrid_ids = list(layout_repack.get("hybrid_cell_ids") or [])
+        logs.append(
+            f"{item.key}: layout mapping incomplete "
+            f"({', '.join(str(value) for value in unmapped[:6]) or 'unknown'}); "
+            f"hybrid re-segmentation kept "
+            f"{len(layout_repack.get('frames') or []) - len(hybrid_ids)} mapped region(s), "
+            f"{len(hybrid_ids)} grid-filled cell(s)"
+        )
+        return content, layout_review, layout_repack
+    try:
+        content, layout_repack = _resegment_spritesheet(
+            source_layout_content,
+            item.sheet_cells,
+            layout_review,
+        )
+    except AssetGenerationRetryRequired as exc:
+        logs.append(
+            f"{item.key}: re-segmentation unavailable ({_clip_text(exc, 140)}); "
+            "falling back to fixed-grid slicing"
+        )
+        return (
+            _postprocess_spritesheet(raw_content, content_type),
+            layout_review,
+            {"resegmented": False, "fallback": "fixed_grid"},
+        )
+    logs.append(
+        f"{item.key}: semantic layout review re-segmented "
+        f"{len(layout_repack.get('frames') or [])} source regions before grid packing"
+    )
+    return content, layout_review, layout_repack
+
+
+def _semantic_review_with_retry(
+    content: bytes,
+    review_manifest: SpriteDemandManifest,
+    source_batch: BatchSpec,
+    logs: list[str],
+    key: str,
+    *,
+    target_semantic_ids: tuple[str, ...] | None = None,
+    accepted_context: dict[str, str] | None = None,
+) -> dict:
+    """Run the semantic review with bounded transport retries."""
+
+    attempts = max(1, min(4, int(settings.ASSET_SEMANTIC_REVIEW_MAX_RETRIES) + 1))
+    review_error: Exception | None = None
+    for review_attempt in range(1, attempts + 1):
+        try:
+            return review_spritesheet(
+                content,
+                review_manifest,
+                source_batch,
+                attempt=review_attempt,
+                target_semantic_ids=target_semantic_ids,
+                accepted_context=accepted_context,
+            )
+        except AssetSemanticReviewError as exc:
+            review_error = exc
+            logs.append(f"{key}: semantic review attempt {review_attempt} failed; retrying audit")
+    assert review_error is not None
+    raise review_error
+
+
+def _merge_scoped_review(previous: dict, scoped: dict, required_ids: set[str]) -> dict:
+    """Merge a scoped re-review into the running full-sheet review state.
+
+    Only the re-reviewed cells change verdict; every other cell keeps its
+    locked result, so a repair round can never un-pass an untouched frame.
+    """
+
+    frames_by_id = {
+        str(frame.get("semantic_id")): dict(frame)
+        for frame in (previous.get("frames") or [])
+        if frame.get("semantic_id")
+    }
+    for frame in scoped.get("frames") or []:
+        semantic_id = str(frame.get("semantic_id") or "")
+        if semantic_id:
+            frames_by_id[semantic_id] = dict(frame)
+    order = list(
+        dict.fromkeys(
+            [
+                *(str(f.get("semantic_id")) for f in (previous.get("frames") or []) if f.get("semantic_id")),
+                *(str(f.get("semantic_id")) for f in (scoped.get("frames") or []) if f.get("semantic_id")),
+            ]
+        )
+    )
+    frames = [frames_by_id[semantic_id] for semantic_id in order]
+    failed = [
+        semantic_id
+        for semantic_id in order
+        if semantic_id in required_ids and frames_by_id[semantic_id].get("verdict") == "fail"
+    ]
+    uncertain = [
+        semantic_id
+        for semantic_id in order
+        if semantic_id in required_ids and frames_by_id[semantic_id].get("verdict") == "uncertain"
+    ]
+    passed = not failed and not uncertain
+    return {
+        **previous,
+        "frames": frames,
+        "failed_frame_ids": failed,
+        "uncertain_frame_ids": uncertain,
+        "passed": passed,
+        "status": "passed" if passed else "failed",
+        "sheet_verdict": "pass" if passed else "fail",
+        "recheck_used": bool(previous.get("recheck_used") or scoped.get("recheck_used")),
+        "scoped": False,
+        "target_semantic_ids": None,
+    }
+
+
+def _finalize_sheet_release(
+    item: PlannedAsset,
+    content: bytes,
+    audit: dict,
+    review: dict,
+    logs: list[str],
+) -> tuple[bytes, dict, dict]:
+    """Release with warnings above the coverage floor; pause only below it.
+
+    带伤放行:失败格仍有可用的画(几何/透明度过了确定性审计),语义缺陷记入
+    regeneration_plan 由后台补射。烧完修复预算再暂停整个任务是最差结局——
+    既花了三倍的钱又零产物(第十二轮 40 分钟后用户手动取消)。
+    """
+
+    failed_ids = [str(value) for value in (audit.get("failed_frame_ids") or [])]
+    if not failed_ids:
+        return content, audit, review
+    coverage = float(audit.get("required_asset_coverage") or 0.0)
+    floor = max(0.0, min(1.0, float(settings.ASSET_RELEASE_COVERAGE_FLOOR)))
+    if coverage >= floor:
+        audit["released_with_warnings"] = True
+        audit["release_coverage_floor"] = floor
+        logs.append(
+            f"{item.key}: released with {len(failed_ids)} imperfect required frame(s) "
+            f"({', '.join(failed_ids[:8])}); coverage {coverage:.2f} >= floor {floor:.2f}; "
+            "queued for background regeneration"
+        )
+        return content, audit, review
+    raise AssetGenerationRetryRequired(
+        f"Spritesheet '{item.key}' required frame coverage {coverage:.2f} is below the "
+        f"release floor {floor:.2f}; failed: {', '.join(failed_ids[:12])}. "
+        "Generation is paused; waiting for manual retry."
+    )
+
+
+def _repair_failed_sheet_frames(
+    content: bytes,
+    item: PlannedAsset,
+    frame_audit: dict,
+    semantic_review: dict,
+    source_batch: BatchSpec,
+    review_manifest: SpriteDemandManifest,
+    state: dict,
+    router: ProviderRouter,
+    logs: list[str],
+) -> tuple[bytes, dict, dict]:
+    """Regenerate the WHOLE sheet once per round and keep the best of each cell.
+
+    2026-07-20 用户定调:不做单格重画——成本按失败格数倍增(第二跑一轮烧了
+    8 次图像调用)。每轮固定 1 次图像调用:整表重掷(带失败反馈提示词)→
+    与旧表逐格择优合成(已 pass 格锁定不动,失败格换入新表中通过审计的版本)
+    → 换入格做一次跨表局部复审,身份漂移的换入格回退。失败集不严格收缩或
+    预算耗尽即止损,由带伤放行判定收尾。
+    """
+
+    max_attempts = max(1, min(4, int(settings.ASSET_FRAME_AUDIT_MAX_RETRIES) + 1))
+    image_budget = max(1, int(settings.ASSET_REPAIR_MAX_IMAGE_CALLS))
+    images_used = 0
+    current_content = content
+    current_audit = frame_audit
+    current_review = semantic_review
+    required_ids = {demand.semantic_id for demand in review_manifest.required}
+    known_ids = {
+        _cell_demand(cell).semantic_id
+        for cell in item.sheet_cells
+        if not cell.name.startswith("bonus_")
+    }
     from PIL import Image
 
-    keyed = Image.open(io.BytesIO(_postprocess_spritesheet(raw, content_type))).convert("RGBA")
-    cell_px = SHEET_SIZE // TILESET_GRID
-    out_img = Image.new("RGBA", (TILESET_IMAGE_SIZE, TILESET_IMAGE_SIZE), (0, 0, 0, 0))
-    for index in range(TILESET_GRID * TILESET_GRID):
-        col, row = index % TILESET_GRID, index // TILESET_GRID
-        cell = keyed.crop((col * cell_px, row * cell_px, (col + 1) * cell_px, (row + 1) * cell_px))
-        out_img.paste(cell.resize((TILE_SIZE, TILE_SIZE), Image.LANCZOS), (col * TILE_SIZE, row * TILE_SIZE))
-    out = io.BytesIO()
-    out_img.save(out, format="PNG")
-    return out.getvalue()
+    def _cell_box(semantic_id: str) -> tuple[int, int, int, int]:
+        index = source_batch.frame_index(semantic_id)
+        col, row = index % SHEET_GRID, index // SHEET_GRID
+        return (
+            col * SHEET_CELL,
+            row * SHEET_CELL,
+            (col + 1) * SHEET_CELL,
+            (row + 1) * SHEET_CELL,
+        )
+
+    review_enabled = bool(settings.ASSET_SEMANTIC_REVIEW_ENABLED and current_review.get("enabled"))
+    for attempt in range(1, max_attempts + 1):
+        failed_ids = [
+            str(value)
+            for value in (current_audit.get("failed_frame_ids") or [])
+            if str(value) in known_ids
+        ]
+        if not failed_ids:
+            break
+        if images_used >= image_budget:
+            logs.append(
+                f"{item.key}: repair image budget exhausted ({image_budget}); stopping repair"
+            )
+            break
+        try:
+            media = _generate_with_retry(
+                router,
+                MediaRequest(
+                    modality="image",
+                    prompt=_sheet_regen_prompt(item, current_audit, current_review),
+                    size=f"{SHEET_SIZE}x{SHEET_SIZE}",
+                    extra={"background": "transparent", "quality": "medium"},
+                ),
+                logs,
+                f"{item.key}:regen{attempt}",
+            )
+        except Exception as exc:  # noqa: BLE001 —— 重掷失败留给放行判定兜底
+            logs.append(
+                f"{item.key}: sheet regeneration failed ({_clip_text(exc, 140)}); stopping repair"
+            )
+            break
+        images_used += 1
+        try:
+            candidate_content, _candidate_layout, _candidate_repack = _slice_sheet_canvas(
+                media.content,
+                media.content_type,
+                item,
+                review_manifest,
+                source_batch,
+                logs,
+            )
+        except Exception as exc:  # noqa: BLE001 —— 候选画布不可用不值得暂停
+            logs.append(
+                f"{item.key}: regenerated canvas unusable ({_clip_text(exc, 140)}); stopping repair"
+            )
+            break
+        candidate_audit = _audit_sheet_frames(candidate_content, item.sheet_cells)
+        candidate_review: dict = {"enabled": False, "frames": []}
+        if review_enabled:
+            try:
+                candidate_review = _semantic_review_with_retry(
+                    candidate_content,
+                    review_manifest,
+                    source_batch,
+                    logs,
+                    f"{item.key}:regen{attempt}",
+                )
+            except AssetSemanticReviewError as exc:
+                logs.append(
+                    f"{item.key}: candidate review unavailable ({_clip_text(exc, 140)}); "
+                    "stopping repair"
+                )
+                break
+            candidate_audit = _merge_semantic_review_into_audit(candidate_audit, candidate_review)
+        candidate_failed = {
+            str(value) for value in (candidate_audit.get("failed_frame_ids") or [])
+        }
+        swap_ids = [semantic_id for semantic_id in failed_ids if semantic_id not in candidate_failed]
+        if not swap_ids:
+            logs.append(
+                f"{item.key}: regenerated sheet improved no failed cell; stopping repair"
+            )
+            break
+        composed = Image.open(io.BytesIO(current_content)).convert("RGBA")
+        pristine = composed.copy()
+        candidate_sheet = Image.open(io.BytesIO(candidate_content)).convert("RGBA")
+        for semantic_id in swap_ids:
+            box = _cell_box(semantic_id)
+            composed.paste(candidate_sheet.crop(box), box[:2])
+        kept_swaps = list(swap_ids)
+        if review_enabled:
+            composed_out = io.BytesIO()
+            composed.save(composed_out, format="PNG")
+            accepted_context = {
+                str(frame.get("semantic_id")): str(frame.get("observed_category") or "")
+                for frame in (current_review.get("frames") or [])
+                if str(frame.get("verdict")) == "pass"
+                and str(frame.get("semantic_id")) not in set(swap_ids)
+            }
+            try:
+                scoped = _semantic_review_with_retry(
+                    composed_out.getvalue(),
+                    review_manifest,
+                    source_batch,
+                    logs,
+                    item.key,
+                    target_semantic_ids=tuple(swap_ids),
+                    accepted_context=accepted_context,
+                )
+            except AssetSemanticReviewError as exc:
+                # 跨表校验不可用:保守放弃全部换入,保持旧表,交给放行判定。
+                logs.append(
+                    f"{item.key}: cross-sheet verification unavailable ({_clip_text(exc, 140)}); "
+                    "keeping the original sheet"
+                )
+                break
+            scoped_by_id = {
+                str(frame.get("semantic_id")): frame
+                for frame in (scoped.get("frames") or [])
+                if frame.get("semantic_id")
+            }
+            revert_ids = [
+                semantic_id
+                for semantic_id in swap_ids
+                if str((scoped_by_id.get(semantic_id) or {}).get("verdict")) == "fail"
+            ]
+            for semantic_id in revert_ids:
+                box = _cell_box(semantic_id)
+                composed.paste(pristine.crop(box), box[:2])
+                logs.append(
+                    f"{item.key}: swapped cell {semantic_id} reverted after cross-sheet check"
+                )
+            kept_swaps = [
+                semantic_id for semantic_id in swap_ids if semantic_id not in revert_ids
+            ]
+            if kept_swaps:
+                kept_frames = [
+                    scoped_by_id[semantic_id]
+                    for semantic_id in kept_swaps
+                    if semantic_id in scoped_by_id
+                ]
+                current_review = _merge_scoped_review(
+                    current_review,
+                    {"frames": kept_frames, "recheck_used": scoped.get("recheck_used")},
+                    required_ids,
+                )
+        if not kept_swaps:
+            logs.append(
+                f"{item.key}: no swapped cell survived verification; stopping repair"
+            )
+            break
+        out = io.BytesIO()
+        composed.save(out, format="PNG")
+        current_content = out.getvalue()
+        current_audit = _audit_sheet_frames(current_content, item.sheet_cells)
+        if current_review.get("enabled"):
+            current_audit = _merge_semantic_review_into_audit(current_audit, current_review)
+        new_failed = [str(value) for value in (current_audit.get("failed_frame_ids") or [])]
+        logs.append(
+            f"{item.key}: repair round {attempt} (full-sheet regen) -> "
+            f"{len(new_failed)} failed required frame(s)"
+        )
+        if len(new_failed) >= len(failed_ids):
+            logs.append(f"{item.key}: failure set did not shrink; stopping repair")
+            break
+    return _finalize_sheet_release(item, current_content, current_audit, current_review, logs)
 
 
 def _screen_size(design: dict) -> tuple[int, int]:
@@ -1276,27 +729,183 @@ def _screen_size(design: dict) -> tuple[int, int]:
     return _num(screen.get("width"), 1152, 640, 1600), _num(screen.get("height"), 768, 480, 1000)
 
 
+def _record_image_call(
+    key: str,
+    model: str | None,
+    latency_ms: float,
+    status: str,
+    error: Exception | None = None,
+) -> None:
+    """Ledger one image-provider call into ``llm_calls`` (fail-open).
+
+    第十二轮(2026-07-19)盲区:修复轮 17 次图像调用在 llm_calls/Opik 双双不可
+    见,10-12 分钟的空窗只能靠 docker 日志反推。tokens 记 0,延迟真实。
+    """
+
+    try:
+        from app.llm import accounting as llm_accounting
+        from app.core.telemetry import get_context
+        from app.db.session import SessionLocal
+
+        llm_accounting.persist_call(
+            llm_accounting.LLMResult(
+                text="",
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                model=str(model or settings.ASSET_IMAGE_MODEL or "image"),
+                latency_ms=max(0, int(latency_ms)),
+            ),
+            session_factory=SessionLocal,
+            context=get_context(),
+            logger=logger,
+            agent="AssetImageProvider",
+            workflow_name="Generate Game Assets",
+            status=status,
+            error_code=type(error).__name__ if error is not None else None,
+        )
+    except Exception as exc:  # noqa: BLE001 - accounting must never stop generation
+        logger.debug("image call ledger skipped for %s: %s", key, exc)
+
+
+_TRANSPARENT_REJECT_MARKER = "transparent background is not supported"
+# 进程级记忆:订阅制网关(如 sub2api 的 chatgpt 后端图像通道)对
+# background=transparent 直接 400 而非忽略;首次被拒后全进程剥离该参数。
+_transparent_param_unsupported = False
+
+
+def _wants_transparent_background(request: MediaRequest) -> bool:
+    return (
+        request.modality == "image"
+        and str((request.extra or {}).get("background", "")).strip().lower() == "transparent"
+    )
+
+
+def _without_background_extra(request: MediaRequest) -> MediaRequest:
+    extra = {k: v for k, v in (request.extra or {}).items() if k != "background"}
+    return replace(request, extra=extra or None)
+
+
+def _native_transparency_enabled() -> bool:
+    mode = str(settings.ASSET_IMAGE_NATIVE_TRANSPARENCY or "auto").strip().lower()
+    if mode == "never":
+        return False
+    return not _transparent_param_unsupported
+
+
 def _generate_with_retry(router: ProviderRouter, request: MediaRequest, logs: list[str], key: str):
     """Retry ordinary generation errors before requiring manual retry.
 
     Configuration failures do not heal. An invalid/empty final streaming event
     is also not retried because the provider may already have generated and
     billed the image; repeating it can duplicate both output and cost.
+    background=transparent is optional polish: prompts already demand a magenta
+    backdrop and `_postprocess_spritesheet`/`_postprocess_tileset` chroma-key it,
+    so a provider that rejects the parameter gets a retry without it. Two extra
+    escapes before pausing the pipeline (both generic, 2026-07-20 三路守卫):
+    a LAST-RESORT retry without the transparent parameter — some gateways route
+    requests carrying it to a broken upstream and fail with 5xx instead of a
+    parameter error — and, when ASSET_<MODALITY>_FALLBACK_* is configured, a
+    failover pass against the fallback provider.
     """
+    global _transparent_param_unsupported
     retries = max(0, min(4, int(settings.ASSET_PROVIDER_MAX_RETRIES)))
-    attempts = retries + 1
-    for attempt in range(1, attempts + 1):
+    if _wants_transparent_background(request) and not _native_transparency_enabled():
+        request = _without_background_extra(request)
+        logs.append(
+            f"{key}: background=transparent omitted (provider rejects it; "
+            f"magenta chroma-key recovers transparency)"
+        )
+    fallback_config = None
+    # getattr:测试常以桩替换模块级 ProviderRouter 符号,桩不必实现兜底解析。
+    fallback_resolver = getattr(ProviderRouter, "resolve_fallback", None)
+    if callable(fallback_resolver):
         try:
-            return router.generate(request)
-        except ProviderStreamProtocolError:
-            raise
-        except ProviderGenerationError as exc:
-            if attempt >= attempts:
-                raise
+            fallback_config = fallback_resolver(request.modality)
+        except ProviderConfigurationError as exc:
+            logs.append(f"{key}: fallback provider misconfigured; ignoring it ({_clip_text(exc, 120)})")
+    phases: list[tuple] = [(None, retries + 1)]
+    if fallback_config is not None:
+        phases.append((fallback_config, min(2, retries + 1)))
+    last_error: ProviderGenerationError | None = None
+    for phase_index, (config, attempts) in enumerate(phases):
+        phase_request = request
+        wants_transparent = _wants_transparent_background(phase_request)
+        if phase_index:
             logs.append(
-                f"{key}: attempt {attempt} failed ({_clip_text(exc, 140)}); "
-                f"retrying attempt {attempt + 1}/{attempts}"
+                f"{key}: primary provider exhausted its retries; failing over to "
+                f"{config.provider} at {config.base_url}"
             )
+        stripped_last_resort = False
+        attempt = 0
+        while attempt < attempts:
+            attempt += 1
+            started = time.perf_counter()
+            with opik_integration.media_generation_span(
+                key=key,
+                model=str(config.model if config is not None else settings.ASSET_IMAGE_MODEL or "") or None,
+                prompt_chars=len(phase_request.prompt or ""),
+                metadata={
+                    "attempt": attempt,
+                    "modality": phase_request.modality,
+                    "provider_phase": "fallback" if phase_index else "primary",
+                },
+            ):
+                try:
+                    media = (
+                        router.generate(phase_request, config=config)
+                        if config is not None
+                        else router.generate(phase_request)
+                    )
+                except ProviderStreamProtocolError as exc:
+                    _record_image_call(
+                        key, None, (time.perf_counter() - started) * 1000, "error", exc
+                    )
+                    raise
+                except ProviderGenerationError as exc:
+                    _record_image_call(
+                        key, None, (time.perf_counter() - started) * 1000, "error", exc
+                    )
+                    last_error = exc
+                    if wants_transparent and _TRANSPARENT_REJECT_MARKER in str(exc).lower():
+                        if config is None:
+                            _transparent_param_unsupported = True
+                        phase_request = _without_background_extra(phase_request)
+                        wants_transparent = False
+                        # 参数被拒不是生成失败,剥参后的请求保留完整重试预算。
+                        attempt -= 1
+                        logs.append(
+                            f"{key}: provider rejected background=transparent; retrying "
+                            f"without it (magenta chroma-key recovers transparency)"
+                        )
+                        continue
+                    if attempt >= attempts:
+                        if wants_transparent and not stripped_last_resort:
+                            # 最后一搏:剥掉可选的 transparent 参数再试一次。部分网关按
+                            # 参数把请求路由到坏上游,报 5xx 而非参数错误(accel 实测:
+                            # 带 transparent 的 sheet 必挂,不带该参数的背景全过)。
+                            stripped_last_resort = True
+                            phase_request = _without_background_extra(phase_request)
+                            wants_transparent = False
+                            attempts += 1
+                            logs.append(
+                                f"{key}: attempt {attempt} failed ({_clip_text(exc, 140)}); "
+                                "last-resort retry without background=transparent "
+                                "(magenta chroma-key recovers transparency)"
+                            )
+                            continue
+                        break
+                    logs.append(
+                        f"{key}: attempt {attempt} failed ({_clip_text(exc, 140)}); "
+                        f"retrying attempt {attempt + 1}/{attempts}"
+                    )
+                    continue
+                _record_image_call(
+                    key, media.model, (time.perf_counter() - started) * 1000, "completed"
+                )
+                return media
+    if last_error is not None:
+        raise last_error
     raise AssertionError("asset generation retry loop exited unexpectedly")
 
 
@@ -1349,27 +958,52 @@ def generate_game_assets(state: dict, router: ProviderRouter | None = None) -> d
             design,
             state.get("runtime_consumers") or design.get("runtime_consumers"),
         )
-    tilemap_wanted = (
-        settings.TILEMAP_GENERATION_ENABLED
-        and state.get("dimension") != "3d"
-        and str(spec.get("archetype") or "") in TILEMAP_ARCHETYPES
-    )
+    tilemap_wanted = _tilemap_wanted_for(state, spec)
 
     planned = plan_game_assets(state) if settings.ASSET_GENERATION_ENABLED else []
+    # 重入的素材阶段(balance 修复/replan/revision)逐 key 复核复用:prompt 没变
+    # 的图不再回炉。整批重画会把已成功的图重新压上不稳定的图像端点。
+    stale_keys = stale_planned_keys(state)
+    carried_by_key: dict[str, dict] = {}
+    carried_tilemap_entries: list[dict] = []
+    prev_artifacts = _artifacts_by_path(state)
+    to_generate = planned
+    tileset_generation_wanted = tilemap_wanted
+    if stale_keys is not None:
+        stale_set = set(stale_keys)
+        prev_by_key = {str(entry.get("key") or ""): entry for entry in _generated_manifest_entries(state)}
+        to_generate = [item for item in planned if item.key in stale_set]
+        carried_by_key = {
+            item.key: prev_by_key[item.key] for item in planned if item.key not in stale_set
+        }
+        if tilemap_wanted and "tileset" not in stale_set:
+            tileset_generation_wanted = False
+            carried_tilemap_entries = _tilemap_family_entries(list(prev_by_key.values()))
+        if carried_by_key or carried_tilemap_entries:
+            logs.append(
+                f"asset reuse: {len(carried_by_key) + len(carried_tilemap_entries)} unchanged asset(s) "
+                f"reused, {len(to_generate)} to regenerate"
+            )
     results: list[tuple] = []
     tileset_result: tuple | None = None
-    if planned or (tilemap_wanted and settings.ASSET_GENERATION_ENABLED):
+    if to_generate or (tileset_generation_wanted and settings.ASSET_GENERATION_ENABLED):
         # 图像调用并行化:图集页数扩容后串行墙钟时间不可接受(单页实测 ~72s,
         # 3 页图集+背景串行近 5 分钟)。httpx 按请求建连,ProviderRouter 无共享
         # 可变状态,线程安全。并发保守取 2,避免踩网关限流。失败语义:所有
         # 在飞请求跑完后按计划顺序结算,首个失败的图像资产仍旧暂停整条流水线。
         workers = max(1, int(settings.ASSET_GENERATION_CONCURRENCY))
-        logs.append(f"dispatching {len(planned)} asset request(s), concurrency {workers}")
+        logs.append(f"dispatching {len(to_generate)} asset request(s), concurrency {workers}")
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(_produce_media, router, item) for item in planned]
+            # 每个任务独立 copy_context(Context 不可并发 enter):图像调用的
+            # Opik span 与 llm_calls 记账靠线程内的 telemetry/trace 上下文。
+            futures = [
+                pool.submit(contextvars.copy_context().run, _produce_media, router, item)
+                for item in to_generate
+            ]
             tileset_future = None
-            if tilemap_wanted and settings.ASSET_GENERATION_ENABLED:
+            if tileset_generation_wanted and settings.ASSET_GENERATION_ENABLED:
                 tileset_future = pool.submit(
+                    contextvars.copy_context().run,
                     _produce_media,
                     router,
                     PlannedAsset(
@@ -1383,8 +1017,20 @@ def generate_game_assets(state: dict, router: ProviderRouter | None = None) -> d
             results = [future.result() for future in futures]
             if tileset_future is not None:
                 tileset_result = tileset_future.result()
+    results_by_key = {item.key: result for item, result in zip(to_generate, results)}
 
-    for item, result_tuple in zip(planned, results):
+    for item in planned:
+        carried_entry = carried_by_key.get(item.key)
+        if carried_entry is not None:
+            _append_carried_asset(
+                item, carried_entry, prev_artifacts, artifacts, manifest_entries, asset_trace, logs, state
+            )
+            continue
+        result_tuple = results_by_key.get(item.key) or (
+            None,
+            ProviderConfigurationError(f"no generation result for '{item.key}'"),
+            [],
+        )
         media, error, item_logs = result_tuple[:3]
         request_meta = (
             result_tuple[3]
@@ -1442,14 +1088,9 @@ def generate_game_assets(state: dict, router: ProviderRouter | None = None) -> d
                 postprocess_checks["dimension_error"] = _clip_text(exc, 120)
         if item.sheet_cells and item.modality == "image":
             try:
-                content = _postprocess_spritesheet(media.content, media.content_type)
-                content_type, extension = "image/png", ".png"
-                kind = "spritesheet"
                 entry_extra = _sheet_manifest_extra(item.sheet_cells, item.sheet_groups)
                 if state.get("contract_hash"):
                     entry_extra["contract_hash"] = state["contract_hash"]
-                frame_audit = _audit_sheet_frames(content, item.sheet_cells)
-                entry_extra["frame_audit"] = frame_audit
                 source_batch = BatchSpec(
                     batch_id=item.key,
                     group=item.key,
@@ -1466,10 +1107,62 @@ def generate_game_assets(state: dict, router: ProviderRouter | None = None) -> d
                         (state.get("style_bible") or {}).get("theme") or "default"
                     ),
                 )
+                review_manifest = SpriteDemandManifest(
+                    tuple(_cell_demand(cell) for cell in item.sheet_cells if not cell.name.startswith("bonus_")),
+                    dict(state.get("style_bible") or {}),
+                )
+                content, layout_review, layout_repack = _slice_sheet_canvas(
+                    media.content,
+                    media.content_type,
+                    item,
+                    review_manifest,
+                    source_batch,
+                    logs,
+                )
+                if layout_review.get("enabled"):
+                    entry_extra["layout_review"] = layout_review
+                if layout_repack.get("resegmented") or layout_repack.get("fallback"):
+                    entry_extra["layout_repack"] = layout_repack
+                content_type, extension = "image/png", ".png"
+                kind = "spritesheet"
+                frame_audit = _audit_sheet_frames(content, item.sheet_cells)
+                entry_extra["frame_audit"] = frame_audit
+                semantic_review = _semantic_review_with_retry(
+                    content,
+                    review_manifest,
+                    source_batch,
+                    logs,
+                    item.key,
+                )
+                if semantic_review.get("enabled"):
+                    frame_audit = _merge_semantic_review_into_audit(frame_audit, semantic_review)
+                if frame_audit.get("failed_frame_ids"):
+                    content, frame_audit, semantic_review = _repair_failed_sheet_frames(
+                        content,
+                        item,
+                        frame_audit,
+                        semantic_review,
+                        source_batch,
+                        review_manifest,
+                        state,
+                        router,
+                        logs,
+                    )
+                if not frame_audit.get("passed") and not frame_audit.get("released_with_warnings"):
+                    raise AssetGenerationRetryRequired(
+                        f"Spritesheet '{item.key}' failed required frame audit: "
+                        f"{', '.join(str(value) for value in frame_audit.get('failed_frame_ids') or [])}. "
+                        "Generation is paused; waiting for manual retry."
+                    )
+                entry_extra["frame_audit"] = frame_audit
+                entry_extra["semantic_review"] = semantic_review
+                if layout_review.get("enabled"):
+                    entry_extra["layout_review"] = layout_review
+                    entry_extra["layout_repack"] = layout_repack
                 entry_extra["regeneration_plan"] = [
                     retry.to_dict()
                     for retry in build_cell_regeneration_specs(
-                        frame_audit,
+                        _regeneration_plan_audit(frame_audit),
                         source_batch,
                         style_bible=state.get("style_bible") or {},
                         contract_hash=state.get("contract_hash"),
@@ -1487,20 +1180,48 @@ def generate_game_assets(state: dict, router: ProviderRouter | None = None) -> d
                         "frame_audit": {
                             "passed": frame_audit["passed"],
                             "failed_frame_ids": frame_audit["failed_frame_ids"],
+                            "soft_frame_ids": list(frame_audit.get("soft_frame_ids") or []),
                             "required_asset_coverage": frame_audit["required_asset_coverage"],
+                            "released_with_warnings": bool(
+                                frame_audit.get("released_with_warnings")
+                            ),
+                        },
+                        "semantic_review": {
+                            "enabled": bool(semantic_review.get("enabled")),
+                            "passed": bool(semantic_review.get("passed")),
+                            "failed_frame_ids": list(semantic_review.get("failed_frame_ids") or []),
+                            "uncertain_frame_ids": list(semantic_review.get("uncertain_frame_ids") or []),
+                            "recheck_used": bool(semantic_review.get("recheck_used")),
+                        },
+                        "layout_review": {
+                            "enabled": bool(layout_review.get("enabled")),
+                            "passed": bool(layout_review.get("passed")),
+                            "resegmented": bool(layout_repack.get("resegmented")),
+                            "source_dimensions": list(layout_repack.get("source_dimensions") or []),
+                            "failed_frame_ids": list(layout_review.get("failed_frame_ids") or []),
+                            "uncertain_frame_ids": list(layout_review.get("uncertain_frame_ids") or []),
                         },
                     }
                 )
-                if frame_audit["failed_frame_ids"]:
-                    logs.append(
-                        f"{item.key}: frame audit flagged {len(frame_audit['failed_frame_ids'])} cell(s); "
-                        "only failed semantic frames should be regenerated"
-                    )
                 logs.append(
                     f"{item.key}: normalized to {SHEET_SIZE}px spritesheet "
                     f"({SHEET_GRID}x{SHEET_GRID} grid, {len(item.sheet_cells)} named frames, "
                     f"{len(item.sheet_groups)} animated actor(s))"
                 )
+            except AssetGenerationRetryRequired:
+                # 失败路径不返回 result,logs 列表会整体丢失——第十二轮取证时
+                # 12 分钟的修复轨迹在 worker 日志里完全不可见。暂停前落盘尾部。
+                logger.warning(
+                    "%s paused before release; stage log tail:\n%s",
+                    item.key,
+                    "\n".join(logs[-30:]),
+                )
+                raise
+            except AssetSemanticReviewError as exc:
+                raise AssetGenerationRetryRequired(
+                    f"Image asset '{item.key}' could not complete required semantic review: "
+                    f"{_clip_text(exc, 220)}. Generation is paused; waiting for manual retry."
+                ) from exc
             except Exception as exc:  # noqa: BLE001 —— invalid generated image requires manual retry
                 raise AssetGenerationRetryRequired(
                     f"Image asset '{item.key}' was generated but could not be normalized as a spritesheet: "
@@ -1586,7 +1307,17 @@ def generate_game_assets(state: dict, router: ProviderRouter | None = None) -> d
         )
         logs.append(f"{item.key}: generated {item.modality} via {media.provider}/{media.model}")
 
-    if tilemap_wanted:
+    if tilemap_wanted and carried_tilemap_entries:
+        # tileset prompt 未变且工件齐全:整族(tileset+tilemap)原样复用,
+        # 程序化 tilemap 由同一 seed 决定,与被复用的 tileset 保持一致。
+        for entry in carried_tilemap_entries:
+            artifact = _entry_artifact(entry, prev_artifacts)
+            artifacts.append(dict(artifact or {}))
+            manifest_entries.append(json.loads(json.dumps(entry)))
+        logs.append(
+            f"tilemap: reused {len(carried_tilemap_entries)} unchanged tileset/tilemap asset(s)"
+        )
+    elif tilemap_wanted:
         archetype = str(spec.get("archetype") or "")
         tileset_png: bytes | None = None
         tileset_provider, tileset_model = "procedural", "palette"
@@ -1772,7 +1503,12 @@ def generate_game_assets(state: dict, router: ProviderRouter | None = None) -> d
         "manifest_entries": manifest_entries,
         "logs": logs,
         "asset_trace": asset_trace,
+        "asset_generation_gate": {
+            "status": "passed",
+            "required_frame_audit": "passed",
+            "semantic_review": "enabled" if settings.ASSET_SEMANTIC_REVIEW_ENABLED else "disabled",
+        },
         "sprite_demand_manifest": sprite_demand_payload,
-        "asset_request_count": len(planned)
-        + (1 if tilemap_wanted and settings.ASSET_GENERATION_ENABLED else 0),
+        "asset_request_count": len(to_generate)
+        + (1 if tileset_generation_wanted and settings.ASSET_GENERATION_ENABLED else 0),
     }

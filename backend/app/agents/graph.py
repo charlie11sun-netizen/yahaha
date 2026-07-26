@@ -65,7 +65,7 @@ def build_graph(*, checkpointer=None):
     g.add_conditional_edges(
         "asset_generation",
         nodes.should_continue_after_asset_generation,
-        {"code_generation": "code_generation", "code_revision": "code_revision"},
+        {"code_generation": "code_generation", "code_revision": "code_revision", "failed": "failed"},
     )
     g.add_edge("code_generation", "project_build")
     g.add_edge("project_build", "build_validation")

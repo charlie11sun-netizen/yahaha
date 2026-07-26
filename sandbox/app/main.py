@@ -330,6 +330,48 @@ async def _capture_page(page: Page, prefer: str | None = None) -> tuple[bytes | 
     return None, "; ".join(errors)[:300], ""
 
 
+def _playwright_key_from_probe(name: object) -> str | None:
+    """Translate a Phaser KeyCodes name into a safe Playwright key."""
+
+    raw = str(name or "").strip().upper()
+    aliases = {
+        "UP": "ArrowUp",
+        "DOWN": "ArrowDown",
+        "LEFT": "ArrowLeft",
+        "RIGHT": "ArrowRight",
+        "SPACE": "Space",
+        "ENTER": "Enter",
+        "RETURN": "Enter",
+        "ESC": "Escape",
+        "ESCAPE": "Escape",
+        "SHIFT": "Shift",
+        "CTRL": "Control",
+        "CONTROL": "Control",
+        "ALT": "Alt",
+        "TAB": "Tab",
+        "BACKSPACE": "Backspace",
+    }
+    digit_names = {
+        "ZERO": "0",
+        "ONE": "1",
+        "TWO": "2",
+        "THREE": "3",
+        "FOUR": "4",
+        "FIVE": "5",
+        "SIX": "6",
+        "SEVEN": "7",
+        "EIGHT": "8",
+        "NINE": "9",
+    }
+    if raw in aliases:
+        return aliases[raw]
+    if raw in digit_names:
+        return digit_names[raw]
+    if len(raw) == 1 and raw.isalnum():
+        return raw.lower()
+    return None
+
+
 async def _simulate_game_inputs(page: Page) -> tuple[list[str], list[str], list[str]]:
     sent: list[str] = []
     start_attempts: list[str] = []
@@ -354,12 +396,136 @@ async def _simulate_game_inputs(page: Page) -> tuple[list[str], list[str], list[
     except (PlaywrightError, KeyError, TypeError, ValueError) as exc:
         errors.append(f"pointer: {' '.join(str(exc).split())[:240]}")
 
-    for key in ("Enter", "Space", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "a", "d", "w", "s"):
+    for key in ("Enter", "Space"):
         action = f"keyboard:{key}"
-        if key in {"Enter", "Space"}:
-            start_attempts.append(action)
+        start_attempts.append(action)
         try:
             await page.keyboard.press(key, delay=35)
+            sent.append(action)
+        except PlaywrightError as exc:
+            errors.append(f"{action}: {' '.join(str(exc).split())[:240]}")
+
+    # Canvas games frequently use an in-canvas map/character/difficulty menu,
+    # so center-click + Enter/Space never reaches their core loop. The Phaser
+    # scaffold exposes live interactive objects; explore a bounded set of their
+    # current centers without depending on labels, language, or game genre.
+    # Re-query between attempts because each click can replace the current
+    # menu with the next selection screen. A page-local WeakSet ensures every
+    # attempt explores a distinct live control without retaining game objects.
+    for round_index in range(6):
+        try:
+            target = await page.evaluate(
+                """() => {
+                  const canvases = [...document.querySelectorAll('canvas')]
+                    .map((canvas) => ({ canvas, rect: canvas.getBoundingClientRect() }))
+                    .filter(({ rect }) => rect.width > 0 && rect.height > 0)
+                    .sort((a, b) => (b.rect.width * b.rect.height) - (a.rect.width * a.rect.height));
+                  const chosen = canvases[0];
+                  if (!chosen) return null;
+                  const raw = Array.isArray(window.__GW_INTERACTIVE_TARGETS__)
+                    ? window.__GW_INTERACTIVE_TARGETS__
+                    : [];
+                  if (!(window.__GW_QA_CLICKED_TARGETS__ instanceof WeakSet)) {
+                    window.__GW_QA_CLICKED_TARGETS__ = new WeakSet();
+                  }
+                  const clicked = window.__GW_QA_CLICKED_TARGETS__;
+                  const projected = [];
+                  for (const object of raw.slice(0, 80)) {
+                    try {
+                      const scene = object?.scene;
+                      if (clicked.has(object)) continue;
+                      if (!object || object.active === false || object.visible === false) continue;
+                      if (!object.input || object.input.enabled === false) continue;
+                      if (!scene?.sys?.isActive?.()) continue;
+                      const bounds = object.getBounds?.();
+                      if (!bounds || bounds.width <= 1 || bounds.height <= 1) continue;
+                      const camera = scene.cameras?.main;
+                      const fixed = object.scrollFactorX === 0 && object.scrollFactorY === 0;
+                      const zoom = Number(camera?.zoom || 1);
+                      const gameWidth = Number(scene.scale?.width || chosen.canvas.width || 1);
+                      const gameHeight = Number(scene.scale?.height || chosen.canvas.height || 1);
+                      let gameX = Number(bounds.centerX);
+                      let gameY = Number(bounds.centerY);
+                      if (!fixed && camera) {
+                        gameX = (gameX - Number(camera.scrollX || 0)) * zoom + Number(camera.x || 0);
+                        gameY = (gameY - Number(camera.scrollY || 0)) * zoom + Number(camera.y || 0);
+                      }
+                      const x = chosen.rect.left + (gameX / gameWidth) * chosen.rect.width;
+                      const y = chosen.rect.top + (gameY / gameHeight) * chosen.rect.height;
+                      if (
+                        Number.isFinite(x) && Number.isFinite(y)
+                        && x >= chosen.rect.left && x <= chosen.rect.right
+                        && y >= chosen.rect.top && y <= chosen.rect.bottom
+                      ) {
+                        projected.push({
+                          object,
+                          x,
+                          y,
+                          depth: Number(object.depth || 0),
+                          area: Number(bounds.width * bounds.height),
+                        });
+                      }
+                    } catch {}
+                  }
+                  projected.sort((a, b) => b.depth - a.depth || b.y - a.y || b.area - a.area);
+                  const target = projected[0];
+                  if (!target) return null;
+                  clicked.add(target.object);
+                  return { x: target.x, y: target.y };
+                }"""
+            )
+            if not isinstance(target, dict):
+                break
+            action = f"pointer:interactive-hold-{round_index + 1}"
+            start_attempts.append(action)
+            await page.mouse.move(float(target["x"]), float(target["y"]))
+            await page.mouse.down()
+            await page.wait_for_timeout(220)
+            await page.mouse.up()
+            sent.append(action)
+            await page.wait_for_timeout(120)
+        except (PlaywrightError, KeyError, TypeError, ValueError) as exc:
+            errors.append(f"pointer:interactive: {' '.join(str(exc).split())[:240]}")
+            break
+
+    registered_keys: list[str] = []
+    try:
+        raw_keys = await page.evaluate(
+            """() => Object.keys(window.__GW_PROBES__?.counts || {})
+              .filter((key) => key.startsWith("key:registered|"))
+              .map((key) => key.split("|", 2)[1])
+              .slice(0, 20)"""
+        )
+        if isinstance(raw_keys, list):
+            registered_keys = [
+                mapped
+                for item in raw_keys
+                if (mapped := _playwright_key_from_probe(item)) is not None
+            ]
+    except PlaywrightError as exc:
+        errors.append(f"keyboard:discover: {' '.join(str(exc).split())[:240]}")
+
+    keys_to_try: list[str] = []
+    for key in registered_keys + [
+        "Space",
+        "ArrowLeft",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowDown",
+        "a",
+        "d",
+        "w",
+        "s",
+    ]:
+        if key not in keys_to_try:
+            keys_to_try.append(key)
+
+    for key in keys_to_try[:16]:
+        action = f"keyboard-hold:{key}"
+        try:
+            await page.keyboard.down(key)
+            await page.wait_for_timeout(180)
+            await page.keyboard.up(key)
             sent.append(action)
         except PlaywrightError as exc:
             errors.append(f"{action}: {' '.join(str(exc).split())[:240]}")

@@ -1,8 +1,9 @@
 "use client";
 
-import { Check, Circle, Gamepad2, Images } from "lucide-react";
+import { Check, Circle, ExternalLink, Gamepad2, Images } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { getGameplayQaStatus, gameplayRuntimeLabel, isActiveTask } from "../_lib/create-progress";
 import { formatRelative } from "../_lib/create-time";
@@ -11,10 +12,12 @@ import type { GeneratedTaskAsset, Task } from "@/lib/types";
 export function PreviewCard({
   generatedAssets,
   now,
+  onOpenAssets,
   task,
 }: {
   generatedAssets: GeneratedTaskAsset[];
   now: number;
+  onOpenAssets?: () => void;
   task?: Task;
 }) {
   const succeeded = task?.status === "succeeded" && task.game;
@@ -50,12 +53,16 @@ export function PreviewCard({
     <Card className="gap-0 overflow-hidden rounded-xl border-slate-200/90 bg-white py-0 shadow-sm">
       <CardHeader className="border-b border-slate-200 px-5 py-4">
         <CardTitle className="flex items-center justify-between font-display text-lg text-slate-950">
-          {assetsAvailable && !previewAvailable ? `Generated assets (${generatedAssets.length})` : "Preview"}
-          {assetsAvailable && !previewAvailable ? (
-            <Images size={18} className="text-indigo-500" />
-          ) : (
-            <Gamepad2 size={18} className="text-slate-400" />
-          )}
+          <span className="inline-flex min-w-0 items-center gap-2">
+            {assetsAvailable && !previewAvailable ? `Generated assets (${generatedAssets.length})` : "Preview"}
+            {assetsAvailable && !previewAvailable ? <Images size={18} className="shrink-0 text-indigo-500" /> : <Gamepad2 size={18} className="shrink-0 text-slate-400" />}
+          </span>
+          {assetsAvailable && onOpenAssets ? (
+            <Button className="h-auto shrink-0 rounded-lg px-2 py-1 text-xs font-semibold text-indigo-700" onClick={onOpenAssets} type="button" variant="ghost">
+              Inspect assets
+              <ExternalLink size={14} />
+            </Button>
+          ) : null}
         </CardTitle>
       </CardHeader>
 
@@ -113,8 +120,25 @@ function GeneratedAssetGallery({ assets }: { assets: GeneratedTaskAsset[] }) {
     <div className="grid aspect-[16/10] grid-cols-2 auto-rows-[minmax(140px,1fr)] gap-3 overflow-y-auto bg-slate-50 p-4">
       {assets.map((asset, index) => (
         (() => {
-          const audit = asset.frame_audit as { passed?: boolean; failed_frame_ids?: string[] } | undefined;
+          const audit = asset.frame_audit as {
+            passed?: boolean;
+            released_with_warnings?: boolean;
+            required_asset_coverage?: number;
+            failed_frame_ids?: string[];
+            soft_frame_ids?: string[];
+          } | undefined;
           const failedFrames = audit?.failed_frame_ids?.length ?? 0;
+          const softFrames = audit?.soft_frame_ids?.length ?? 0;
+          const coverage = typeof audit?.required_asset_coverage === "number" ? `${Math.round(audit.required_asset_coverage * 100)}% coverage` : null;
+          const auditLabel = failedFrames
+            ? `${failedFrames} audit flags`
+              : audit?.released_with_warnings
+                ? "Released with warnings"
+              : audit?.passed === false
+                ? "Audit needs review"
+                : audit?.passed
+                  ? "Audited"
+                  : asset.kind;
           return (
         <figure
           className={cn(
@@ -135,8 +159,14 @@ function GeneratedAssetGallery({ assets }: { assets: GeneratedTaskAsset[] }) {
                 <span className="ml-1 font-normal text-slate-300">· {asset.semantic_ids.length} semantic frames</span>
               ) : null}
             </span>
-            <span className={cn("shrink-0 text-[10px] uppercase tracking-wide", failedFrames ? "text-amber-300" : "text-slate-300")}>
-              {failedFrames ? `${failedFrames} audit flags` : asset.kind}
+            <span
+              className={cn(
+                "shrink-0 text-[10px] uppercase tracking-wide",
+                failedFrames || audit?.released_with_warnings || audit?.passed === false ? "text-amber-300" : "text-slate-300",
+              )}
+              title={[auditLabel, coverage, softFrames ? `${softFrames} soft flags` : null].filter(Boolean).join(" · ")}
+            >
+              {auditLabel}
             </span>
           </figcaption>
         </figure>

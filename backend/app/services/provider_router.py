@@ -157,6 +157,37 @@ class LocalPlaceholderAdapter:
         raise ProviderGenerationError("local provider does not synthesize video")
 
 
+def _sticky_session_header() -> dict[str, str]:
+    """sub2api-style gateways route media calls to upstream accounts only by
+    explicit session signals (header session_id / conversation_id); without one
+    every image call may land on a different subscription account. Real OpenAI
+    ignores the header, so sending it is always safe."""
+    try:
+        from app.core.telemetry import get_context
+
+        task_scope = str(get_context().get("task_id") or "").replace("-", "")[:12]
+    except Exception:  # noqa: BLE001 - affinity is best-effort, never fatal
+        return {}
+    if not task_scope:
+        return {}
+    return {"session_id": f"gameweave:assets:{task_scope}"}
+
+
+def _response_detail(response: httpx.Response | None) -> str:
+    """Extract a compact upstream error body; httpx omits it from str(exc)."""
+    if response is None:
+        return ""
+    try:
+        response.read()
+    except Exception:  # noqa: BLE001 - diagnostics only
+        pass
+    try:
+        text = response.text
+    except Exception:  # noqa: BLE001 - diagnostics only
+        return ""
+    return " ".join((text or "").split())[:300]
+
+
 class OpenAICompatibleAdapter:
     """Small HTTP adapter for OpenAI-style media endpoints."""
 
@@ -168,7 +199,7 @@ class OpenAICompatibleAdapter:
 
     def generate(self, request: MediaRequest, config: ProviderConfig) -> GeneratedMedia:
         base = config.base_url.rstrip("/")
-        headers = {"Authorization": f"Bearer {config.api_key}"}
+        headers = {"Authorization": f"Bearer {config.api_key}", **_sticky_session_header()}
         if request.modality == "image":
             payload = {
                 "model": config.model,
@@ -222,6 +253,12 @@ class OpenAICompatibleAdapter:
                 timeout=settings.ASSET_PROVIDER_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = _response_detail(exc.response)
+            suffix = f" | body: {detail}" if detail else ""
+            raise ProviderGenerationError(
+                f"{request.modality} provider request failed: {exc}{suffix}"
+            ) from exc
         except httpx.HTTPError as exc:
             raise ProviderGenerationError(f"{request.modality} provider request failed: {exc}") from exc
         return self._decode_response(response, request.modality, config)
@@ -269,6 +306,10 @@ class OpenAICompatibleAdapter:
             raise
         except ProviderGenerationError:
             raise
+        except httpx.HTTPStatusError as exc:
+            detail = _response_detail(exc.response)
+            suffix = f" | body: {detail}" if detail else ""
+            raise ProviderGenerationError(f"image provider stream failed: {exc}{suffix}") from exc
         except httpx.HTTPError as exc:
             raise ProviderGenerationError(f"image provider stream failed: {exc}") from exc
 
@@ -402,8 +443,7 @@ class ProviderRouter:
             self.adapters.update(adapters)
 
     @staticmethod
-    def resolve(modality: Modality) -> ProviderConfig | None:
-        prefix = f"ASSET_{modality.upper()}"
+    def _resolve_prefix(modality: Modality, prefix: str) -> ProviderConfig | None:
         provider = str(getattr(settings, f"{prefix}_PROVIDER", "") or "").strip().lower()
         if not provider:
             return None
@@ -418,8 +458,21 @@ class ProviderRouter:
             )
         return ProviderConfig(modality, provider, api_key, base_url, model or provider)
 
-    def generate(self, request: MediaRequest) -> GeneratedMedia:
-        config = self.resolve(request.modality)
+    @classmethod
+    def resolve(cls, modality: Modality) -> ProviderConfig | None:
+        return cls._resolve_prefix(modality, f"ASSET_{modality.upper()}")
+
+    @classmethod
+    def resolve_fallback(cls, modality: Modality) -> ProviderConfig | None:
+        """Optional second provider tried after the primary exhausts its retries.
+
+        Configured via ``ASSET_<MODALITY>_FALLBACK_PROVIDER/_API_KEY/_BASE_URL/
+        _MODEL``. Unset → no failover (single-provider behavior unchanged).
+        """
+        return cls._resolve_prefix(modality, f"ASSET_{modality.upper()}_FALLBACK")
+
+    def generate(self, request: MediaRequest, config: ProviderConfig | None = None) -> GeneratedMedia:
+        config = config or self.resolve(request.modality)
         if config is None:
             raise ProviderConfigurationError(f"no {request.modality} provider configured")
         adapter = self.adapters.get(config.provider)

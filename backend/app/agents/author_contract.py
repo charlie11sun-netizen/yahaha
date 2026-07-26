@@ -11,7 +11,7 @@ from typing import Iterable, Literal
 from pydantic import BaseModel, ConfigDict
 
 from app.agents.planning_spec import structured_text
-from app.agents.validation import FORBIDDEN_PATTERNS
+from app.generation.source_policy import FORBIDDEN_PATTERNS
 from .author_prompts import (
     _ACCEPTANCE_EVIDENCE_PATH,
     _AUTHOR_CONTRACT_PATH,
@@ -321,6 +321,43 @@ def _fallback_contract(spec: dict, design: dict) -> dict:
             "verification": "Use the primary controls and observe HUD plus audiovisual feedback update.",
         },
         {
+            "id": "REQ-PRESENTATION-LEGIBILITY",
+            "owner": "PresentationAndInteractionCoder",
+            "requirement": (
+                "At a compact 840x470 CSS-pixel embed (or the smaller supported runtime view), "
+                "essential HUD, objectives, instructions, choices, prices, controls, pause/restart, "
+                "and win/loss text remain at least 16 effective CSS px for primary text and 14 for "
+                "secondary text after canvas, object, and ancestor-container scaling. Essential text "
+                "stays inside safe margins without clipping or overlap, and wrapped panels grow, "
+                "reflow, or paginate to fit."
+            ),
+            "observable": (
+                "Every normal game state is understandable without zooming, including compact "
+                "embedded play, dense translated text, and transient prompts."
+            ),
+            "verification": (
+                "Compute cssScale=min(840/canvasWidth,470/canvasHeight,1) and "
+                "effectivePx=declaredFontPx*allObjectAndContainerScales*cssScale; inspect start, "
+                "active play, pause/choice, and terminal states for thresholds, clipping, and overlap."
+            ),
+        },
+        {
+            "id": "REQ-PRESENTATION-PRODUCTION-UI",
+            "owner": "PresentationAndInteractionCoder",
+            "requirement": (
+                "Published player-visible copy describes game state, choices, consequences, and controls "
+                "without exposing collision pixels, coordinates, rule-layer/physics/state-machine prose, "
+                "Probe/QA/debug labels, acceptance arithmetic, or developer instructions."
+            ),
+            "observable": (
+                "Start, play, pause, and terminal screens read like a finished game rather than a test harness."
+            ),
+            "verification": (
+                "Inspect every reachable runtime text state with the production debug flag false and confirm "
+                "that implementation diagnostics remain in Probe only."
+            ),
+        },
+        {
             "id": "REQ-RULES-WIN",
             "owner": "RulesAndSimulationCoder",
             "requirement": f"Win condition is reachable: {spec.get('win_condition') or (design.get('rules') or {}).get('win') or 'design-defined win'}",
@@ -341,6 +378,25 @@ def _fallback_contract(spec: dict, design: dict) -> dict:
             "requirement": "Restart works without reloading the page.",
             "observable": "A completed run can start a fresh playable state from the UI or bound control.",
             "verification": "Finish or fail a run, restart, and observe reset state and active input.",
+        },
+        {
+            "id": "REQ-INTEGRATION-ENTITY-LIFECYCLE",
+            "owner": "IntegrationAgent",
+            "requirement": (
+                "Every resolved transient entity carries one stable id from rules to integration; pickups, "
+                "consumables, projectiles, defeated actors, spent cards, destroyed objects, and one-shot "
+                "triggers remove or deactivate their renderer plus collision/input body in the same logical "
+                "tick, leave future interaction queries, and then emit Probe.despawn."
+            ),
+            "observable": (
+                "Resolved entities disappear, transform, or become inactive exactly once and cannot be "
+                "seen, collided with, selected, or collected again."
+            ),
+            "verification": (
+                "Resolve each applicable transient entity, correlate its stable id through the rules result, "
+                "scene collection, render/physics transition, and Probe.despawn, then verify a later tick "
+                "cannot process it again."
+            ),
         },
     ]
     twist = design.get("signature_twist")
@@ -416,7 +472,11 @@ def _fallback_contract(spec: dict, design: dict) -> dict:
                 "responsibility": "input and presentation",
                 "exports": ["GameInputAdapter", "GameHudView"],
                 "depends_on": ["GameSimulationState"],
-                "acceptance_ids": ["REQ-PRESENTATION-FEEDBACK"],
+                "acceptance_ids": [
+                    "REQ-PRESENTATION-FEEDBACK",
+                    "REQ-PRESENTATION-LEGIBILITY",
+                    "REQ-PRESENTATION-PRODUCTION-UI",
+                ],
             },
             {
                 "owner": "IntegrationAgent",
@@ -428,7 +488,10 @@ def _fallback_contract(spec: dict, design: dict) -> dict:
                     "GameInputAdapter",
                     "GameHudView",
                 ],
-                "acceptance_ids": ["REQ-INTEGRATION-RESTART"],
+                "acceptance_ids": [
+                    "REQ-INTEGRATION-RESTART",
+                    "REQ-INTEGRATION-ENTITY-LIFECYCLE",
+                ],
             },
         ],
         "integration_order": [
@@ -468,6 +531,40 @@ def _fallback_contract(spec: dict, design: dict) -> dict:
         module["acceptance_ids"].append(row["id"])
         if export and export not in module["exports"]:
             module["exports"].append(export)
+    interaction_profiles = (
+        list(design.get("interaction_profiles") or [])[:8]
+        if isinstance(design.get("interaction_profiles"), list)
+        else []
+    )
+    for index, profile in enumerate(interaction_profiles, start=1):
+        if not isinstance(profile, dict):
+            continue
+        action = structured_text(
+            profile.get("required_action") or profile.get("id") or f"interaction {index}",
+            limit=120,
+        )
+        profile_id = structured_text(profile.get("id") or action, limit=120)
+        add_acceptance({
+            "id": f"REQ-INTERACTION-{index:02d}",
+            "owner": "IntegrationAgent",
+            "requirement": (
+                f"Interaction profile {profile_id} ({action}) is one shared source for visible anchor/envelope, "
+                "collision or interaction envelope, input semantics, activation/clearance/timing, and resolution "
+                "lifecycle; spatial outcomes consume both subject and target extents rather than a center-line "
+                "crossing plus a semantic label. Duration-bound actions quantify earliest/latest useful "
+                "activation, worst-case target occupancy, action duration or hold behavior, recovery, and cue timing."
+            ),
+            "observable": (
+                f"The {action} target looks distinct, the advertised action is visibly feasible, and both "
+                "success and failure match the rendered bodies."
+            ),
+            "verification": (
+                f"Exercise {action} inside and outside its useful window; observe Probe.action, Probe.window, "
+                "and Probe.outcome success/failure, then trace input, cue timing, rendering, "
+                "overlap/bounds/swept-window resolution, and any terminal target transition to the same "
+                "content-owned interaction profile."
+            ),
+        }, integration, "InteractionProfileAdapter")
     if mentions("save", "persistence", "存档", "保存"):
         add_acceptance({
             "id": "REQ-PRESENTATION-PERSISTENCE",
@@ -555,6 +652,48 @@ def _repair_contract(raw: dict | None, spec: dict, design: dict) -> tuple[dict, 
         for item in modules
         if isinstance(item, dict) and str(item.get("owner"))
     }
+    # Prompt-only quality requirements are too easy for an otherwise valid
+    # model contract to omit. Keep this small, genre-neutral baseline in the
+    # deterministic contract policy so QA remains a safety net instead of the
+    # normal place where compact-layout arithmetic is discovered.
+    mandatory_ids = (
+        "REQ-PRESENTATION-LEGIBILITY",
+        "REQ-PRESENTATION-PRODUCTION-UI",
+        "REQ-INTEGRATION-ENTITY-LIFECYCLE",
+        *(
+            str(item.get("id"))
+            for item in fallback["acceptance"]
+            if isinstance(item, dict)
+            and str(item.get("id") or "").startswith("REQ-INTERACTION-")
+        ),
+    )
+    fallback_acceptance = {
+        str(item.get("id") or ""): item
+        for item in fallback["acceptance"]
+        if isinstance(item, dict)
+    }
+    acceptance_by_id = {
+        str(item.get("id") or ""): index
+        for index, item in enumerate(acceptance)
+        if isinstance(item, dict)
+    }
+    for acceptance_id in mandatory_ids:
+        baseline = json.loads(json.dumps(fallback_acceptance[acceptance_id]))
+        if acceptance_id in acceptance_by_id:
+            index = acceptance_by_id[acceptance_id]
+            if acceptance[index] != baseline:
+                acceptance[index] = baseline
+                fixes.append(f"normalized mandatory acceptance {acceptance_id}")
+        else:
+            acceptance.insert(0, baseline)
+            fixes.append(f"injected mandatory acceptance {acceptance_id}")
+        owner = str(baseline["owner"])
+        owner_module = by_owner.get(owner)
+        if owner_module is not None:
+            owner_ids = owner_module.setdefault("acceptance_ids", [])
+            if acceptance_id not in owner_ids:
+                owner_ids.insert(0, acceptance_id)
+                fixes.append(f"attached mandatory acceptance {acceptance_id} to {owner}")
     covered = {
         str(identifier)
         for module in modules
@@ -820,6 +959,8 @@ def _compact_brief(spec: dict, design: dict) -> dict:
     # 换算好的像素版,LevelLayout.ts 直接消费)。
     if design.get("level_layout"):
         brief["level_layout"] = design["level_layout"]
+    if isinstance(design.get("interaction_profiles"), list):
+        brief["interaction_profiles"] = list(design["interaction_profiles"])[:24]
     return brief
 
 

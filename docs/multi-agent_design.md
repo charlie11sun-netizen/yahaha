@@ -1,7 +1,9 @@
 # AI Native 互动游戏平台 Multi-Agent 设计文档
 
 > 本文档描述 `backend/app/agents/` 下的**真实实现**，与代码保持同步。关键节点附源码位置。
-> 上一版（模板优先、9 节点、仅 2D）的演进背景见 [gameweave_multiagent_gameplay_quality_redesign.md](gameweave_multiagent_gameplay_quality_redesign.md)（历史 RFC，记录从“可运行”到“可玩 + 可验证”的升级思路）。本文更新日期：2026-07-16。
+> 上一版（模板优先、9 节点、仅 2D）的演进背景见 [gameweave_multiagent_gameplay_quality_redesign.md](gameweave_multiagent_gameplay_quality_redesign.md)（历史 RFC，记录从“可运行”到“可玩 + 可验证”的升级思路）。本文更新日期：2026-07-26。
+>
+> 部分实现已上移为层中立包，`agents/` 下同名模块保留兼容别名（`sys.modules` 转发）：模型层在 `backend/app/llm/`（runtime/provider/cache/accounting），设计契约与预算在 `backend/app/generation/`（design_contract/limits/source_policy），trace 与 Opik 在 `backend/app/observability/`。
 
 ## 1. 背景与目标
 
@@ -46,7 +48,9 @@ Create 链路是本系统的核心。它不能只是普通 CRUD，也不能只�
 | **mock（默认）** | `USE_REAL_MODEL=false` 或无 `OPENAI_API_KEY` | 全程走确定性启发式（`_heuristic_*`），不调模型，离线可跑、可单测 |
 | **real** | `USE_REAL_MODEL=true` 且配置 `OPENAI_API_KEY` | 规划 / 设计 / 代码节点改为调用 OpenAI 兼容模型（默认 `MODEL_NAME=gpt-5.6-sol`，可配置），失败自动回退启发式 |
 
-模型层见 [`backend/app/agents/llm.py`](../backend/app/agents/llm.py)：换 provider / 模型只改 `.env` 的 `OPENAI_BASE_URL` / `MODEL_NAME`。real 模式下有两个可选增强开关：`CODE_AGENT_ENABLED` 把构建/修订修复升级为 Agents SDK 工具循环，`CODE_AGENT_AUTHOR_ENABLED` 为新 2D 项目启用有界 Author Team；两者默认关闭、失败自动回落。
+模型层见 [`backend/app/llm/runtime.py`](../backend/app/llm/runtime.py)（旧路径 `agents/llm.py` 为兼容别名）：换 provider / 模型只改 `.env` 的 `OPENAI_BASE_URL` / `MODEL_NAME`。real 模式下有两个可选增强开关：`CODE_AGENT_ENABLED` 把构建/修订修复升级为 Agents SDK 工具循环，`CODE_AGENT_AUTHOR_ENABLED` 为新 2D 项目启用有界 Author Team；两者默认关闭、失败自动回落。
+
+注意 `design_contract` / `contract_gate` 两个节点**不受 mock/real 开关影响**：契约编译与算术门禁是纯 Python 的确定性逻辑，两种模式下都会执行。
 
 ### 1.2 两种维度：2D Phaser/Vite 与 3D WebGL
 
@@ -93,7 +97,7 @@ ReAct 的典型模式是 `Thought → Action → Observation → …`，适合�
 
 ### 2.2 顶层采用固定 LangGraph Workflow
 
-顶层主干固定为（24 个功能节点 + `failed`/`done`，含 generation / revision / remix 分支与 memory 节点，见 [`graph.py`](../backend/app/agents/graph.py)）：
+顶层主干固定为（26 个功能节点 + `failed`/`done`，含 generation / revision / remix 分支与 memory 节点，见 [`graph.py`](../backend/app/agents/graph.py)）：
 
 ```text
 safety_intake
@@ -101,11 +105,13 @@ safety_intake
 → intent_spec
 → gameplay_planning
 → archetype_router
-→ asset_processing
-→ asset_generation
 → game_design
 → content_plan
 → balance_plan
+→ design_contract
+→ contract_gate
+→ asset_processing
+→ asset_generation
 → code_generation
 → project_build
 → build_validation
@@ -115,7 +121,12 @@ safety_intake
 → done
 ```
 
-外加 `feedback_understanding`、`code_revision`、`revision_repair`、`publish_revision`、`publish_remix`、`memory_update` 和三个修复/重规划节点；终态为 `failed` / `done`。
+外加 `feedback_understanding`、`code_revision`、`revision_repair`、`publish_revision`、`publish_remix` 和三个修复/重规划节点（`repair_code`、`gameplay_repair`、`replan_game_design`）；终态为 `failed` / `done`。
+
+两处顺序值得注意，它们是这一版的关键约束：
+
+- **设计先于素材**：`design_contract` → `contract_gate` 位于素材阶段之前。素材规划消费的是**冻结契约**派生出的 sprite 需求 manifest，而不是可变的设计草稿，避免作者裸猜语义导致图文不符。
+- **契约门禁是唯一授权点**：`design_contract` 只产出草稿，只有 `contract_gate` 能把它提升为执行权威（校验 → 冻结 → 计算 `contract_hash` → 派生只读视图）。契约缺口（`contract_gap`）或超范围（`scope_exceeded`）直接进 `failed`，不进入生成。
 
 固定主干保证：生成稳定可复现；安全检查、构建校验、玩法 QA、对象存储上传不会被跳过；每一步都写 `AgentStep` + `AgentLog`；前端可展示步骤流；失败后可定位具体节点；最终产物符合 Play Runtime 协议。
 
@@ -130,15 +141,17 @@ ArchetypeRouterAgent = Plan  —— 锁定受支持的玩法原型（2D/3D 不�
 GameDesignAgent      = Plan  —— 原型 → 具体可执行设计（实体 / 规则 / 波次 / boss）
 ContentPlanAgent     = Plan  —— 设计 → 关卡内容（教学 / 波次 / 道具铺排）
 BalanceAgent         = Plan  —— 设计 → 数值（时长 / 目标分 / 生命 / 刷新 / QA 阈值）
+DesignContractCompilerAgent = Freeze —— 把上述规划确定性编译为 DesignContract 草稿（实体 / 系统 / 需求 / 验收项 / win_feasibility_ledger），不调模型
+ContractGateAgent    = Gate  —— 纯算术可行性校验后冻结契约，派生 design/spec/sprite 只读视图（确定性）
 GameCodeAgent        = Execute —— 2D 内部有界作者团队产出模块化 Phaser/Vite/TypeScript 工程；3D 产出自托管 Three.js bundle
 PublishArtifactAgent = Execute —— 上传产物 + 写库（确定性，不调模型）
 MemoryRetrievalAgent = Context —— 先读取 active Memory Profiles，再通过 BM25 + embedding + RRF 检索原始证据（embedding 不可用时退化为 BM25）
 MemoryUpdateAgent    = Context —— Preview / Revision 成功后写入原始证据；真实模型启用时建议结构化 claim，确定性状态机完成 candidate/active/supersede 和效用反馈
 ```
 
-Plan-and-Execute 只用于局部游戏生成，不控制系统级流程。Planner 可以决定“这是一个 2D 躲避类游戏、玩家是飞船、胜利条件是存活”，但**不能**决定“是否跳过安全检查 / 构建校验 / 玩法 QA / 直接发布 / 访问后端密钥”。
+Plan-and-Execute 只用于局部游戏生成，不控制系统级流程。Planner 可以决定“这是一个 2D 躲避类游戏、玩家是飞船、胜利条件是存活”，但**不能**决定“是否跳过安全检查 / 契约门禁 / 构建校验 / 玩法 QA / 直接发布 / 访问后端密钥”。
 
-> 与历史版本相比：原 9 节点设计里只有 `intent_spec → game_design` 两段规划；现实现使用 6 段规划（`intent → gameplay planning → archetype → design → content → balance`），其中简报扩展与机制规划在一次模型调用中产出两个结构化结果。
+> 与历史版本相比：原 9 节点设计里只有 `intent_spec → game_design` 两段规划；现实现使用 6 段规划（`intent → gameplay planning → archetype → design → content → balance`）后接一道确定性契约编译与冻结（`design_contract → contract_gate`），其中简报扩展与机制规划在一次模型调用中产出两个结构化结果。
 
 ### 2.4 局部使用两个 bounded ReAct repair loop
 
@@ -284,11 +297,13 @@ flowchart TD
 | `intent_spec`        | IntentSpecAgent             | 自然语言 → 结构化 GameSpec     |
 | `gameplay_planning`  | GameplayPlanningAgent       | 一次生成可玩简报与具体机制           |
 | `archetype_router`   | ArchetypeRouterAgent        | 锁定受支持的玩法原型（2D/3D）       |
-| `asset_processing`   | AssetAgent                  | 处理上传素材，生成 AssetManifest |
-| `asset_generation`   | AssetGenerationAgent        | 按开关生成图片/音频/视频/tileset 素材 |
 | `game_design`        | GameDesignAgent             | 原型 → 具体游戏设计（2D/3D 提示词不同）|
 | `content_plan`       | ContentPlanAgent            | 设计 → 关卡内容（教学 / 波次 / 道具）  |
 | `balance_plan`       | BalanceAgent                | 设计 → 数值与 QA 阈值          |
+| `design_contract`    | DesignContractCompilerAgent | 确定性编译 DesignContract 草稿 + 契约 diff（不调模型） |
+| `contract_gate`      | ContractGateAgent           | 算术可行性校验 → 冻结契约 → 派生只读视图；失败即 `failed` |
+| `asset_processing`   | AssetAgent                  | 处理上传素材，生成 AssetManifest |
+| `asset_generation`   | AssetGenerationAgent        | 按开关生成图片/音频/视频/tileset 素材；逐 key 复用 + 增量重生成 |
 | `code_generation`    | GameCodeAgent               | 生成 2D Phaser/Vite/TS 源工程或 3D bundle |
 | `project_build`      | ProjectBuildAgent           | 在 sandbox 中执行 TypeScript/Vite 构建并打包 dist |
 | `build_validation`   | BuildValidateAgent          | 静态安全 / 完整性 / 体积 / manifest 校验 |
@@ -312,22 +327,35 @@ flowchart TD
   START([Start]) --> A[safety_intake]
   A -->|passed| M[memory_retrieval]
   A -->|rejected| X[failed]
-  M --> B[intent_spec]
+  M -->|generation| B[intent_spec]
+  M -->|revision / remix| FU[feedback_understanding]
 
   B --> GP[gameplay_planning] --> AR[archetype_router]
-  AR --> AS[asset_processing] --> D[game_design] --> CP[content_plan] --> BP[balance_plan]
-  BP --> E[code_generation] --> F[build_validation]
+  AR --> D[game_design] --> CP[content_plan] --> BP[balance_plan]
+  BP --> DC[design_contract]
+  FU --> DC
+  DC --> CG{contract_gate}
+  CG -->|contract_gap / scope_exceeded| X
+  CG -->|需要素材| AS[asset_processing]
+  CG -->|修订且无需新素材| CR[code_revision]
+  AS --> AG[asset_generation]
+  AG -->|generation| E[code_generation]
+  AG -->|revision| CR
+  E --> PB[project_build] --> F[build_validation]
+  CR --> PB
 
   F -->|valid| QA[gameplay_qa]
   F -->|invalid and repair left| R[repair_code]
-  R --> F
+  R --> PB
+  F -->|revision 失败| RR[revision_repair] --> PB
   F -->|invalid and no repair but replan left| RP[replan_game_design]
   F -->|invalid and no retry left| X
 
   QA -->|passed| G[publish_artifact]
   QA -->|failed and gameplay_repair left| GR[gameplay_repair]
-  GR -->|runtime patch applied| F
-  GR -->|balance repair| E
+  GR -->|runtime patch applied| PB
+  GR -->|balance repair| BP
+  GR -->|数值重生成| E
   QA -->|failed and no gameplay_repair but replan left| RP
   QA -->|failed and no retry left| X
 
@@ -336,27 +364,33 @@ flowchart TD
   MU --> H[done]
 ```
 
-关键回边：`repair_code → build_validation`、`gameplay_repair → build_validation`（运行时 patch）/ `gameplay_repair → code_generation`（数值重生成）、`replan_game_design → balance_plan`。
+关键回边：`repair_code → project_build`、`gameplay_repair → project_build`（运行时 patch）/ `→ balance_plan`（调数值）/ `→ code_generation`（数值重生成）、`revision_repair → project_build`、`replan_game_design → balance_plan`（因此 replan 会重新走一遍契约编译与门禁）。
 
 ### 4.3 状态流转（前端可见的步骤序列）
 
 ```text
 pending
 → running / safety_intake
+→ running / memory_retrieval
 → running / intent_spec
 → running / gameplay_planning
 → running / archetype_router
-→ running / asset_processing
 → running / game_design
 → running / content_plan
 → running / balance_plan
+→ running / design_contract
+→ running / contract_gate
+→ running / asset_processing
+→ running / asset_generation
 → running / code_generation
+→ running / project_build
 → running / build_validation
 → running / repair_code        (可选, ≤2)
 → running / gameplay_qa
 → running / gameplay_repair    (可选, ≤2)
 → running / replan_game_design (可选, ≤1, 回到 balance_plan)
 → running / publish_artifact
+→ running / memory_update
 → succeeded / done
 ```
 
@@ -371,37 +405,63 @@ pending
 ```python
 from typing import Any, Optional, TypedDict
 
-MAX_REPAIR = 2
-MAX_REPLAN = 1
-MAX_GAMEPLAY_REPAIR = 2
+from app.generation.limits import MAX_GAMEPLAY_REPAIR, MAX_REPAIR, MAX_REPLAN
 
 class GenerationState(TypedDict, total=False):
     task_id: str
     user_id: str
     use_real: bool
     dimension: str  # "2d" | "3d"
+    task_kind: str  # "generation" | "revision" | "remix"
+    contract_version: str; trace_contract_version: str
+    prompt_version: str; model: str; provider: str   # 决策链元数据
 
     status: str
     prompt: str
     normalized_prompt: str
+    source_feedback: str; feedback_brief: str
+    feedback_asset_impact: dict   # FeedbackUnderstandingAgent 的结构化资产影响判断
+    retrieved_memory_profiles: list; retrieved_memories: list; memory_context: str
+    base_game_id: str; base_version: str
+    existing_files: list; revision_result: dict
 
     asset_ids: list
     uploaded_assets: list
+    generated_assets: list        # AI 生成素材（逐 key 复用的真相源）
+    asset_trace: list
 
     safety_result: dict
     game_spec: dict
-    expanded_brief: dict       # GameplayPlanningAgent 的简报输出
-    mechanic_plan: dict        # GameplayPlanningAgent 的机制输出
-    archetype_result: dict     # ArchetypeRouterAgent 输出
+    expanded_brief: dict          # GameplayPlanningAgent 的简报输出
+    mechanic_plan: dict           # GameplayPlanningAgent 的机制输出
+    planning_transcript: Optional[list]   # 客户端会话链（网关无状态，显式重放消息）
+    planning_response_id: Optional[str]   # 账本血缘，从不外发
+    archetype_result: dict        # ArchetypeRouterAgent 输出
     asset_manifest: dict
+    sprite_demand_manifest: dict  # 语义 sprite 契约：设计状态→运行时消费者→图集帧
+    asset_batch_specs: dict; runtime_consumers: dict
     game_design: dict
-    content_plan: dict         # ContentPlanAgent 输出
-    balance_config: dict       # BalanceAgent 输出
+    content_plan: dict            # ContentPlanAgent 输出
+    balance_config: dict          # BalanceAgent 输出
 
-    generated_files: list      # [{"path": str, "content": str}]
+    # 冻结契约边界与只读派生视图：门禁通过后下游只消费这些字段
+    intent_record: dict
+    design_contract: dict
+    contract_hash: str; contract_revision: int
+    contract_diff: dict; contract_gate: dict; contract_error: str
+    design_execution_view: dict; spec_execution_view: dict
+    style_bible: dict; author_role_contracts: dict
+    acceptance_plan: dict; runtime_asset_requirements: dict
+
+    generated_files: list         # [{"path": str, "content": str}]
+    project_files: list
+    artifact_format: str
+    code_source: str              # "author" | "template" | "model" | "revision"
+    build_result: dict
     validation_result: dict
     gameplay_qa_result: dict
-    use_template_code: bool    # 2D replan 兜底：回到稳定的模块化 Phaser/Vite scaffold
+    gameplay_qa_feedback: Optional[list]  # QA 失败走整包重生成时的失因清单
+    use_template_code: bool       # replan 兜底：回退到模块化 scaffold
 
     repair_attempts: int
     replan_attempts: int
@@ -422,7 +482,7 @@ class GenerationState(TypedDict, total=False):
     _tokens_delta: int
 ```
 
-> 与文档历史版本相比：`max_repair_attempts` / `max_replan_attempts` 不再放进 State，而是模块常量 `MAX_REPAIR` / `MAX_REPLAN` / `MAX_GAMEPLAY_REPAIR`；新增 `use_real` / `dimension` / `expanded_brief` / `mechanic_plan` / `content_plan` / `balance_config` / `gameplay_qa_result` / `gameplay_repair_attempts` / `use_template_code` 及 `_agent` / `_logs` / `_tokens_delta` 流式字段。
+> 与文档历史版本相比：回环上限 `MAX_REPAIR` / `MAX_REPLAN` / `MAX_GAMEPLAY_REPAIR` 移至 `app/generation/limits.py`（`state.py` 转发）；新增契约域（`design_contract` / `contract_hash` / `contract_gate` / 各只读执行视图）、素材域（`generated_assets` / `sprite_demand_manifest` / `asset_batch_specs`）、修订域（`feedback_asset_impact` / `existing_files`）与规划会话链（`planning_transcript`）等字段。以 [`state.py`](../backend/app/agents/state.py) 为准。
 
 ---
 
@@ -468,16 +528,20 @@ GameSpec 关键字段：`title, summary, genre, theme, target_runtime, core_loop
 
 路由结果写回 `game_spec`（`archetype/genre/core_loop/tags`）+ `archetype_result`。
 
-### 6.5 AssetAgent (`asset_processing`)
+### 6.5 AssetAgent (`asset_processing`) 与 GameAssetGenerationAgent (`asset_generation`)
 
-从 DB 读取上传素材（`Asset`），生成轻量 `asset_manifest`：
+> 这两个节点现在位于 `contract_gate` **之后**执行：素材需求来自冻结契约派生的 `sprite_demand_manifest`，而不是可变设计草稿。
+
+`asset_processing` 从 DB 读取上传素材（`Asset`），生成轻量 `asset_manifest`：
 
 ```json
 { "cover": "<主题 CSS 渐变>", "assets": [{ "id": "...", "key": "<filename>", "type": "<kind>", "url": "<oss public url>", "source": "uploaded" }] }
 ```
 
 * `cover` 是按主题选的 CSS 渐变字符串（`_theme_cover`），**不是**生成的 cover.png。
-* 当前实现不做素材转码 / 默认素材合成 / `assets.json` 落 OSS——上传素材主要作为风格参考与 manifest 记录；游戏美术由 Coder 程序化绘制（2D）或用图元构建（3D）。
+* 上传素材主要作为风格参考与 manifest 记录，不做转码。
+
+`asset_generation` 在 `ASSET_GENERATION_ENABLED=true` 时调用图像/音频供应商生成游戏美术（雪碧图集、场景背景变体、可选 bgm）；关闭时游戏美术回落为 Coder 程序化绘制（2D）或图元构建（3D）。管线拆分在 `services/` 层：`asset_planning.py`（按契约需求排批次）、`sprite_pipeline.py`（图集帧组/manifest）、`asset_reuse.py`（repair/replan 后按 prompt hash 逐 key 复用、只增量重生成失效 key）、`asset_semantic_review.py`（可选 VLM 语义评审，`ASSET_SEMANTIC_REVIEW_*` 开关）、`asset_postprocess.py`（切帧/透明处理）。必需帧硬门禁 + 帧审计重试（`ASSET_FRAME_AUDIT_MAX_RETRIES`），整体覆盖率达 `ASSET_RELEASE_COVERAGE_FLOOR`（默认 0.8）可带伤放行；图像供应商持续 5xx 时走 `ASSET_IMAGE_FALLBACK_*` 兜底链。节点失败路由见 `should_continue_after_asset_generation`：门禁未过即 `failed`，否则按 task_kind 进入 `code_generation` 或 `code_revision`。
 
 ### 6.6 GameDesignAgent (`game_design`)
 
@@ -582,7 +646,12 @@ localStorage  |  sessionStorage  |  fetch(  |  XMLHttpRequest  |  WebSocket
 
 ### 6.13 GameplayRepairAgent (`gameplay_repair`)
 
-QA 硬失败且仍有次数时，调**更安全的数值**（`_repair_balance`：更长回合、更低目标分、加命；非 puzzle 还会提速玩家、降速障碍、拉长刷新间隔、降障碍上限），重置 `generated_files/validation_result/gameplay_qa_result`，回 `code_generation` 重生成。上限 `MAX_GAMEPLAY_REPAIR = 2`。
+QA 硬失败且仍有次数时先**分类失败**（`_classify_gameplay_failure`），再选修复路径（`next_after_gameplay_repair`）：
+
+* **运行时可 patch**（浏览器报错、输入无反馈等）：内层 agent 做最小代码 patch，保留产物回 `project_build` 复检——不整包重生成。
+* **数值/设计问题**：调**更安全的数值**（`_repair_balance`：更长回合、更低目标分、加命；非 puzzle 还会提速玩家、降速障碍、拉长刷新间隔、降障碍上限），清空 `generated_files/validation_result/gameplay_qa_result` 后回 `balance_plan`——数值变更会产生新的契约修订再重生成代码（无契约的旧状态保留直接回 `code_generation` 的旧路由）。
+
+上限 `MAX_GAMEPLAY_REPAIR = 2`。修复预算耗尽后并不自动 replan：只有失败被分类为 **design/可行性**问题才允许跨越设计契约边界进入 `replan_game_design`（实现/表现层 patch 预算用尽不构成"玩家设计错了"的证据）。
 
 ### 6.14 ReplanGameDesignNode (`replan_game_design`)
 
@@ -621,13 +690,34 @@ QA 硬失败且仍有次数时，调**更安全的数值**（`_repair_balance`�
 
 ## 7. LangGraph 编排代码
 
-### 7.1 条件边（[`nodes.py`](../backend/app/agents/nodes.py)）
+### 7.1 条件边（经 `nodes.py` 门面导出；实现分布在 `planning_nodes.py` / `validation_nodes.py` / `repair.py` / `memory.py`）
 
 ```python
-def should_continue_after_safety(state) -> str:
-    return "failed" if state.get("status") == "failed" else "intent_spec"
+def should_continue_after_safety(state) -> str:                # planning_nodes.py
+    return "failed" if state.get("status") == "failed" else "memory_retrieval"
 
-def should_continue_after_validation(state) -> str:
+def next_after_memory_retrieval(state) -> str:                 # memory.py
+    return "feedback_understanding" if state.get("task_kind") in {"revision", "remix"} else "intent_spec"
+
+def should_continue_after_contract_gate(state) -> str:         # planning_nodes.py
+    if state.get("task_kind") in {"revision", "remix"}:
+        if not (state.get("contract_gate") or {}).get("passed"):
+            return "failed"
+        # 修订是否重走素材由 feedback_asset_impact（回落契约 diff）决定
+        return "asset_processing" if (state.get("contract_diff") or {}).get("asset_impacted") else "code_revision"
+    return "asset_processing" if (state.get("contract_gate") or {}).get("passed") else "failed"
+
+def should_continue_after_asset_generation(state) -> str:      # planning_nodes.py
+    gate = state.get("asset_generation_gate") or {}
+    if gate and gate.get("status") not in {"passed", "disabled"}:
+        return "failed"
+    return "code_revision" if state.get("task_kind") in {"revision", "remix"} else "code_generation"
+
+def should_continue_after_validation(state) -> str:            # validation_nodes.py
+    if state.get("task_kind") in {"revision", "remix"}:
+        if (state.get("validation_result") or {}).get("valid"):
+            return "gameplay_qa"
+        return "revision_repair" if state.get("repair_attempts", 0) < MAX_REPAIR else "failed"
     if (state.get("validation_result") or {}).get("valid"):
         return "gameplay_qa"
     if state.get("repair_attempts", 0) < MAX_REPAIR:
@@ -636,14 +726,27 @@ def should_continue_after_validation(state) -> str:
         return "replan_game_design"
     return "failed"
 
-def should_continue_after_gameplay_qa(state) -> str:
+def should_continue_after_gameplay_qa(state) -> str:           # validation_nodes.py
+    if state.get("status") == "failed":
+        return "failed"
+    if state.get("task_kind") == "revision":   # remix 同构，仅发布目标不同
+        if (state.get("gameplay_qa_result") or {}).get("passed"):
+            return "publish_revision"
+        return "revision_repair" if state.get("repair_attempts", 0) < MAX_REPAIR else "failed"
     if (state.get("gameplay_qa_result") or {}).get("passed"):
         return "publish_artifact"
     if state.get("gameplay_repair_attempts", 0) < MAX_GAMEPLAY_REPAIR:
         return "gameplay_repair"
-    if state.get("replan_attempts", 0) < MAX_REPLAN:
+    # patch 预算耗尽 ≠ 设计错误：只有 design 类失败才允许跨契约边界 replan
+    failure_kind, _ = _classify_gameplay_failure(state.get("gameplay_qa_result") or {})
+    if failure_kind == "design" and state.get("replan_attempts", 0) < MAX_REPLAN:
         return "replan_game_design"
     return "failed"
+
+def next_after_gameplay_repair(state) -> str:                  # repair.py
+    if state.get("generated_files") or state.get("project_files"):
+        return "project_build"    # patch 路径：带修好的产物回门禁复检
+    return "balance_plan" if state.get("design_contract") else "code_generation"
 ```
 
 ### 7.2 图构建（[`graph.py`](../backend/app/agents/graph.py)）
@@ -654,7 +757,7 @@ from app.agents import nodes
 from app.agents.state import GenerationState
 from app.agents.tracing import logged
 
-def build_graph():
+def build_graph(checkpointer=None):
     g = StateGraph(GenerationState)
     # 每个节点用 logged() 包裹：开始写 running 步骤、结束翻 done（前端实时可见）
     g.add_node("safety_intake", logged("safety_intake")(nodes.safety_intake_node))
@@ -663,16 +766,25 @@ def build_graph():
     g.add_node("gameplay_planning", logged("gameplay_planning")(nodes.gameplay_planning_node))
     g.add_node("archetype_router", logged("archetype_router")(nodes.archetype_router_node))
     g.add_node("asset_processing", logged("asset_processing")(nodes.asset_processing_node))
+    g.add_node("asset_generation", logged("asset_generation")(nodes.asset_generation_node))
     g.add_node("game_design", logged("game_design")(nodes.game_design_node))
     g.add_node("content_plan", logged("content_plan")(nodes.content_plan_node))
     g.add_node("balance_plan", logged("balance_plan")(nodes.balance_plan_node))
+    g.add_node("design_contract", logged("design_contract")(nodes.design_contract_node))
+    g.add_node("contract_gate", logged("contract_gate")(nodes.contract_gate_node))
     g.add_node("code_generation", logged("code_generation")(nodes.code_generation_node))
+    g.add_node("project_build", logged("project_build")(nodes.project_build_node))
     g.add_node("build_validation", logged("build_validation")(nodes.build_validation_node))
     g.add_node("repair_code", logged("repair_code")(nodes.repair_code_node))
     g.add_node("replan_game_design", logged("replan_game_design")(nodes.replan_game_design_node))
     g.add_node("gameplay_qa", logged("gameplay_qa")(nodes.gameplay_qa_node))
     g.add_node("gameplay_repair", logged("gameplay_repair")(nodes.gameplay_repair_node))
     g.add_node("publish_artifact", logged("publish_artifact")(nodes.publish_artifact_node))
+    g.add_node("feedback_understanding", logged("feedback_understanding")(nodes.feedback_understanding_node))
+    g.add_node("code_revision", logged("code_revision")(nodes.code_revision_node))
+    g.add_node("revision_repair", logged("revision_repair")(nodes.revision_repair_node))
+    g.add_node("publish_revision", logged("publish_revision")(nodes.publish_revision_node))
+    g.add_node("publish_remix", logged("publish_remix")(nodes.publish_remix_node))
     g.add_node("memory_update", logged("memory_update")(nodes.memory_update_node))
     g.add_node("failed", nodes.failed_node)
     g.add_node("done", nodes.done_node)
@@ -684,26 +796,41 @@ def build_graph():
                             {"intent_spec": "intent_spec", "feedback_understanding": "feedback_understanding"})
     g.add_edge("intent_spec", "gameplay_planning")
     g.add_edge("gameplay_planning", "archetype_router")
-    g.add_edge("archetype_router", "asset_processing")
-    g.add_edge("asset_processing", "game_design")
+    g.add_edge("archetype_router", "game_design")
     g.add_edge("game_design", "content_plan")
     g.add_edge("content_plan", "balance_plan")
-    g.add_edge("balance_plan", "code_generation")
-    g.add_edge("code_generation", "build_validation")
+    g.add_edge("balance_plan", "design_contract")
+    g.add_edge("design_contract", "contract_gate")
+    g.add_conditional_edges("contract_gate", nodes.should_continue_after_contract_gate,
+                            {"asset_processing": "asset_processing", "code_revision": "code_revision", "failed": "failed"})
+    g.add_edge("asset_processing", "asset_generation")
+    g.add_conditional_edges("asset_generation", nodes.should_continue_after_asset_generation,
+                            {"code_generation": "code_generation", "code_revision": "code_revision", "failed": "failed"})
+    g.add_edge("code_generation", "project_build")
+    g.add_edge("project_build", "build_validation")
     g.add_conditional_edges("build_validation", nodes.should_continue_after_validation,
                             {"gameplay_qa": "gameplay_qa", "repair_code": "repair_code",
-                             "replan_game_design": "replan_game_design", "failed": "failed"})
-    g.add_edge("repair_code", "build_validation")
+                             "replan_game_design": "replan_game_design", "revision_repair": "revision_repair",
+                             "failed": "failed"})
+    g.add_edge("repair_code", "project_build")
     g.add_edge("replan_game_design", "balance_plan")
     g.add_conditional_edges("gameplay_qa", nodes.should_continue_after_gameplay_qa,
                             {"publish_artifact": "publish_artifact", "gameplay_repair": "gameplay_repair",
-                             "replan_game_design": "replan_game_design", "failed": "failed"})
-    g.add_edge("gameplay_repair", "code_generation")
+                             "replan_game_design": "replan_game_design", "publish_revision": "publish_revision",
+                             "publish_remix": "publish_remix", "revision_repair": "revision_repair",
+                             "failed": "failed"})
+    g.add_conditional_edges("gameplay_repair", nodes.next_after_gameplay_repair,
+                            {"project_build": "project_build", "balance_plan": "balance_plan", "code_generation": "code_generation"})
     g.add_edge("publish_artifact", "memory_update")
+    g.add_edge("feedback_understanding", "design_contract")
+    g.add_edge("code_revision", "project_build")
+    g.add_edge("revision_repair", "project_build")
+    g.add_edge("publish_revision", "memory_update")
+    g.add_edge("publish_remix", "memory_update")
     g.add_edge("memory_update", "done")
     g.add_edge("done", END)
     g.add_edge("failed", END)
-    return g.compile()
+    return g.compile(checkpointer=checkpointer)
 ```
 
 ---
@@ -727,7 +854,7 @@ def run_generation(task_id: str) -> None:
     #    否则 FAILED + error/error_code；写 finished_at。CANCELLED 任务直接跳过。
 ```
 
-`max_repair_attempts` / `max_replan_attempts` 不再在入参里传——上限是 `state.py` 的模块常量。
+`max_repair_attempts` / `max_replan_attempts` 不再在入参里传——上限是 `app/generation/limits.py` 的模块常量（`state.py` 转发）。实际入口签名为 `run_generation(task_id, expected_dispatch_generation)`：Worker 先比对任务的投递代数丢弃旧 Celery 消息，再用 PostgreSQL checkpointer 编译图执行（断点续跑见 §2.6）。
 
 ---
 
@@ -750,11 +877,16 @@ finish_step(done/failed) —— 翻 AgentStep 状态，批量写 result["_logs"]
 ### 9.2 表结构（ORM 见 [`models/task.py`](../backend/app/models/task.py)）
 
 ```text
-agent_steps(id, task_id, seq, agent, name, status, tokens, started_at, finished_at, created_at)
-agent_logs(id, step_id, seq, line, level, created_at)
+agent_steps(id, task_id, seq, agent, name, status, tokens, attempt, caused_by_step_id,
+            contract_version, contract_hash, prompt_version, model, provider,
+            input/output_artifact_ids_json, adopted_plan, rejected_plans_json,
+            asset_request_count, qa_result_json, repair_reason, impact_scope_json,
+            latency_ms, cost_usd, runtime_consumed, decision_json,
+            started_at, finished_at, created_at)
+agent_logs(id, step_id, seq, line, level, payload_json, created_at)   # UNIQUE(step_id, seq)
 ```
 
-> 与历史版本（单张扁平 `agent_logs` 带 `input_json/output_json/token_in/token_out/cost_ms/error_stack`）不同：现实现把“步骤”与“日志行”拆开，token 累计在 step / task 上，日志是纯文本行（`line` + `level`）。步骤耗时由 `started_at`/`finished_at` 推导，前端展示用。
+> 与历史版本（单张扁平 `agent_logs` 带 `input_json/output_json/token_in/token_out/cost_ms/error_stack`）不同：现实现把“步骤”与“日志行”拆开，token 累计在 step / task 上。`agent_steps` 附带决策链字段（契约指纹、提示词版本、采纳/被否方案、QA 判决、`runtime_consumed` 等，见 `app/observability/decision_trace.py`）；`agent_logs.payload_json` 可携带结构化事件，事件类型契约在 [`schemas/agent_events.py`](../backend/app/schemas/agent_events.py)（15 种类型的 discriminated union，serializer 丢弃未知类型防 500）。步骤耗时由 `started_at`/`finished_at` 推导，前端展示用。
 
 ---
 
@@ -762,7 +894,7 @@ agent_logs(id, step_id, seq, line, level, created_at)
 
 Create 页面展示 Agent 过程而非单个 spinner。后端 [`services/serialize.py` `task_out`](../backend/app/services/serialize.py) 把任务序列化为带 `step_summaries / progress / logs / steps / design` 的 DTO。
 
-`_STAGES` 把 14 个主阶段映射成中文标题与进度百分比，例如：
+`_STAGES` 把生成主链各阶段（当前 23 项，含 2 条合并前旧任务的只读兼容项；revision/remix 另有 `_REVISION_STAGES` / `_REMIX_STAGES`）映射成中文标题与进度百分比，例如：
 
 ```text
 检查创意和素材(10%) → 理解你的游戏创意(18%) → 扩展玩法简报(24%) → 规划核心机制(30%)
@@ -805,16 +937,19 @@ sequenceDiagram
 ### 12.1 generation_tasks
 
 ```text
-id, user_id, idea(Text), dimension("2d"|"3d"),
-status, current_step(Integer 序号), current_agent,
-result_game_id(FK games), version_id, tokens_used,
-error(Text), error_code,
+id, user_id, idea(Text), task_kind("generation"|"revision"|"remix"),
+base_game_id(FK games), base_version, feedback_text(Text), feedback_brief(Text),
+dimension("2d"|"3d"), status, dispatch_generation(投递代数),
+current_step(Integer 序号), current_agent,
+result_game_id(FK games), version_id, tokens_used, cost_usd,
+error(Text), error_code, failed_stage,
 repair_attempts, max_repair_attempts(=2), replan_attempts, max_replan_attempts(=1),
-spec_json(Text), design_json(Text),
+spec_json(Text), design_json(Text), contract_json(Text),
+contract_hash, contract_revision, opik_trace_id,
 started_at, finished_at, created_at, updated_at
 ```
 
-> 与历史 DDL 的差异：字段名 `idea`（非 `prompt`）、`current_step` 是**整数序号**（非步骤字符串）、`result_game_id`（非 `game_id`）、`error`（非 `error_message`）；新增 `dimension` / `tokens_used` / `started_at` / `finished_at`；无 `input_json` / `result_json`（spec/design 单独存）。`max_*` 仍保留在表上供前端展示，但实际上限以 `state.py` 常量为准。
+> 与历史 DDL 的差异：字段名 `idea`（非 `prompt`）、`current_step` 是**整数序号**（非步骤字符串）、`result_game_id`（非 `game_id`）、`error`（非 `error_message`）；无 `input_json` / `result_json`（spec/design/contract 单独存）。`max_*` 仍保留在表上供前端展示，但实际上限以 `app/generation/limits.py` 常量为准。
 
 ### 12.2 agent_steps / agent_logs
 
@@ -847,17 +982,19 @@ game_versions(id, game_id, version, manifest_key, bundle_key, entry,
 
 | 方法 & 路径 | 说明 |
 | --- | --- |
-| `POST /tasks` | 创建任务，body `{idea, asset_ids[], dimension}`，限流 20/h，返回 `{task_id}`，并 `generate_game.delay` |
-| `GET /tasks` | 当前用户任务列表（`task_out`） |
-| `GET /tasks/{id}` | 任务详情（含 `step_summaries / progress / logs / steps / design / game`） |
+| `POST /tasks` | 创建任务，body `{idea, asset_ids[], dimension, task_kind, source_game_id?}`，限流 20/h，返回 `{task_id}`；`task_kind="remix"` + `source_game_id` 即 Remix |
+| `GET /tasks` | 当前用户任务列表，`limit`/`offset` 分页，返回 `{items,total,has_more}` |
+| `GET /tasks/{id}` | 任务详情（含 `step_summaries / progress / logs / steps / design / design_contract / game`）；日志分页 `logs_limit`(1-500) / `logs_before` |
+| `GET /tasks/{id}/generated-assets` | 本次任务生成的图像素材预览（从 checkpoint 读取）：`key/name/kind/content_type/bytes/data_url/semantic_ids/frame_audit` |
+| `GET /tasks/{id}/events` | SSE：首连回 `event: task` 完整快照，重连带 `Last-Event-ID` 回 `event: task_delta` 增量，终态后关闭 |
 | `POST /tasks/{id}/revise` | 基于成功 preview 发起修订：body `{feedback}`，限流 20/h；校验 base 为当前版本且无进行中修订（409），新任务 `task_kind=revision` |
-| `POST /tasks/{id}/retry` | 仅 failed 可重试：清步骤、置 pending、重新入队 |
+| `POST /tasks/{id}/retry` | 仅 failed 可重试：默认从 LangGraph checkpoint 续跑并重置修复预算，可选 from-scratch 清步骤重跑 |
 | `POST /tasks/{id}/cancel` | 仅 pending/running 可取消；worker 在下一个节点边界感知并中止（tracing.begin_step 检查），publish 竞态产生的孤儿产物由收尾清理 |
 | `DELETE /tasks/{id}` | 删除（需先取消活跃任务） |
 
-> 历史文档的独立 `GET /tasks/:id/logs` 未实现——日志已折叠进 `task_out` 的 `logs` / `steps` 字段。
+> 历史文档的独立 `GET /tasks/:id/logs` 未实现——日志已折叠进 `task_out` 的 `logs` / `steps` 字段并支持分页游标。
 
-请求体 `TaskCreateIn`（[`schemas.py`](../backend/app/schemas.py)）：`idea: str(min 1)`、`asset_ids: list[str]=[]`、`dimension: Literal["2d","3d"]="2d"`。
+请求体 `TaskCreateIn`（[`schemas/tasks.py`](../backend/app/schemas/tasks.py)；`app/schemas` 包按域拆分，`from app.schemas import X` 兼容不变）：`idea: str(min 1)`、`asset_ids: list[str]=[]`、`dimension: Literal["2d","3d"]="2d"`、`task_kind: Literal["generation","remix"]="generation"`、`source_game_id: str|None`。
 
 ### 13.2 游戏与 Play（[`api/routers/games.py`](../backend/app/api/routers/games.py)）
 
@@ -894,21 +1031,23 @@ invalid & 全部用尽                       → failed
 
 **gameplay_qa 失败：**
 ```text
-passed                                         → publish_artifact
-failed & gameplay_repair < 2                   → gameplay_repair → code_generation
-failed & gameplay_repair 用尽 & replan < 1      → replan_game_design → balance_plan
-failed & 全部用尽                                → failed
+passed                                              → publish_artifact
+failed & gameplay_repair < 2                        → gameplay_repair
+    ├─ 运行时可 patch（保留产物）                      → project_build 复检
+    └─ 数值/设计问题（清产物）                         → balance_plan（有契约）/ code_generation（旧状态）
+failed & gameplay_repair 用尽 & 失败属 design 类 & replan < 1 → replan_game_design → balance_plan
+failed & 其余情况                                     → failed
 ```
 
-`replan_game_design` 会重置两个 repair 计数器并回到 `balance_plan`，因此一次 replan 后还能再各用一轮 repair / gameplay_repair。
+`replan_game_design` 会重置两个 repair 计数器并回到 `balance_plan`（因此也会重走契约编译与门禁），一次 replan 后还能再各用一轮 repair / gameplay_repair。注意：patch 预算耗尽本身不触发 replan——只有被 `_classify_gameplay_failure` 判为 design/可行性问题的失败才允许跨越设计契约边界。
 
 ### 14.3 Repair vs Replan 适用场景
 
 | | 解决的问题 | 动作 |
 | --- | --- | --- |
-| **build repair** | JS 语法错误、forbidden API、缺文件 / 未引用、体积超限 | 按错误重生成代码 |
-| **gameplay repair** | 太难 / 太快 / 阈值不达标 | 调安全数值并重生成 |
-| **replan** | 设计在当前运行时不可实现、反复无法过校验 / QA | 降级重写设计（2D 回模块化 scaffold / 3D 简化）→ 回 balance |
+| **build repair** | JS 语法错误、forbidden API、缺文件 / 未引用、体积超限 | 按错误做最小修复 / 重生成代码 |
+| **gameplay repair** | 浏览器运行时报错、输入无反馈 → 最小 patch；太难 / 太快 / 阈值不达标 → 调数值 | patch 回 `project_build` 复检；数值回 `balance_plan` 走新契约修订 |
+| **replan** | 设计在当前运行时不可实现、失败被判为 design 类 | 降级重写设计（2D 回模块化 scaffold / 3D 简化）→ 回 balance |
 
 ---
 

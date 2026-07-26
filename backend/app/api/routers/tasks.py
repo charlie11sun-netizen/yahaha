@@ -89,9 +89,10 @@ def get_task_generated_assets(
     db: Session = Depends(get_db),
 ):
     task = _run(lambda: task_actions.get_task(db, task_id, user))
+    from app.agents.checkpoint_reader import checkpoint_values
     from app.services.task_generated_assets import generated_image_previews
 
-    return {"items": generated_image_previews(task.id)}
+    return {"items": generated_image_previews(checkpoint_values(task.id))}
 
 
 def _serialized_log_cursor(payload: dict | None) -> int:

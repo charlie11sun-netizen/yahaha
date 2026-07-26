@@ -231,15 +231,28 @@ def asset_processing_node(state: dict) -> dict:
             "error_code": "contract_gap",
             "error_message": "frozen SpriteDemandManifest is required before asset processing",
         }
+    # 重建清单不能丢下游已生成的媒体条目:balance 修复/replan 回流会再次经过
+    # 本节点,generated_assets 尚在而条目一旦被冲掉,素材阶段就失去了逐 key
+    # 复用校验的依据,只能整批重画(2026-07-20 三路守卫连锁团灭的一环)。
+    previous_generated = [
+        dict(entry)
+        for entry in ((state.get("asset_manifest") or {}).get("assets") or [])
+        if isinstance(entry, dict) and str(entry.get("source") or "") != "uploaded"
+    ]
     asset_manifest = {
         "cover": _theme_cover((state.get("style_bible") or {}).get("theme") or spec.get("theme")),
-        "assets": uploaded,
+        "assets": uploaded + previous_generated,
         "sprite_demand_manifest": demand_manifest,
         "asset_batch_specs": dict(state.get("asset_batch_specs") or {}),
         "style_bible": dict(state.get("style_bible") or {}),
         "contract_hash": state.get("contract_hash"),
     }
-    return {"uploaded_assets": uploaded, "asset_manifest": asset_manifest, "sprite_demand_manifest": demand_manifest, "asset_batch_specs": dict(state.get("asset_batch_specs") or {}), "_agent": "AssetAgent", "_logs": _asset_log_lines(uploaded, asset_manifest, spec) + [f"consuming frozen contract {state.get('contract_hash')}"]}
+    carry_logs = (
+        [f"carried {len(previous_generated)} previously generated asset entr{'y' if len(previous_generated) == 1 else 'ies'} for reuse validation"]
+        if previous_generated
+        else []
+    )
+    return {"uploaded_assets": uploaded, "asset_manifest": asset_manifest, "sprite_demand_manifest": demand_manifest, "asset_batch_specs": dict(state.get("asset_batch_specs") or {}), "_agent": "AssetAgent", "_logs": _asset_log_lines(uploaded, asset_manifest, spec) + carry_logs + [f"consuming frozen contract {state.get('contract_hash')}"]}
 
 
 def game_design_node(state: dict) -> dict:
@@ -677,6 +690,9 @@ def should_continue_after_contract_gate(state: dict) -> str:
 
 
 def should_continue_after_asset_generation(state: dict) -> str:
+    gate = state.get("asset_generation_gate") or {}
+    if gate and gate.get("status") not in {"passed", "disabled"}:
+        return "failed"
     return "code_revision" if state.get("task_kind") in {"revision", "remix"} else "code_generation"
 
 

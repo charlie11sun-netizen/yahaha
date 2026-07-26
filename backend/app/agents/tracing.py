@@ -29,6 +29,31 @@ class TaskCancelledError(Exception):
 class TaskBudgetExceededError(Exception):
     """任务 token 硬预算已耗尽：在下一个节点边界中止整张图。"""
 
+
+def current_task_id() -> str | None:
+    """Return the task bound to the current worker/thread context."""
+    return get_context().get("task_id")
+
+
+def task_is_cancelled(task_id: str | None = None) -> bool:
+    """Read the durable cancellation flag for cooperative in-node shutdown."""
+    resolved_task_id = task_id or current_task_id()
+    if not resolved_task_id:
+        return False
+    db = SessionLocal()
+    try:
+        task = db.get(GenerationTask, resolved_task_id)
+        return bool(task and task.status == TaskStatus.CANCELLED)
+    finally:
+        db.close()
+
+
+def raise_if_task_cancelled(task_id: str | None = None) -> None:
+    resolved_task_id = task_id or current_task_id()
+    if resolved_task_id and task_is_cancelled(resolved_task_id):
+        raise TaskCancelledError(resolved_task_id)
+
+
 _START_HINTS = {
     "Safety Intake": "checking prompt length, uploaded asset ids, and blocked patterns",
     "Intent Spec": "extracting title, genre, theme, controls, and win/loss conditions",

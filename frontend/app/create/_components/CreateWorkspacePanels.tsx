@@ -3,6 +3,7 @@
 import { ArrowRight, Sparkles } from "lucide-react";
 
 import { ActionPanel } from "./CreateActionPanel";
+import { CreateAssetWorkspace } from "./CreateAssetWorkspace";
 import { CreateBriefCard } from "./CreateBriefCard";
 import { CreateProgressCard } from "./CreateProgressCard";
 import { PreviewCard } from "./CreatePreviewCard";
@@ -14,6 +15,8 @@ export function CreateWorkspace({
   connectionStatus,
   files,
   generatedAssets,
+  view,
+  onBackToOverview,
   now,
   onCancel,
   onEditBrief,
@@ -22,6 +25,7 @@ export function CreateWorkspace({
   onPublish,
   onRevision,
   onRetry,
+  onOpenAssets,
   publishing,
   revising,
   task,
@@ -29,6 +33,8 @@ export function CreateWorkspace({
   connectionStatus: string;
   files: UploadedAsset[];
   generatedAssets: GeneratedTaskAsset[];
+  view: "overview" | "assets";
+  onBackToOverview: () => void;
   now: number;
   onCancel: () => void;
   onEditBrief: () => void;
@@ -37,11 +43,25 @@ export function CreateWorkspace({
   onPublish: () => void;
   onRevision: (feedback: string) => Promise<boolean>;
   onRetry: () => void;
+  onOpenAssets: () => void;
   publishing: boolean;
   revising: boolean;
   task?: Task;
 }) {
   const brief = getBrief(task, files, generatedAssets.length);
+
+  if (view === "assets") {
+    return (
+      <CreateAssetWorkspace
+        files={files}
+        generatedAssets={generatedAssets}
+        onBack={onBackToOverview}
+        onOpenActivity={onOpenActivity}
+        onPreview={onPreview}
+        task={task}
+      />
+    );
+  }
 
   return (
     <div className="flex min-w-0 flex-col gap-5">
@@ -73,7 +93,7 @@ export function CreateWorkspace({
       </div>
 
       <aside className="flex min-w-0 flex-col gap-4 lg:sticky lg:top-24">
-        <PreviewCard generatedAssets={generatedAssets} now={now} task={task} />
+        <PreviewCard generatedAssets={generatedAssets} now={now} onOpenAssets={onOpenAssets} task={task} />
         <ActionPanel
           onCancel={onCancel}
           onOpenActivity={onOpenActivity}

@@ -30,10 +30,11 @@ venv/
 .ruff_cache/
 celerybeat-schedule
 
-# Graphify: keep only the portable report and graph snapshot in Git.
+# Graphify: keep only the portable report in Git. graph.json is a local
+# regenerable artifact (`graphify update .`) whose diffs ran 150k+ lines and
+# polluted history/review (untracked 2026-07-26).
 graphify-out/*
 !graphify-out/GRAPH_REPORT.md
-!graphify-out/graph.json
 
 # Local runtime logs and generated agent/evaluation output
 /.backend.*.log
@@ -41,6 +42,7 @@ graphify-out/*
 /agent-traces-*.jsonl
 /export-err.txt
 /artifacts/
+/.preview-games/
 /scripts/prompt_iter*.txt
 /scripts/prompt_probe*.txt
 /scripts/*_traces.jsonl

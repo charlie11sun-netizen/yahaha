@@ -150,14 +150,40 @@ class Settings(BaseSettings):
     ASSET_PROVIDER_TIMEOUT_SECONDS: int = 300
     ASSET_PROVIDER_MAX_RETRIES: int = 2
     ASSET_PROVIDER_MAX_BYTES: int = 8_000_000
+    # Required spritesheet cells are never shipped on an audit failure. The
+    # semantic review is opt-in because it sends generated images to the
+    # configured vision model; when enabled, review errors are also hard
+    # failures and eventually wait for manual recovery.
+    ASSET_FRAME_AUDIT_MAX_RETRIES: int = 2
+    ASSET_SEMANTIC_REVIEW_ENABLED: bool = False
+    ASSET_SEMANTIC_REVIEW_MODEL: str = ""
+    ASSET_SEMANTIC_REVIEW_TIMEOUT_SECONDS: int = 120
+    ASSET_SEMANTIC_REVIEW_MAX_RETRIES: int = 2
+    ASSET_SEMANTIC_REVIEW_MIN_CONFIDENCE: float = Field(default=0.85, ge=0.0, le=1.0)
+    # 修复轮图像调用总预算(每张 sheet)与带伤放行的 required 覆盖率底线。
+    # 第十二轮(2026-07-19):无预算的修复循环烧了 17 次串行图像调用/36 分钟,
+    # 耗尽轮数后仍全任务暂停;现在预算耗尽或失败集不收缩即止损,覆盖率达标
+    # 带 regeneration_plan 放行,低于底线才暂停等人工。
+    ASSET_REPAIR_MAX_IMAGE_CALLS: int = 8
+    ASSET_RELEASE_COVERAGE_FLOOR: float = Field(default=0.8, ge=0.0, le=1.0)
     ASSET_IMAGE_PROVIDER: str = "local"
     ASSET_IMAGE_API_KEY: str = ""
     ASSET_IMAGE_BASE_URL: str = ""
     ASSET_IMAGE_MODEL: str = ""
+    # 可选的图像兜底提供商:主提供商重试耗尽后再走一遍(不配置=无兜底,行为
+    # 不变)。用于单一网关图像端点半残(如 sheet 类请求恒 502)时保住流水线。
+    ASSET_IMAGE_FALLBACK_PROVIDER: str = ""
+    ASSET_IMAGE_FALLBACK_API_KEY: str = ""
+    ASSET_IMAGE_FALLBACK_BASE_URL: str = ""
+    ASSET_IMAGE_FALLBACK_MODEL: str = ""
     # OpenAI's Image API can emit partial-image SSE events. Keep this opt-in:
     # some third-party "compatible" gateways return an empty 200 SSE response.
     ASSET_IMAGE_STREAMING_ENABLED: bool = False
     ASSET_IMAGE_PARTIAL_IMAGES: int = 1
+    # background=transparent 参数发送策略。auto=先发送,收到 "transparent
+    # background is not supported" 后本进程剥离该参数重试(品红背景色键后处理
+    # 天然兜底透明度);never=从不发送,省掉注定失败的首次 400。
+    ASSET_IMAGE_NATIVE_TRANSPARENCY: str = "auto"
     ASSET_AUDIO_PROVIDER: str = ""
     ASSET_AUDIO_API_KEY: str = ""
     ASSET_AUDIO_BASE_URL: str = ""
@@ -210,6 +236,11 @@ class Settings(BaseSettings):
     VISUAL_REVIEW_TIMEOUT_SECONDS: int = 90
     MAX_ACTIVE_TASKS_PER_USER: int = 2
     TASK_TOKEN_BUDGET: int = 0
+    # LangGraph superstep ceiling per run. The happy path takes ~19 supersteps
+    # and a saturated repair/replan budget ~57; langgraph's default of 25 would
+    # cut legitimate runs mid-repair. 80 keeps headroom for real work while a
+    # runaway build/repair loop still dies with a dedicated RECURSION_LIMIT code.
+    GRAPH_RECURSION_LIMIT: int = 80
 
     # Upload and content moderation hardening. Local/dev stays offline by
     # default: uploads are structurally validated, ClamAV is optional, and text

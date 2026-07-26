@@ -23,6 +23,34 @@ from typing import Any, Iterable, Mapping, Sequence
 SPRITE_DEMAND_SCHEMA_VERSION = "sprite-demand/v1"
 FRAME_AUDIT_SCHEMA_VERSION = "frame-audit/v1"
 
+# UI 覆盖物(血条/文字横幅/名牌/数值)是运行时 HUD 的职责。设计描述把它们写进
+# 精灵格要求后,图像模型会往素材里烙字,随后又被评审的 no-text 规则判死——
+# 第十二轮(2026-07-19,三线守望)boss.idle 先因"缺抗性横幅"被要求重画、加字后
+# 又因 text_present 挂掉,修复循环因此永不收敛。生成提示词、修复提示词与评审
+# 契约三侧共用这一份剥离规则,矛盾标准从源头消失。
+_UI_OVERLAY_PATTERN = re.compile(
+    r"(health\s*bar|hp\s*bar|mana\s*bar|stamina\s*bar|status\s*bar|progress\s*bar|"
+    r"text\s*(banner|label|overlay)|resistance\s*(banner|text)|name\s*(tag|plate|label)|"
+    r"floating\s*(text|number)|damage\s*number|caption|watermark|tooltip|hud\b|ui\s*overlay|"
+    r"血条|体力条|文字|字样|标注|标签|横幅|名牌|数值|气泡)",
+    re.IGNORECASE,
+)
+
+
+def strip_ui_overlay_demands(text: Any) -> str:
+    """Drop clauses that demand baked-in UI overlays from a cell description.
+
+    Clause-level: "armored knight with a shield, health bar above head" keeps
+    the knight and loses the health bar. Returns "" when nothing survives so
+    callers can fall back to the frame name.
+    """
+    raw = " ".join(str(text or "").split())
+    if not raw or not _UI_OVERLAY_PATTERN.search(raw):
+        return raw
+    parts = re.split(r"(?<=[,;，；。.!?])", raw)
+    kept = [part for part in parts if not _UI_OVERLAY_PATTERN.search(part)]
+    return "".join(kept).strip(" ,;，；。.!?")
+
 
 def _slug(value: Any, fallback: str = "sprite") -> str:
     text = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
@@ -431,9 +459,11 @@ def _rgba_image(value: Any):
     raise TypeError("expected a PIL image or image bytes")
 
 
-def _connected_components(mask: list[bool], width: int, height: int, threshold: int) -> int:
+def _component_pixel_sizes(mask: list[bool], width: int, height: int, threshold: int) -> list[int]:
+    """Sizes of connected alpha components with at least ``threshold`` pixels."""
+
     seen = bytearray(width * height)
-    count = 0
+    sizes: list[int] = []
     for index, active in enumerate(mask):
         if not active or seen[index]:
             continue
@@ -452,8 +482,8 @@ def _connected_components(mask: list[bool], width: int, height: int, threshold: 
                         seen[ni] = 1
                         queue.append(ni)
         if pixels >= threshold:
-            count += 1
-    return count
+            sizes.append(pixels)
+    return sizes
 
 
 def audit_frame(
@@ -483,7 +513,15 @@ def audit_frame(
         mean_rgb = (0, 0, 0)
     style_signature = hashlib.sha1(bytes(mean_rgb)).hexdigest()[:12]
     threshold = max(8, int(width * height * 0.0002))
-    object_count = _connected_components(alpha, width, height, threshold)
+    # 主体计数只认与最大剪影"大小可比"(≥15%)的组件:动作帧的挥砍弧光、
+    # 粒子、飞溅碎屑是主体的装饰而非第二个物体——把它们计成物体曾让 7 个
+    # 健康格进修复循环烧光预算(2026-07-19 像素防线取证:player.action 被数出
+    # 24 个"物体"而锚点误差仅 0.008)。两栋楼挤一格的经典错误仍会被抓:
+    # 第二栋楼与第一栋大小可比。
+    component_sizes = _component_pixel_sizes(alpha, width, height, threshold)
+    largest_component = max(component_sizes) if component_sizes else 0
+    major_floor = max(threshold, int(largest_component * 0.15))
+    object_count = sum(1 for size in component_sizes if size >= major_floor)
     visible = [index for index, active in enumerate(alpha) if active]
     if visible:
         xs = [index % width for index in visible]

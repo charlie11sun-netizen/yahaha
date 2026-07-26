@@ -89,20 +89,43 @@ export function mergeTaskEventDelta(current: Task | undefined, delta: TaskEventD
     if (index >= 0) logs[index] = next;
     else logs.push(next);
   });
+  const steps = [...(current?.steps ?? [])];
   (delta.steps ?? []).forEach((item) => {
-    const index = logs.findIndex(
+    const logIndex = logs.findIndex(
       (log) =>
         (log.step_id && log.step_id === item.step_id) ||
         (!log.step_id && log.agent_name === item.agent_name && log.step === item.step),
     );
-    if (index < 0) return;
-    logs[index] = {
-      ...logs[index],
-      status: item.status,
-      duration: item.duration ?? logs[index].duration,
-    };
+    if (logIndex >= 0) {
+      logs[logIndex] = {
+        ...logs[logIndex],
+        status: item.status,
+        duration: item.duration ?? logs[logIndex].duration,
+      };
+    }
+
+    let stepIndex = -1;
+    for (let stepCursor = steps.length - 1; stepCursor >= 0; stepCursor -= 1) {
+      if (steps[stepCursor].agent === item.agent_name && steps[stepCursor].name === item.step) {
+        stepIndex = stepCursor;
+        break;
+      }
+    }
+    if (stepIndex >= 0) {
+      steps[stepIndex] = { ...steps[stepIndex], status: item.status };
+    } else {
+      // A delta can arrive before the next full GET. Keep the new graph node
+      // in the local task so the progress timeline can render it immediately.
+      steps.push({
+        seq: steps.length + 1,
+        agent: item.agent_name,
+        name: item.step,
+        status: item.status,
+        logs: [],
+      });
+    }
   });
-  return { ...current, ...delta.task, logs };
+  return { ...current, ...delta.task, logs, steps };
 }
 
 async function consumeTaskEventStream(

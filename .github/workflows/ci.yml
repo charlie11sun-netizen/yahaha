@@ -51,7 +51,7 @@ jobs:
           docker logs gameweave-sandbox || true
           exit 1
       - run: pip install -r backend/requirements-dev.txt
-      - run: SANDBOX_URL=http://127.0.0.1:8001 pytest backend/tests/test_sandbox_runner_integration.py -q
+      - run: SANDBOX_URL=http://127.0.0.1:8001 pytest backend/tests/pipeline/test_sandbox_runner_integration.py -q
 
   frontend-build:
     runs-on: ubuntu-latest

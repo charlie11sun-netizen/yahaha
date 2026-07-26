@@ -42,6 +42,7 @@ export function ActionPanel({
   const succeeded = task?.status === "succeeded" && task.game;
   const failed = task?.status === "failed";
   const imageRetryRequired = failed && task?.error_code === "ASSET_GENERATION_FAILED";
+  const streamRetryRequired = failed && task?.error_code === "MODEL_TIMEOUT";
   const cancelled = task?.status === "cancelled";
   const active = isActiveTask(task?.status);
 
@@ -89,7 +90,11 @@ export function ActionPanel({
           <>
             <Button className="rounded-lg" onClick={onRetry} type="button">
               <RefreshCcw size={17} />
-              {imageRetryRequired ? "Retry image generation" : "Retry failed step"}
+              {imageRetryRequired
+                ? "Retry image generation"
+                : streamRetryRequired
+                  ? "Resume after connection retry"
+                  : "Retry failed step"}
             </Button>
             <p className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm leading-6 text-rose-700">
               {task?.error || "Generation stopped before a playable preview was created."}

@@ -12,6 +12,7 @@ from typing import Iterable
 
 from app.agents import tracing
 from app.agents.repair_session import RepairOutcome, RepairSession
+from app.core.errors import AuthorTeamRetryRequired
 from .author_contract import (
     _ACCEPTANCE_EVIDENCE_PATH,
     _AUTHOR_CONTRACT_PATH,
@@ -21,6 +22,7 @@ from .author_contract import (
     _compact_brief,
     _contract_input,
     _freeze_contract,
+    _repair_contract,
     _role_input,
     _retry_role_input,
     _snapshot_revision,
@@ -310,17 +312,28 @@ def run_project_author_team(
             team_logs.extend(architect.logs)
     raw_contract = _structured_contract_payload(architect.raw_output) if architect else None
     contract_error: str | None = None
+    contract_fixes: list[str] = []
     try:
-        contract = _freeze_contract(raw_contract, spec, design)
+        contract_candidate = raw_contract
+        if raw_contract is not None:
+            contract_candidate, contract_fixes = _repair_contract(
+                raw_contract, spec, design
+            )
+        contract = _freeze_contract(contract_candidate, spec, design)
     except ValueError as exc:
         contract_error = str(exc)
         raw_contract = None
+        contract_fixes = []
         contract = _freeze_contract(None, spec, design)
     contract_payload = contract.as_dict()
     contract_hash = hashlib.sha256(
         _canonical_json(contract_payload).encode("utf-8")
     ).hexdigest()
-    contract_source = "model" if raw_contract else ("pipeline-frozen" if design_contract else "deterministic fallback")
+    contract_source = (
+        ("model+policy" if contract_fixes else "model")
+        if raw_contract
+        else ("pipeline-frozen" if design_contract else "deterministic fallback")
+    )
     contract_files = _with_contract_file(files, contract, contract_hash)
     if design_contract:
         contract_files = _with_design_contract_file(contract_files, design_contract)
@@ -333,6 +346,10 @@ def run_project_author_team(
         team_logs.append(
             "author team rejected invalid model contract: " + contract_error
         )
+    if contract_fixes:
+        team_logs.append(
+            "author team applied contract policy: " + "; ".join(contract_fixes)
+        )
     _emit(
         live_step_id,
         "contract_frozen" if raw_contract else "contract_fallback",
@@ -344,6 +361,7 @@ def run_project_author_team(
         base_revision=base_revision,
         status="done" if raw_contract else "degraded",
         contract_error=contract_error,
+        contract_fixes=contract_fixes,
     )
 
     if budget.exhausted_reasons():
@@ -416,6 +434,10 @@ def run_project_author_team(
             role = future_roles[future]
             try:
                 role_outcomes[role.name] = future.result()
+            except tracing.TaskCancelledError:
+                for pending in future_roles:
+                    pending.cancel()
+                raise
             except Exception as exc:  # noqa: BLE001 - isolate one role failure
                 role_outcomes[role.name] = None
                 team_logs.append(
@@ -562,21 +584,23 @@ def run_project_author_team(
                 status="blocked",
             )
 
+    tracing.raise_if_task_cancelled()
     required_roles = {role.name for role in _IMPLEMENTATION_ROLES}
 
     missing_roles = sorted(required_roles - merge.accepted_roles)
     if missing_roles:
         _emit(
             live_step_id,
-            "team_degraded",
-            "author team proceeding to integration without accepted owners: "
+            "team_waiting_retry",
+            "author team stopped before integration; manual retry required for: "
             + ", ".join(missing_roles),
             reason="missing_required_roles",
             missing_roles=missing_roles,
-            status="degraded",
+            status="failed",
         )
-        team_logs.append(
-            "author team degraded: integration must bridge missing owners "
+        raise AuthorTeamRetryRequired(
+            "Author team implementation incomplete; integration was not started. "
+            "Generation is paused; retry the failed step manually. Missing owners: "
             + ", ".join(missing_roles)
         )
 
@@ -612,22 +636,6 @@ def run_project_author_team(
             "Begin by reading the immutable contract, PlayScene, main.ts, gameConfig.ts, and accepted candidate files in bounded batches. Wire through scenes/contracts/adapters only, write the evidence file, then run_checks.",
         ]
     )
-    if missing_roles:
-        gap_lines = []
-        for role_name in missing_roles:
-            assigned = [
-                module
-                for module in contract.modules
-                if module.owner == role_name
-            ]
-            gap_lines.append(
-                f"- {role_name} delivered nothing usable. Implement compact equivalents in src/composition/ or src/adapters/ and export: "
-                + ", ".join(export for module in assigned for export in module.exports)
-            )
-        integration_input += (
-            "\n\nROLE GAPS you must bridge yourself (mandatory):\n"
-            + "\n".join(gap_lines)
-        )
     if qa_feedback:
         integration_input += (
             "\n\nGameplay QA findings that must be resolved:\n"

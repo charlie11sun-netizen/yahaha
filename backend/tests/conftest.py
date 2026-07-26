@@ -24,6 +24,34 @@ sys.path.insert(0, str(_BACKEND_DIR))
 import app.models  # noqa: E402,F401
 from app.api import deps  # noqa: E402
 from app.core.config import settings  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_asset_review_settings(monkeypatch):
+    """单测默认关闭语义评审,与部署 .env 解耦。
+
+    容器 .env 开着 ASSET_SEMANTIC_REVIEW_ENABLED=true 时,generate_game_assets
+    流程测试会对着 stub 画布发起真实 VLM/图像网关调用并被判全格失败(2026-07-19
+    第十二轮套件排查)。需要评审路径的测试自行 monkeypatch 开启。
+    """
+    monkeypatch.setattr(settings, "ASSET_SEMANTIC_REVIEW_ENABLED", False)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_telemetry_context():
+    """每个测试后强制清空 telemetry contextvars,测试间禁互相污染。
+
+    事件发布/步骤上下文等应用路径会在进程内 bind_context;生产由 worker 按任务
+    生命周期清理,单测进程里无人负责——泄漏的 task/step/workflow 标签会把后续
+    测试的 llm 账本行打错(2026-07-26 tests 分域换序后暴露:test_task_events
+    跑完后,test_observability 记账行的 workflow_name 变成 'Code Generation')。
+    """
+    yield
+    from app.core.telemetry import clear_context
+
+    clear_context()
+
+
 from app.db.base import Base  # noqa: E402
 from app.db.session import get_db  # noqa: E402
 from app.main import app  # noqa: E402

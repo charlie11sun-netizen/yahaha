@@ -1,5 +1,8 @@
 """Repair and replan nodes for the GameWeave LangGraph pipeline."""
+from copy import deepcopy
+
 from app.agents.codegen import _generate_code, _generate_revision_code, _prepare_generated_artifacts
+from app.core.errors import AgentStreamRetryRequired
 from app.agents.design_contract import execution_design_from_state, execution_spec_from_state
 from app.agents.nodes_common import (
     MAX_GAMEPLAY_REPAIR,
@@ -19,8 +22,6 @@ from app.agents.planning_routing import _merge_balance_into_design
 from app.agents.planning_spec import (
     _coerce_design,
     _heuristic_design,
-    _simplify_design,
-    _simplify_design_3d,
 )
 from app.services.vite_projects import VITE_PROJECT_FORMAT
 
@@ -101,10 +102,17 @@ _QUALITY_QA_PATCHABLE = (
     # 缺陷，最小 patch 即可（在 PlayScene.create 调 Backdrop.draw）。
     "generated backdrop never rendered in the reachable gameplay scene",
     "gameplay UI uses multiple source fonts below 16px",
+    "essential UI text uses outlines that obscure glyphs",
+    "essential UI text renders below 12 CSS pixels",
     "no gameplay feedback effects found",
     "authored project still contains the GW_PLACEHOLDER_GAMEPLAY placeholder",
     "moving physics bodies but no world-edge handling found",
     "design declares obstacle/blocking entities but gameplay code never creates them",
+    "spatial interaction outcomes are resolved from semantic labels or a center-line crossing",
+    "player-visible runtime copy exposes debug, collision, QA, or implementation evidence",
+    "resolved transient entities do not complete their render/physics lifecycle",
+    "runtime interaction replay reached the rules repeatedly but every resolved result was blocked",
+    "runtime reports successful pickup/consumable resolution without matching entity removal",
     # 孤儿模块/布局契约/名册全灭:都是接线级缺陷——作者内容已存在或契约已给
     # 出几何,最小 patch 把它们接进运行图即可,整包重生成反而会丢掉好内容。
     "authored gameplay modules are never imported by the running game",
@@ -119,6 +127,9 @@ _QUALITY_QA_PATCHABLE = (
     "browser input probe: injected pointer presses reached the page",
     "gameplay UI is rebuilt every frame",
     "keyboard keys registered with invalid key codes",
+    # 显示比例纪律(像素防线 2026-07-20):setDisplaySize 归一化被绝对 setScale
+    # 覆盖 —— 局部改成相对缩放即可,最小 patch。
+    "sprites lose their normalized display size at runtime",
 )
 
 
@@ -129,6 +140,10 @@ _ADVISORY_QA_PREFIXES = (
     "generated animation groups never played",
     "declared enemy roster never spawned",
     "simulated input never reached a gameplay scene",
+    "sprites render generated art frames at near-native resolution",
+    "gameplay rules consult spatial extents",
+    "declared action probes never fired",
+    "declared interaction outcomes never fired",
 )
 
 
@@ -138,6 +153,27 @@ def _advisory_qa_feedback(qa_result: dict) -> list[str]:
         for item in (qa_result or {}).get("warnings") or []
         if str(item).startswith(_ADVISORY_QA_PREFIXES)
     ]
+
+
+def _asset_preservation(state: dict) -> dict:
+    """Keep already-generated media across a regeneration fallback when safe.
+
+    Regeneration fallbacks historically cleared ``generated_assets`` /
+    ``asset_manifest`` wholesale, forcing every image back through the
+    provider. A balance/design tweak does not change art demand, and the
+    asset stage now validates reuse per key against each entry's
+    ``prompt_hash`` — so preserving is safe whenever those hashes exist.
+    Legacy manifests without hashes keep the old clear-everything behavior
+    (blind reuse of possibly-stale art would be worse than regenerating).
+    """
+    entries = [
+        entry
+        for entry in ((state.get("asset_manifest") or {}).get("assets") or [])
+        if isinstance(entry, dict) and str(entry.get("source") or "") != "uploaded"
+    ]
+    if state.get("generated_assets") and entries and all(entry.get("prompt_hash") for entry in entries):
+        return {}
+    return {"generated_assets": [], "asset_manifest": {}}
 
 
 def _classify_gameplay_failure(qa_result: dict) -> tuple[str, list[str]]:
@@ -155,6 +191,111 @@ def _classify_gameplay_failure(qa_result: dict) -> tuple[str, list[str]]:
     if quality and len(quality) == len(issues):
         return "quality", quality
     return "design", runtime
+
+
+def _replan_source_design(state: dict) -> dict:
+    """Return the richest authored design, not its narrow execution projection.
+
+    The contract execution view is suitable for downstream implementation, but
+    intentionally omits authoring sections such as waves, maps, bosses,
+    power-ups, backgrounds, and juice. Feeding that view to a replan model made
+    omission look like permission to delete those sections.
+    """
+
+    authored = state.get("game_design")
+    if isinstance(authored, dict) and authored:
+        return deepcopy(authored)
+    return deepcopy(execution_design_from_state(state))
+
+
+def _list_identity(items: list) -> str | None:
+    """Pick a stable, genre-neutral identity field for structured content."""
+
+    mappings = [item for item in items if isinstance(item, dict)]
+    if len(mappings) != len(items) or not mappings:
+        return None
+    for key in ("id", "semantic_id", "name", "t", "key", "label"):
+        if all(item.get(key) is not None for item in mappings):
+            return key
+    return None
+
+
+def _merge_replan_preserving_design(previous, candidate, *, path: tuple[str, ...] = ()):
+    """Apply a recovery replan as a non-destructive overlay.
+
+    Missing fields never delete authored content. Structured collections merge
+    by stable identity so a model can revise implicated entries without
+    silently shortening a campaign, roster, level set, quest line, or wave
+    table. Explicit user revisions have a separate contract-diff path; an
+    automatic recovery replan is not authorized to remove features.
+    """
+
+    if isinstance(previous, dict) and isinstance(candidate, dict):
+        merged = deepcopy(previous)
+        for key, value in candidate.items():
+            merged[key] = (
+                _merge_replan_preserving_design(previous[key], value, path=(*path, str(key)))
+                if key in previous
+                else deepcopy(value)
+            )
+        return merged
+
+    if isinstance(previous, list) and isinstance(candidate, list):
+        identity = _list_identity(previous)
+        if identity and _list_identity(candidate) == identity:
+            merged = deepcopy(previous)
+            positions = {item[identity]: index for index, item in enumerate(previous)}
+            for item in candidate:
+                marker = item[identity]
+                if marker in positions:
+                    index = positions[marker]
+                    merged[index] = _merge_replan_preserving_design(
+                        previous[index],
+                        item,
+                        path=(*path, f"{identity}={marker}"),
+                    )
+                else:
+                    positions[marker] = len(merged)
+                    merged.append(deepcopy(item))
+            return merged
+        # Lists without a shared structured identity (for example phase names,
+        # endings, control bindings, or mixed author data) are additive during
+        # automatic recovery. Even a same-length replacement can silently
+        # erase authored content, so retain every previous item and append only
+        # genuinely new candidate entries.
+        merged = deepcopy(previous)
+        for item in candidate:
+            if item not in previous:
+                merged.append(deepcopy(item))
+        return merged
+
+    # Recovery may strengthen implementation detail, but it may not silently
+    # switch the game's identity. Empty model output also preserves the previous
+    # fact instead of erasing it.
+    if path and path[-1] in {"archetype", "genre"} and previous not in (None, ""):
+        return deepcopy(previous)
+    if candidate is None or (candidate == "" and previous not in (None, "")):
+        return deepcopy(previous)
+    return deepcopy(candidate)
+
+
+def _replan_preservation_log(previous: dict, candidate: dict, merged: dict) -> str:
+    omitted = sorted(key for key in previous if key not in candidate)
+    protected_collections = []
+    for key, value in previous.items():
+        if isinstance(value, list):
+            final = merged.get(key)
+            if isinstance(final, list) and len(final) >= len(value):
+                protected_collections.append(f"{key}:{len(value)}→{len(final)}")
+    return (
+        f"preservation overlay kept {len(omitted)} omitted top-level section(s)"
+        + (f" ({', '.join(omitted[:8])})" if omitted else "")
+        + (
+            f"; non-shrinking collections: {', '.join(protected_collections[:8])}"
+            if protected_collections
+            else ""
+        )
+    )
 
 
 def _repair_balance(balance: dict, archetype: str, attempt: int) -> dict:
@@ -353,6 +494,21 @@ def gameplay_repair_node(state: dict) -> dict:
                 "flagged HUD, and wiring Juice feedback — not by tweaking logic. Re-read the flagged modules to confirm each "
                 "finding is addressed. Do not change difficulty or balance unless the finding explicitly requires it."
             )
+        readability_findings = " ".join(str(item).lower() for item in patch_issues)
+        if any(
+            marker in readability_findings
+            for marker in ("visual review:", "text renders below", "text-probe", "readab")
+        ):
+            task_note += (
+                " For readability findings, do not guess the embed ratio or patch only the first "
+                "named label. Read the actual Phaser canvas width and height, calculate "
+                "cssScale=min(840/canvasWidth,470/canvasHeight,1), then calculate "
+                "effectivePx=declaredFontPx*all object/container ancestor scales*cssScale. Audit "
+                "every essential label in start, active-play, pause/choice, and win/loss states; "
+                "primary text must be >=16 effective CSS px and secondary text >=14. A 1280x720 "
+                "canvas with unscaled text therefore needs source fonts >=25px and >=22px. Reflow "
+                "panels and preserve safe margins so increasing text does not create clipping or overlap."
+            )
         advisory = _advisory_qa_feedback(qa_result)
         if advisory:
             task_note += (
@@ -367,6 +523,14 @@ def gameplay_repair_node(state: dict) -> dict:
             failure_label=failure_label,
             task_note=task_note,
         )
+        if outcome is not None and getattr(outcome, "stop_reason", "") == "stream_error" and not outcome.changed:
+            # 模型网关中断且 agent 一行都没改成:这是基建故障不是修复失败。
+            # 走 balance 兜底会在同一个坏网关上重跑 author 团队甚至重生成素材
+            # (2026-07-20 三路守卫连锁团灭);暂停留检查点,重试从本节点续跑。
+            raise AgentStreamRetryRequired(
+                "Gameplay repair could not run: the model stream failed before any edit "
+                f"({_clip(outcome.note, 160)}). Generation is paused; waiting for manual retry."
+            )
         if outcome is not None:
             agent_tokens = outcome.tokens
             logs += [f"repair mode: agent tool loop ({outcome.turns} model turn(s))"] + outcome.logs
@@ -426,11 +590,13 @@ def gameplay_repair_node(state: dict) -> dict:
     archetype = spec.get("archetype") or current_design.get("archetype") or "topdown_collect"
     balance = _repair_balance(state.get("balance_config") or current_design.get("balance") or {}, archetype, attempts)
     design = _merge_balance_into_design(current_design or _heuristic_design(spec), archetype, balance)
+    preserved_assets = _asset_preservation(state)
     return {
         "balance_config": balance,
         "game_design": design,
-        "generated_assets": [],
-        "asset_manifest": {},
+        # 调参不改画:能按 prompt_hash 校验复用时保留已生成素材,避免把成功的
+        # 图重新压上不稳定的图像端点(素材阶段会逐 key 复核后复用)。
+        **preserved_assets,
         "sprite_demand_manifest": {},
         "asset_batch_specs": {},
         "generated_files": [],
@@ -449,6 +615,14 @@ def gameplay_repair_node(state: dict) -> dict:
         "_logs": logs
         + ["applied safer balance: slower hazards, wider spawn interval, lower target, extra life"]
         + _balance_log_lines(archetype, balance)
+        + (
+            [
+                f"preserved {len(state.get('generated_assets') or [])} generated asset artifact(s) "
+                "for per-key reuse validation (balance repair does not change art demand)"
+            ]
+            if not preserved_assets
+            else []
+        )
         + ["queued code regeneration"],
     }
 
@@ -456,6 +630,8 @@ def gameplay_repair_node(state: dict) -> dict:
 def replan_game_design_node(state: dict) -> dict:
     attempts = state.get("replan_attempts", 0) + 1
     is_3d = state.get("dimension") == "3d"
+    current_design = _replan_source_design(state)
+    candidate = {}
     extra = {}
     if state.get("use_real"):
         try:
@@ -464,7 +640,7 @@ def replan_game_design_node(state: dict) -> dict:
                 sys_prompt,
                 prompts.build_replan_prompt(
                     execution_spec_from_state(state),
-                    execution_design_from_state(state),
+                    current_design,
                     state.get("last_error"),
                 ),
                 timeout=max(30, int(settings.OPENAI_PLANNING_STREAM_IDLE_TIMEOUT or 180)),
@@ -475,19 +651,24 @@ def replan_game_design_node(state: dict) -> dict:
                 # global key never serves user content on this gateway.
                 cache_task_scoped=True,
             )
-            design = _coerce_design(_parse_json(raw), execution_spec_from_state(state))
+            candidate = _parse_json(raw)
+            merged_candidate = _merge_replan_preserving_design(current_design, candidate)
+            coerced_candidate = _coerce_design(
+                merged_candidate,
+                execution_spec_from_state(state),
+            )
+            design = _merge_replan_preserving_design(current_design, coerced_candidate)
             extra = {"_tokens_delta": tokens}
         except Exception as exc:
             _real_model_fallback_or_raise("GameDesignAgentReplan", exc, exc)
-            current_design = execution_design_from_state(state)
-            design = _simplify_design_3d(current_design) if is_3d else _simplify_design(current_design)
+            design = deepcopy(current_design)
     else:
-        current_design = execution_design_from_state(state)
-        design = _simplify_design_3d(current_design) if is_3d else _simplify_design(current_design)
+        design = deepcopy(current_design)
     out = {
         "game_design": design,
-        "generated_assets": [],
-        "asset_manifest": {},
+        # 重排设计后素材需求可能变化,但逐 key 的 prompt_hash 复核会只重生成
+        # 真正受影响的图;无哈希的旧清单仍整体清空重来。
+        **_asset_preservation(state),
         "sprite_demand_manifest": {},
         "asset_batch_specs": {},
         # The replan prompt is a fresh conversation. Do not let a later
@@ -509,17 +690,16 @@ def replan_game_design_node(state: dict) -> dict:
             f"replan attempt: {attempts}/{MAX_REPLAN}",
             f"reason: {_clip(state.get('last_error'), 180)}",
             (
-                "simplified the 3D scope; kept model-authored 3D (no 2D fallback)"
-                if is_3d
-                else "simplified playable scope and switched to stable template code"
+                _replan_preservation_log(current_design, candidate, design)
+                if candidate
+                else "replan model unavailable/offline; preserved the authored design without feature deletion"
             ),
+            "recovery may change implementation strategy and concurrency caps, not the promised game",
         ]
         + _design_log_lines(design)
         + ["reset repair counters; queued balance planning"],
         **extra,
     }
-    if not is_3d and settings.REAL_MODEL_FALLBACK_ENABLED:
-        out["use_template_code"] = True  # 仅 2D 回退稳定模板；3D 保持模型优先
     return out
 
 
@@ -537,7 +717,10 @@ __all__ = [
     '_RUNTIME_QA_PATCHABLE',
     '_RUNTIME_QA_SYMPTOMS',
     '_QUALITY_QA_PATCHABLE',
+    '_asset_preservation',
     '_classify_gameplay_failure',
+    '_replan_source_design',
+    '_merge_replan_preserving_design',
     '_repair_balance',
     'repair_code_node',
     'revision_repair_node',

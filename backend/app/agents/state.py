@@ -1,9 +1,7 @@
 """LangGraph 共享状态与步骤常量（对应 docs/multi-agent_design.md §5）。"""
 from typing import Any, Optional, TypedDict
 
-MAX_REPAIR = 2
-MAX_REPLAN = 1
-MAX_GAMEPLAY_REPAIR = 2
+from app.generation.limits import MAX_GAMEPLAY_REPAIR, MAX_REPAIR, MAX_REPLAN
 
 # step -> (agent_name, 展示名)
 STEP_META: dict[str, tuple[str, str]] = {

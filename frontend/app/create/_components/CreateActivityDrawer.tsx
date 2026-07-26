@@ -236,6 +236,8 @@ export function ActivityDrawer({ onClose, task }: { onClose: () => void; task?: 
               <ContextInspector
                 context={agentContext}
                 contextFiles={contextFiles}
+                contractHash={task?.contract_hash}
+                contractRevision={task?.contract_revision}
                 designFields={designFields}
                 dimension={dimension}
                 gameType={gameType}
@@ -465,6 +467,8 @@ function TimelineMarker({ status }: { status: string }) {
 function ContextInspector({
   context,
   contextFiles,
+  contractHash,
+  contractRevision,
   designFields,
   dimension,
   gameType,
@@ -474,6 +478,8 @@ function ContextInspector({
 }: {
   context: AgentContextSummary;
   contextFiles: ContextFileSummary[];
+  contractHash?: string | null;
+  contractRevision?: number | null;
   designFields: NonNullable<Task["design"]>["fields"];
   dimension: string;
   gameType: string;
@@ -521,6 +527,12 @@ function ContextInspector({
           <DetailRow label="Dimension" value={dimension} />
           <DetailRow label="Type" value={gameType} />
           <DetailRow label="Theme" value={theme} />
+          {contractHash ? (
+            <DetailRow
+              label="Contract"
+              value={`${contractRevision ? `v${contractRevision} · ` : ""}${contractHash.slice(0, 12)}`}
+            />
+          ) : null}
           {designFields
             .filter((field) => !["dimension", "维度", "type", "类型", "theme", "主题"].some((label) => field.label.toLowerCase() === label.toLowerCase()))
             .slice(0, 2)

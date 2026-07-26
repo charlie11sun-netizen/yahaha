@@ -7,6 +7,7 @@ mock（默认离线）与 real（USE_REAL_MODEL=true + gpt-5.6-sol）走同一�
 import json
 import logging
 
+from langgraph.errors import GraphRecursionError
 from psycopg import Error as PsycopgError
 from psycopg_pool import PoolTimeout
 
@@ -19,7 +20,11 @@ from app.agents.state import STEP_META
 from app.agents.tracing import TaskBudgetExceededError, TaskCancelledError
 from app.core.checkpointing import CheckpointStorageError, checkpoint_config, open_checkpointer
 from app.core.config import settings
-from app.core.errors import TaskErrorCode
+from app.core.errors import (
+    AgentStreamRetryRequired,
+    AuthorTeamRetryRequired,
+    TaskErrorCode,
+)
 from app.core.telemetry import bind_context, clear_context
 from app.db.session import SessionLocal
 from app.models import Game, GameVersion, GenerationTask
@@ -337,7 +342,10 @@ def _run_generation(task_id: str, expected_dispatch_generation: int | None = Non
                             "error_message": None,
                         },
                     )
-                final = graph.invoke(None, resume_config)
+                final = graph.invoke(
+                    None,
+                    {**resume_config, "recursion_limit": settings.GRAPH_RECURSION_LIMIT},
+                )
             else:
                 initial = {
                     "task_id": task_id,
@@ -380,7 +388,10 @@ def _run_generation(task_id: str, expected_dispatch_generation: int | None = Non
                             "contract_revision": getattr(task, "contract_revision", None),
                         }
                     )
-                final = graph.invoke(initial, checkpoint_config(task_id))
+                final = graph.invoke(
+                    initial,
+                    {**checkpoint_config(task_id), "recursion_limit": settings.GRAPH_RECURSION_LIMIT},
+                )
         except (PsycopgError, PoolTimeout) as exc:
             # A durable saver outage is infrastructure failure, not a failed
             # generation. Let the Celery delivery retry without changing task state.
@@ -391,9 +402,29 @@ def _run_generation(task_id: str, expected_dispatch_generation: int | None = Non
         except AssetGenerationRetryRequired as exc:
             err = str(exc)[:500]
             error_code = TaskErrorCode.ASSET_GENERATION_FAILED.value
+        except AgentStreamRetryRequired as exc:
+            # 模型网关中断打断了某个 agent 阶段:保留检查点暂停,手动重试原地续跑
+            # (语义同图像重试;错误码沿用 MODEL_TIMEOUT,前端归入"等待重试")。
+            err = str(exc)[:500]
+            error_code = TaskErrorCode.MODEL_TIMEOUT.value
+        except AuthorTeamRetryRequired as exc:
+            err = str(exc)[:500]
+            error_code = TaskErrorCode.MODEL_INVALID_OUTPUT.value
         except TaskBudgetExceededError as exc:
             err = str(exc)[:500]
             error_code = TaskErrorCode.BUDGET_EXCEEDED.value
+        except GraphRecursionError as exc:
+            # 步数触顶=构建/修复循环失控:专属失因替代 UNKNOWN,检查点按失败语义
+            # 保留;上限取值依据见 settings.GRAPH_RECURSION_LIMIT。
+            err = str(exc)[:500]
+            error_code = TaskErrorCode.RECURSION_LIMIT.value
+            logger.exception(
+                "generation graph exceeded recursion limit",
+                extra={
+                    "generation_task_id": task_id,
+                    "recursion_limit": settings.GRAPH_RECURSION_LIMIT,
+                },
+            )
         except Exception as exc:  # noqa: BLE001
             err = str(exc)[:500]
             logger.exception(

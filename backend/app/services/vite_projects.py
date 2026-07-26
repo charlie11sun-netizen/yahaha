@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 
+from app.generation.source_policy import FORBIDDEN_PATTERNS
 from app.services.artifacts import (
     ArtifactError,
     artifact_size,
@@ -188,8 +189,6 @@ def create_phaser_vite_project(
 
 
 def validate_vite_project(files: list[dict]) -> list[str]:
-    from app.agents.validation import FORBIDDEN_PATTERNS
-
     errors: list[str] = []
     if len(files) > MAX_PROJECT_FILES:
         errors.append(f"vite project has {len(files)} files; max {MAX_PROJECT_FILES}")

@@ -1205,7 +1205,7 @@ export interface components {
             /** Cursor */
             cursor?: number | null;
             /** Event */
-            event?: (components["schemas"]["AgentFileChangeEventOut"] | components["schemas"]["AgentTurnStateEventOut"] | components["schemas"]["AgentHeartbeatEventOut"] | components["schemas"]["AgentCheckEventOut"] | components["schemas"]["AgentToolEventOut"] | components["schemas"]["AgentUsageEventOut"] | components["schemas"]["AgentUsageProgressEventOut"] | components["schemas"]["AgentErrorEventOut"] | components["schemas"]["AgentNoticeEventOut"] | components["schemas"]["AgentRoleBudgetExhaustedEventOut"] | components["schemas"]["AgentRepairAttemptStartedEventOut"] | components["schemas"]["AgentAuthorTeamEventOut"]) | null;
+            event?: (components["schemas"]["AgentFileChangeEventOut"] | components["schemas"]["AgentTurnStateEventOut"] | components["schemas"]["AgentHeartbeatEventOut"] | components["schemas"]["AgentCheckEventOut"] | components["schemas"]["AgentToolEventOut"] | components["schemas"]["AgentUsageEventOut"] | components["schemas"]["AgentUsageProgressEventOut"] | components["schemas"]["AgentErrorEventOut"] | components["schemas"]["AgentNoticeEventOut"] | components["schemas"]["AgentRoleBudgetExhaustedEventOut"] | components["schemas"]["AgentRepairAttemptStartedEventOut"] | components["schemas"]["AgentAuthorTeamEventOut"] | components["schemas"]["AgentValidationRejectionEventOut"] | components["schemas"]["AgentRetryEventOut"] | components["schemas"]["AgentRoleStreamFailedPartialEventOut"]) | null;
             /** Level */
             level?: string | null;
             /** Line */
@@ -1250,6 +1250,23 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** AgentPatchDiagnosticOut */
+        AgentPatchDiagnosticOut: {
+            /** Code */
+            code?: string | null;
+            /** Column */
+            column?: number | null;
+            /** Line */
+            line?: number | null;
+            /** Message */
+            message?: string | null;
+            /** Path */
+            path?: string | null;
+            /** Rule */
+            rule?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
         /** AgentRepairAttemptStartedEventOut */
         AgentRepairAttemptStartedEventOut: {
             /** Agent */
@@ -1277,6 +1294,36 @@ export interface components {
              * @enum {string}
              */
             type: "repair_attempt_started";
+        } & {
+            [key: string]: unknown;
+        };
+        /** AgentRetryEventOut */
+        AgentRetryEventOut: {
+            /** Attempt */
+            attempt?: number | null;
+            /** Delay Seconds */
+            delay_seconds?: number | null;
+            /** Error Code */
+            error_code?: string | null;
+            /** Next Attempt */
+            next_attempt?: number | null;
+            /** Reason */
+            reason?: string | null;
+            /** Response Id */
+            response_id?: string | null;
+            /** Seq */
+            seq?: number | null;
+            /** Source */
+            source?: string | null;
+            /** Status */
+            status?: string | null;
+            /** Stream Event */
+            stream_event?: string | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "retry";
         } & {
             [key: string]: unknown;
         };
@@ -1312,6 +1359,32 @@ export interface components {
              * @enum {string}
              */
             type: "role_budget_exhausted";
+        } & {
+            [key: string]: unknown;
+        };
+        /** AgentRoleStreamFailedPartialEventOut */
+        AgentRoleStreamFailedPartialEventOut: {
+            /** Agent */
+            agent?: string | null;
+            /** Changed */
+            changed?: string[] | null;
+            /** Checks Ok */
+            checks_ok?: boolean | null;
+            /** Message */
+            message?: string | null;
+            /** Operation */
+            operation?: ("authoring" | "repairing") | null;
+            /** Reason */
+            reason?: string | null;
+            /** Seq */
+            seq?: number | null;
+            /** Status */
+            status?: string | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "role_stream_failed_partial";
         } & {
             [key: string]: unknown;
         };
@@ -1442,6 +1515,28 @@ export interface components {
              * @enum {string}
              */
             type: "usage_progress";
+        } & {
+            [key: string]: unknown;
+        };
+        /** AgentValidationRejectionEventOut */
+        AgentValidationRejectionEventOut: {
+            /** Diagnostics */
+            diagnostics?: components["schemas"]["AgentPatchDiagnosticOut"][] | null;
+            /** Diagnostics Omitted */
+            diagnostics_omitted?: number | null;
+            /** Path */
+            path?: string | null;
+            /** Seq */
+            seq?: number | null;
+            /** Status */
+            status?: string | null;
+            /** Tool */
+            tool?: string | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "validation_rejection";
         } & {
             [key: string]: unknown;
         };
@@ -2251,6 +2346,10 @@ export interface components {
             content_type: string;
             /** Data Url */
             data_url: string;
+            /** Frame Audit */
+            frame_audit?: {
+                [key: string]: unknown;
+            };
             /** Key */
             key: string;
             /** Kind */
@@ -2258,9 +2357,7 @@ export interface components {
             /** Name */
             name: string;
             /** Semantic Ids */
-            semantic_ids: string[];
-            /** Frame Audit */
-            frame_audit: Record<string, unknown>;
+            semantic_ids?: string[];
         };
         /** TaskIdOut */
         TaskIdOut: {
@@ -2276,6 +2373,21 @@ export interface components {
             /** Total */
             total?: number | null;
         };
+        /** TaskLogPageOut */
+        TaskLogPageOut: {
+            /** Before */
+            before?: number | null;
+            /** Has More */
+            has_more: boolean;
+            /** Limit */
+            limit?: number | null;
+            /** Next Before */
+            next_before?: number | null;
+            /** Returned */
+            returned: number;
+            /** Total */
+            total: number;
+        };
         /** TaskOut */
         TaskOut: {
             /** Assets */
@@ -2284,6 +2396,10 @@ export interface components {
             base_game_id?: string | null;
             /** Base Version */
             base_version?: string | null;
+            /** Contract Hash */
+            contract_hash?: string | null;
+            /** Contract Revision */
+            contract_revision?: number | null;
             /** Cost Usd */
             cost_usd?: number | null;
             /** Created At */
@@ -2293,6 +2409,10 @@ export interface components {
             /** Current Step */
             current_step: number;
             design?: components["schemas"]["DesignPreviewOut"] | null;
+            /** Design Contract */
+            design_contract?: {
+                [key: string]: unknown;
+            } | null;
             /** Dimension */
             dimension: string;
             /** Error */
@@ -2316,6 +2436,7 @@ export interface components {
             idea: string;
             /** Logs */
             logs?: components["schemas"]["AgentLogItemOut"][] | null;
+            logs_page?: components["schemas"]["TaskLogPageOut"] | null;
             /** Manifest Url */
             manifest_url?: string | null;
             /** Max Repair Attempts */
@@ -2365,31 +2486,48 @@ export interface components {
         };
         /** TaskStepOut */
         TaskStepOut: {
+            /** Adopted Plan */
+            adopted_plan?: unknown | null;
             /** Agent */
             agent: string;
+            /** Asset Request Count */
+            asset_request_count?: number | null;
             /** Attempt */
             attempt?: number | null;
             /** Caused By Step Id */
             caused_by_step_id?: string | null;
+            /** Contract Hash */
+            contract_hash?: string | null;
+            /** Contract Version */
             contract_version?: string | null;
-            prompt_version?: string | null;
-            model?: string | null;
-            provider?: string | null;
-            input_artifact_ids?: string[] | null;
-            output_artifact_ids?: string[] | null;
-            adopted_plan?: unknown;
-            rejected_plans?: unknown;
-            asset_request_count?: number | null;
-            qa_result?: unknown;
-            repair_reason?: unknown;
-            impact_scope?: unknown;
-            latency_ms?: number | null;
+            /** Cost Usd */
             cost_usd?: number | null;
-            runtime_consumed?: boolean | null;
+            /** Impact Scope */
+            impact_scope?: unknown | null;
+            /** Input Artifact Ids */
+            input_artifact_ids?: string[] | null;
+            /** Latency Ms */
+            latency_ms?: number | null;
             /** Logs */
             logs: string[];
+            /** Model */
+            model?: string | null;
             /** Name */
             name: string;
+            /** Output Artifact Ids */
+            output_artifact_ids?: string[] | null;
+            /** Prompt Version */
+            prompt_version?: string | null;
+            /** Provider */
+            provider?: string | null;
+            /** Qa Result */
+            qa_result?: unknown | null;
+            /** Rejected Plans */
+            rejected_plans?: unknown | null;
+            /** Repair Reason */
+            repair_reason?: unknown | null;
+            /** Runtime Consumed */
+            runtime_consumed?: boolean | null;
             /** Seq */
             seq: number;
             /** Status */
@@ -4498,7 +4636,10 @@ export interface operations {
     };
     get_task_tasks__task_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                logs_limit?: number;
+                logs_before?: number | null;
+            };
             header?: never;
             path: {
                 task_id: string;

@@ -5,10 +5,10 @@ from hashlib import blake2b
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.agents.state import MAX_GAMEPLAY_REPAIR, MAX_REPAIR
 from app.core.config import settings
 from app.core.checkpointing import checkpoint_exists, delete_checkpoint_thread
 from app.core.errors import TaskErrorCode
+from app.generation.limits import MAX_GAMEPLAY_REPAIR, MAX_REPAIR
 from app.models import Asset, Game, GameVersion, GenerationTask
 from app.models.common import GameStatus, TaskStatus, now_utc
 from app.schemas import TaskCreateIn, TaskRevisionIn

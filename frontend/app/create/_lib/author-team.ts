@@ -84,6 +84,7 @@ export function authorTeamEventMessage(event: unknown) {
   const record = eventRecord(event);
   if (!record) return "";
   const type = eventString(record, "type");
+  const eventName = eventString(record, "event");
   const phase = eventString(record, "phase");
   const role = roleName(eventString(record, "role") || eventString(record, "agent"));
 
@@ -96,6 +97,9 @@ export function authorTeamEventMessage(event: unknown) {
     return `${roleLabel(role)} reached its turn budget; partial work was preserved`;
   }
   if (type !== "author_team") return "";
+  if (eventName === "team_waiting_retry") {
+    return "Implementation paused before integration; retry the failed step manually";
+  }
   if (role) {
     const status = statusFromValue(eventString(record, "status") || phase);
     if (status === "running") return `${roleLabel(role)} is in progress`;
@@ -118,6 +122,7 @@ export function getAuthorTeamProgress(task?: Task): AuthorTeamProgress | null {
   );
   let seenTeam = false;
   let activeRoleName: AuthorTeamRoleName | null = null;
+  let waitingForRetry = false;
 
   for (const log of task?.logs ?? []) {
     const entries = log.entries?.length
@@ -127,6 +132,7 @@ export function getAuthorTeamProgress(task?: Task): AuthorTeamProgress | null {
       const event = eventRecord(entry.event);
       if (!event) continue;
       const type = eventString(event, "type");
+      const eventName = eventString(event, "event");
       const phase = eventString(event, "phase");
       const explicitRole = roleName(eventString(event, "role") || eventString(event, "agent"));
 
@@ -145,6 +151,10 @@ export function getAuthorTeamProgress(task?: Task): AuthorTeamProgress | null {
 
       if (type === "author_team" && phase === "contract_frozen") {
         statuses.set("DesignContractAgent", "completed");
+      }
+      if (type === "author_team" && eventName === "team_waiting_retry") {
+        waitingForRetry = true;
+        activeRoleName = null;
       }
       if (type === "author_team" && ["integration_unavailable", "integration_incomplete"].includes(phase)) {
         statuses.set("IntegrationAgent", "failed");
@@ -184,6 +194,15 @@ export function getAuthorTeamProgress(task?: Task): AuthorTeamProgress | null {
       activeRole: null,
       currentLabel: "Implementation team complete",
       currentDetail: "The owned modules have been integrated and handed to the build gate.",
+      completedCount,
+    };
+  }
+  if (waitingForRetry) {
+    return {
+      roles,
+      activeRole: null,
+      currentLabel: "Implementation paused",
+      currentDetail: "Required role work failed. Integration was not started; retry the failed step manually.",
       completedCount,
     };
   }

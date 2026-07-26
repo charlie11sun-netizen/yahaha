@@ -321,9 +321,14 @@ def _coerce_design(data: dict, spec: dict | None = None) -> dict:
             "palette",
             "signature_twist",
             "sfx_events",
+            "interaction_profiles",
         ):
             if data.get(key):
-                base[key] = data[key]
+                base[key] = (
+                    list(data[key])[:24]
+                    if key == "interaction_profiles" and isinstance(data[key], list)
+                    else data[key]
+                )
         layout = _coerce_level_layout(data.get("level_layout"))
         if layout:
             base["level_layout"] = layout
@@ -348,6 +353,7 @@ def _simplify_design(design: dict) -> dict:
                 "signature_twist",
                 "sfx_events",
                 "boss",
+                "interaction_profiles",
             )
             if current.get(key) is not None
         }
@@ -358,6 +364,8 @@ def _simplify_design(design: dict) -> dict:
     spec = {"archetype": archetype, "genre": _ARCHETYPES.get(archetype, _ARCHETYPES["topdown_collect"])["genre"]}
     simplified = _heuristic_design(spec)
     simplified["rules"]["survive_seconds"] = 50
+    if isinstance(current.get("interaction_profiles"), list):
+        simplified["interaction_profiles"] = list(current["interaction_profiles"])[:12]
     return simplified
 
 
@@ -366,7 +374,7 @@ def _simplify_design_3d(design: dict) -> dict:
     current = design or {}
     archetype = current.get("archetype") if current.get("archetype") in _ARCHETYPES_3D else "fps_arena"
     meta = _ARCHETYPES_3D[archetype]
-    return {
+    simplified = {
         "archetype": archetype,
         "scene": {
             "camera": "first_person" if archetype == "fps_arena" else "third_person",
@@ -381,6 +389,9 @@ def _simplify_design_3d(design: dict) -> dict:
         "ui": {"show_score": True, "show_lives": True, "show_restart_button": True, "crosshair": archetype == "fps_arena"},
         "core_loop": meta["loop"],
     }
+    if isinstance(current.get("interaction_profiles"), list):
+        simplified["interaction_profiles"] = list(current["interaction_profiles"])[:12]
+    return simplified
 
 
 

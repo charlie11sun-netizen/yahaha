@@ -83,7 +83,7 @@ export function CreateProgressCard({
             <div className="min-w-0">
               <h2 className="font-display text-2xl font-semibold text-slate-950">{statusTitle}</h2>
               <p className="mt-1 text-sm text-slate-600">
-                Step {Math.min(activeIndex + 1, rows.length)} of {rows.length}
+                Step {rows.length ? Math.min(activeIndex + 1, rows.length) : 0} of {rows.length}
                 <span className="mx-1.5 text-slate-300">·</span>
                 {activeStep?.label || "Preparing task"}
               </p>
@@ -113,7 +113,7 @@ export function CreateProgressCard({
         <div className="-mx-2 overflow-x-auto px-2 pb-1">
           <ol
             aria-label="Generation progress"
-            className="grid min-w-[700px]"
+            className="grid min-w-[960px]"
             style={{ gridTemplateColumns: `repeat(${rows.length}, minmax(72px, 1fr))` }}
           >
             {rows.map((step, index) => {

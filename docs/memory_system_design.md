@@ -321,13 +321,13 @@ RRF 只依赖名次，不直接相加 BM25 与余弦相似度这两种不同量�
 | GET | `/memory/settings` | 查看记忆开关 | 🔒 |
 | PATCH | `/memory/settings` | 开关长期记忆、跨游戏记忆、自动提取 | 🔒 |
 
-内部服务接口：
+内部服务接口（`backend/app/services/memory.py`）：
 
 | 函数 | 用途 |
 | --- | --- |
-| `retrieve_memories(user_id, query, game_id=None, categories=None)` | Agent 节点检索记忆 |
-| `capture_memory_candidates(task, final_state)` | preview / revision 成功后生成候选记忆 |
-| `write_memory_items(candidates)` | 过滤、去重、写库 |
+| `retrieve_memories(...)` | Agent 节点检索记忆（作用域过滤 + 三路 RRF） |
+| `render_memory_context(items)` | 把检索结果渲染成注入 Prompt 的受限文本块 |
+| `capture_success_memories(db, task_id=…, state=…)` | preview / revision 成功后写入证据并触发 Profile 调和（含过滤、去重） |
 
 ---
 
@@ -353,6 +353,23 @@ RRF 只依赖名次，不直接相加 BM25 与余弦相似度这两种不同量�
 4. 在 `safety_intake` 后加入 `memory_retrieval` 节点。
 5. 在 `publish_artifact` / `publish_revision` 成功后调用 `memory_update`。
 6. 前端 Studio 增加 Memory 管理入口。
+
+当前服务层实现按职责拆分为多个模块（`backend/app/services/`），并由 `backend/tests/architecture/test_memory_architecture.py` 守护分层（依赖无环、下层不 import 应用门面、公开名显式导出）：
+
+```text
+memory.py                     检索门面：作用域过滤、BM25、ANN、三路 RRF、上下文渲染、成功后写入入口
+memory_repository.py          Evidence 读写与去重
+memory_embeddings.py          Embedding 生成、批量补算、冷却降级
+memory_entities.py            实体归一、去重与关联写入
+memory_profiles.py            Profile 门面
+memory_profile_extraction.py  小模型批量提取（LLM 建议、程序裁决）
+memory_profile_lifecycle.py   状态机：active/candidate/reinforce/supersede/expire
+memory_profile_queries.py     Profile 查询与注入选择
+memory_profile_evidence.py    Evidence↔Profile 关联与支持度重算
+memory_profile_common.py      共享类型与规则
+memory_rules.py               范围词、否定词、敏感信息等确定性规则
+memory_retention.py           retention 清理（beat 定时）
+```
 
 后续可选：
 

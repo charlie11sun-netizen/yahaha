@@ -6,45 +6,138 @@ import { formatRelative } from "./create-time";
 export const GAMEPLAY_STEP_KEYS = ["gameplay_qa", "gameplay_repair"] as const;
 export type UserStep = { key: string; label: string; backendKeys?: readonly string[]; optional?: boolean };
 
+// The backend graph is deliberately more detailed than the user-facing
+// timeline.  Keep the product language stable while grouping the nodes that
+// belong to one phase.  Optional rows are only rendered when that branch was
+// actually taken (for example repair/replan or gameplay repair).
 const USER_STEPS: UserStep[] = [
   { key: "safety_intake", label: "Idea checked" },
-  {
-    key: "intent_spec",
-    label: "Game spec created",
-    backendKeys: ["intent_spec", "gameplay_planning", "brief_expansion", "mechanic_planner", "archetype_router"],
-  },
-  { key: "asset_processing", label: "Assets processed" },
-  { key: "game_design", label: "Game designed", backendKeys: ["game_design", "content_plan", "balance_plan"] },
+  { key: "memory_retrieval", label: "Context retrieved" },
+  { key: "intent_spec", label: "Game spec created" },
+  { key: "gameplay_planning", label: "Gameplay planned", backendKeys: ["gameplay_planning", "brief_expansion", "mechanic_planner"] },
+  { key: "archetype_router", label: "Template selected" },
+  { key: "game_design", label: "Game designed" },
+  { key: "content_plan", label: "Content planned" },
+  { key: "balance_plan", label: "Balance tuned" },
+  { key: "design_contract", label: "Design contract frozen" },
+  { key: "contract_gate", label: "Contract verified" },
+  { key: "asset_processing", label: "Assets prepared" },
+  { key: "asset_generation", label: "Game assets generated" },
   { key: "code_generation", label: "Files generated" },
-  { key: "build_validation", label: "Validating build", backendKeys: ["build_validation", "static_validation"] },
-  { key: "gameplay_qa", label: "Playtesting game", backendKeys: GAMEPLAY_STEP_KEYS, optional: true },
+  { key: "project_build", label: "Runtime built" },
+  { key: "build_validation", label: "Build validated", backendKeys: ["build_validation", "static_validation"] },
+  { key: "repair_code", label: "Build repaired", optional: true },
+  { key: "replan_game_design", label: "Design simplified", optional: true },
+  { key: "gameplay_qa", label: "Playtesting game", backendKeys: ["gameplay_qa"], optional: true },
+  { key: "gameplay_repair", label: "Playtest repaired", optional: true },
   { key: "publish_artifact", label: "Preparing preview" },
+  { key: "memory_update", label: "Saving memory", optional: true },
   { key: "ready", label: "Ready to publish" },
 ];
 const USER_REVISION_STEPS: UserStep[] = [
   { key: "safety_intake", label: "Feedback checked" },
+  { key: "memory_retrieval", label: "Context retrieved" },
   { key: "feedback_understanding", label: "Feedback understood" },
+  { key: "design_contract", label: "Design contract frozen" },
+  { key: "contract_gate", label: "Contract verified" },
+  { key: "asset_processing", label: "Assets prepared", optional: true },
+  { key: "asset_generation", label: "Game assets generated", optional: true },
   { key: "code_revision", label: "Existing files revised" },
+  { key: "project_build", label: "Runtime built" },
   { key: "build_validation", label: "Validating changes" },
+  { key: "revision_repair", label: "Revision repaired", optional: true },
   { key: "gameplay_qa", label: "Regression playtest" },
+  { key: "gameplay_repair", label: "Playtest repaired", optional: true },
   { key: "publish_revision", label: "Saving new preview" },
+  { key: "memory_update", label: "Saving memory", optional: true },
   { key: "ready", label: "Ready to publish" },
 ];
 const USER_REMIX_STEPS: UserStep[] = [
   { key: "safety_intake", label: "Remix checked" },
+  { key: "memory_retrieval", label: "Context retrieved" },
   { key: "feedback_understanding", label: "Remix goal understood" },
+  { key: "design_contract", label: "Design contract frozen" },
+  { key: "contract_gate", label: "Contract verified" },
+  { key: "asset_processing", label: "Assets prepared", optional: true },
+  { key: "asset_generation", label: "Game assets generated", optional: true },
   { key: "code_revision", label: "Source files transformed" },
+  { key: "project_build", label: "Runtime built" },
   { key: "build_validation", label: "Validating remix" },
+  { key: "revision_repair", label: "Remix repaired", optional: true },
   { key: "gameplay_qa", label: "Playtesting remix" },
+  { key: "gameplay_repair", label: "Playtest repaired", optional: true },
   { key: "publish_remix", label: "Saving remix preview" },
+  { key: "memory_update", label: "Saving memory", optional: true },
   { key: "ready", label: "Ready to publish" },
 ];
 
 export type StepState = "pending" | "running" | "completed" | "failed";
 export type StepRow = { key: string; label: string; status: StepState; summary?: string | null };
 
+const STEP_KEY_BY_AGENT: Record<string, string> = {
+  SafetyIntakeAgent: "safety_intake",
+  MemoryRetrievalAgent: "memory_retrieval",
+  IntentSpecAgent: "intent_spec",
+  GameplayPlanningAgent: "gameplay_planning",
+  BriefExpansionAgent: "brief_expansion",
+  MechanicPlannerAgent: "mechanic_planner",
+  ArchetypeRouterAgent: "archetype_router",
+  AssetAgent: "asset_processing",
+  GameAssetGenerationAgent: "asset_generation",
+  GameDesignAgent: "game_design",
+  ContentPlanAgent: "content_plan",
+  BalanceAgent: "balance_plan",
+  DesignContractCompilerAgent: "design_contract",
+  ContractGateAgent: "contract_gate",
+  GameCodeAgent: "code_generation",
+  ProjectBuildAgent: "project_build",
+  BuildValidateAgent: "build_validation",
+  GameCodeAgentRepair: "repair_code",
+  GameDesignAgentReplan: "replan_game_design",
+  GameplayQAAgent: "gameplay_qa",
+  GameplayRepairAgent: "gameplay_repair",
+  PublishArtifactAgent: "publish_artifact",
+  FeedbackUnderstandingAgent: "feedback_understanding",
+  CodeRevisionAgent: "code_revision",
+  CodeRevisionRepairAgent: "revision_repair",
+  PublishRevisionAgent: "publish_revision",
+  PublishRemixAgent: "publish_remix",
+  MemoryUpdateAgent: "memory_update",
+};
+
+const STEP_KEY_BY_LABEL: Record<string, string> = {
+  "Safety Intake": "safety_intake",
+  "Retrieve Memory": "memory_retrieval",
+  "Intent Spec": "intent_spec",
+  "Gameplay Planning": "gameplay_planning",
+  "Brief Expansion": "brief_expansion",
+  "Mechanic Planner": "mechanic_planner",
+  "Archetype Router": "archetype_router",
+  "Asset Processing": "asset_processing",
+  "Generate Game Assets": "asset_generation",
+  "Game Design": "game_design",
+  "Content Plan": "content_plan",
+  "Balance Plan": "balance_plan",
+  "Design Contract": "design_contract",
+  "Contract Gate": "contract_gate",
+  "Code Generation": "code_generation",
+  "Project Build": "project_build",
+  "Build Validation": "build_validation",
+  "Repair Code": "repair_code",
+  "Replan Game Design": "replan_game_design",
+  "Gameplay QA": "gameplay_qa",
+  "Gameplay Repair": "gameplay_repair",
+  "Publish Artifact": "publish_artifact",
+  "Understand Feedback": "feedback_understanding",
+  "Revise Existing Code": "code_revision",
+  "Repair Revision": "revision_repair",
+  "Save Preview Version": "publish_revision",
+  "Save Remix": "publish_remix",
+  "Update Memory": "memory_update",
+};
+
 export function buildStepRows(task?: Task): StepRow[] {
-  const backend = new Map<string, StepSummary>((task?.step_summaries ?? []).map((step) => [step.step, step]));
+  const backend = taskStepSummaries(task);
   const configuredSteps =
     task?.task_kind === "remix" ? USER_REMIX_STEPS : task?.task_kind === "revision" ? USER_REVISION_STEPS : USER_STEPS;
   const visibleSteps = configuredSteps.filter((step) => !step.optional || stepHasBackendSummary(step, backend));
@@ -76,6 +169,31 @@ export function buildStepRows(task?: Task): StepRow[] {
   }
 
   return rows;
+}
+
+/**
+ * `step_summaries` is the compact API projection. During an old server
+ * rollout it may not know about a newly-added graph node, while the detailed
+ * `steps` array and SSE delta already do. Prefer the detailed execution record
+ * for known nodes and use summaries as the compatibility fallback.
+ */
+function taskStepSummaries(task?: Task) {
+  const summaries = new Map<string, StepSummary>();
+  (task?.step_summaries ?? []).forEach((summary) => summaries.set(summary.step, summary));
+
+  const detailed = [...(task?.steps ?? [])].sort((left, right) => (left.seq ?? 0) - (right.seq ?? 0));
+  detailed.forEach((step) => {
+    const key = STEP_KEY_BY_AGENT[step.agent] || STEP_KEY_BY_LABEL[step.name];
+    if (!key) return;
+    const summary = {
+      step: key,
+      title: step.name || key,
+      status: step.status,
+      summary: step.logs?.at(-1) || null,
+    } satisfies StepSummary;
+    summaries.set(key, summary);
+  });
+  return summaries;
 }
 
 function stepKeys(step: UserStep) {
@@ -111,6 +229,7 @@ function displayStepSummary(summaries: StepSummary[]) {
 }
 
 export function getActiveStepIndex(rows: StepRow[], task?: Task) {
+  if (rows.length === 0) return 0;
   if (task?.status === "succeeded") return rows.length - 1;
   const failed = rows.findIndex((row) => row.status === "failed");
   if (failed >= 0) return failed;
@@ -163,6 +282,8 @@ function inferStyle(source: string) {
 export function getProgressTitle(task?: Task) {
   if (task?.status === "succeeded") return "Game ready";
   if (task?.status === "failed" && task.error_code === "ASSET_GENERATION_FAILED") return "Waiting for image retry";
+  if (task?.status === "failed" && task.error_code === "MODEL_TIMEOUT") return "Waiting for retry (model connection interrupted)";
+  if (task?.status === "failed" && task.failed_stage) return `Generation stopped at ${friendlyStepName(task.failed_stage)}`;
   if (task?.status === "failed") return "Generation stopped";
   if (task?.status === "cancelled") return "Task cancelled";
   return "Creating your game";
@@ -172,10 +293,15 @@ export function getCurrentIssue(task: Task | undefined, activeStep?: StepRow) {
   if (!task) return null;
   if (task.status === "failed") {
     const imageRetryRequired = task.error_code === "ASSET_GENERATION_FAILED";
+    const streamRetryRequired = task.error_code === "MODEL_TIMEOUT";
     return {
       level: "error" as const,
-      title: imageRetryRequired ? "Image generation needs retry" : "Issue found",
-      message: task.error || "Build validation could not pass after repair attempts.",
+      title: imageRetryRequired
+        ? "Image generation needs retry"
+        : streamRetryRequired
+          ? "Model connection interrupted — retry resumes this step"
+          : "Issue found",
+      message: task.error || (task.failed_stage ? `Generation stopped during ${friendlyStepName(task.failed_stage)}.` : "Build validation could not pass after repair attempts."),
     };
   }
   if (task.status === "cancelled") {
@@ -196,18 +322,25 @@ export function getCurrentIssue(task: Task | undefined, activeStep?: StepRow) {
       message: `Repair attempt${count ? ` ${count}` : ""} - ${latestReadableLog(task) || "Fixing a runtime validation issue."}`,
     };
   }
-  if (task.replan_attempts && activeStep?.key === "build_validation") {
+  if (activeStep?.key === "repair_code" && activeStep.status === "running") {
     return {
       level: "warning" as const,
-      title: "Design adjusted",
-      message: `Replanning a simpler playable version - Attempt ${task.replan_attempts} of ${task.max_replan_attempts || 1}.`,
+      title: "Auto-repairing the build",
+      message: activeStep.summary || `Repair attempt ${task.repair_attempts || 1} of ${task.max_repair_attempts || 2}.`,
     };
   }
-  if (activeStep?.key === "gameplay_qa" && activeStep.status === "running") {
+  if (activeStep?.key === "replan_game_design" && activeStep.status === "running") {
     return {
       level: "warning" as const,
-      title: "Playtest running",
-      message: latestReadableLog(task) || "Checking restart, input response, scoring, and difficulty before preview.",
+      title: "Simplifying the design",
+      message: activeStep.summary || `Replan attempt ${task.replan_attempts || 1} of ${task.max_replan_attempts || 1}.`,
+    };
+  }
+  if (activeStep?.key === "gameplay_repair" && activeStep.status === "running") {
+    return {
+      level: "warning" as const,
+      title: "Repairing the playtest",
+      message: activeStep.summary || "Tuning gameplay metrics and rebuilding the affected runtime.",
     };
   }
   if (activeStep?.key === "gameplay_qa" && activeStep.status === "failed") {
@@ -286,7 +419,15 @@ export function friendlyMessage(message: string) {
   const compact = message.replace(/\s+/g, " ").trim();
   if (isStreamTokenLine(compact)) return "";
   const lower = compact.toLowerCase();
-  if (lower.includes("designcontractagent") || lower.includes("design contract")) return "Defining the game implementation contract";
+  if (lower.includes("memoryretrieval") || lower.includes("retrieve memory") || lower.includes("retrieved memor")) return "Loading relevant creation memory";
+  if (lower.includes("design contract")) return "Freezing the game design contract";
+  if (lower.includes("contractgate") || lower.includes("contract gate")) return "Checking the design contract";
+  if (lower.includes("gameassetgeneration") || lower.includes("generate game assets") || lower.includes("asset generation")) return "Generating and checking game assets";
+  if (lower.includes("projectbuild") || lower.includes("project build") || lower.includes("runtime build")) return "Building the browser runtime";
+  if (lower.includes("repaircode") || lower.includes("repair code")) return "Auto-repairing the generated build";
+  if (lower.includes("replan") || lower.includes("simplif")) return "Simplifying the game design for a stable build";
+  if (lower.includes("gameplayrepair") || lower.includes("gameplay repair")) return "Tuning the game after playtesting";
+  if (lower.includes("designcontractagent")) return "Defining the game implementation contract";
   if (lower.includes("rulesandsimulationcoder") || lower.includes("rules & simulation")) return "Implementing game rules and simulation";
   if (lower.includes("worldandcontentcoder") || lower.includes("world & content")) return "Building the game world and playable content";
   if (lower.includes("presentationandinteractioncoder") || lower.includes("presentation & input")) return "Implementing controls, HUD, and game feedback";
@@ -308,8 +449,26 @@ export function friendlyMessage(message: string) {
   return compact.length > 86 ? `${compact.slice(0, 83)}...` : compact || "Task updated";
 }
 
+function friendlyStepName(value: string) {
+  const key = value.trim().toLowerCase().replaceAll(" ", "_");
+  const labels: Record<string, string> = {
+    asset_generation: "asset generation",
+    build_validation: "build validation",
+    contract_gate: "contract verification",
+    design_contract: "design contract",
+    gameplay_qa: "gameplay QA",
+    gameplay_repair: "gameplay repair",
+    project_build: "runtime build",
+    repair_code: "build repair",
+    replan_game_design: "design replanning",
+  };
+  return labels[key] || value.replaceAll("_", " ");
+}
+
 export function getGameplayQaStatus(task?: Task): StepState | null {
-  const summaries = (task?.step_summaries ?? []).filter((summary) => GAMEPLAY_STEP_KEYS.includes(summary.step as (typeof GAMEPLAY_STEP_KEYS)[number]));
+  const summaries = Array.from(taskStepSummaries(task).values()).filter((summary) =>
+    GAMEPLAY_STEP_KEYS.includes(summary.step as (typeof GAMEPLAY_STEP_KEYS)[number]),
+  );
   return summaries.length > 0 ? mergedStepStatus(summaries) : null;
 }
 

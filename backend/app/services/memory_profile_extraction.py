@@ -462,7 +462,7 @@ def _llm_claims_batch(
     if not api_key or api_key == "sk-your-key-here" or not model:
         return None
 
-    from app.agents import llm
+    from app.llm import runtime as llm
 
     system = (
         "You are a memory extractor for a game-generation agent. Return one strict JSON object. "

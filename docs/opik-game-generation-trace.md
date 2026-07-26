@@ -38,25 +38,27 @@ OPIK_ENVIRONMENT=staging
 
 ```text
 game-generation:<游戏标题>
-├── stage.intent_spec
-├── stage.gameplay_planning
-├── stage.asset_planning
-├── stage.code_generation
-├── stage.validation
-├── stage.repair / stage.replan
-└── stage.publish
+├── stage.safety_intake / stage.memory_retrieval
+├── stage.intent_spec / stage.gameplay_planning / stage.archetype_router
+├── stage.game_design / stage.content_plan / stage.balance_plan
+├── stage.design_contract / stage.contract_gate
+├── stage.asset_processing / stage.asset_generation
+├── stage.code_generation / stage.project_build / stage.build_validation
+├── stage.gameplay_qa
+├── stage.repair_code / stage.gameplay_repair / stage.replan_game_design
+└── stage.publish_artifact / stage.memory_update
     ├── LLM generation
     ├── tool call
     └── OpenAI Agents 子调用
 ```
 
-根 trace 在 `run_generation()` 入口创建，阶段 span 由 `logged()` 装饰的 LangGraph 节点创建。任务结束时，根 trace 会补齐最终的游戏、版本、状态和错误信息，并调用 flush 将数据发送到 Opik。
+阶段 span 命名为 `stage.<node_name>`，与 LangGraph 节点一一对应（revision/remix 分支的节点同理）。根 trace 在 `run_generation()` 入口创建，阶段 span 由 `logged()` 装饰的 LangGraph 节点创建。任务结束时，根 trace 会补齐最终的游戏、版本、状态和错误信息，并调用 flush 将数据发送到 Opik。
 
 实现位置：
 
-- 根 trace、阶段 span 和更新函数：[backend/app/agents/opik_integration.py](../backend/app/agents/opik_integration.py#L83)
-- 生成任务生命周期和最终元数据回填：[backend/app/agents/pipeline.py](../backend/app/agents/pipeline.py#L400)
-- LangGraph 阶段 span：[backend/app/agents/tracing.py](../backend/app/agents/tracing.py#L253)
+- 根 trace、阶段 span 和更新函数：[backend/app/observability/opik_integration.py](../backend/app/observability/opik_integration.py)（旧路径 `agents/opik_integration.py` 为兼容别名）
+- 生成任务生命周期和最终元数据回填：[backend/app/agents/pipeline.py](../backend/app/agents/pipeline.py)
+- LangGraph 阶段 span：[backend/app/agents/tracing.py](../backend/app/agents/tracing.py)
 
 ## 4. Schema 版本
 

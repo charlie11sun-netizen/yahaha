@@ -59,6 +59,8 @@ docker compose up --build
 
 - `ASSET_GENERATION_ENABLED=true` 启用 `generate_game_assets`，图片、音频、视频按模态分别通过
   `ASSET_IMAGE_*` / `ASSET_AUDIO_*` / `ASSET_VIDEO_*` 路由供应商；默认 `local` 图片供应商生成离线占位 SVG，避免意外外部费用。
+  必需雪碧帧走硬门禁 + 帧审计重试（`ASSET_FRAME_AUDIT_MAX_RETRIES`），可选 VLM 语义评审（`ASSET_SEMANTIC_REVIEW_*`），
+  覆盖率达 `ASSET_RELEASE_COVERAGE_FLOOR` 可带伤放行；主图像供应商持续失败时可配 `ASSET_IMAGE_FALLBACK_*` 兜底提供商。
 - `TILEMAP_GENERATION_ENABLED=true` 为适用的 2D archetype 生成确定性的 Tiled JSON + 同源 tileset。
 - 所有新 2D 游戏强制生成模块化 Phaser 3.90 + TypeScript 源工程，由独立 sandbox 使用固定依赖完成
   `tsc --noEmit` 和 Vite 构建；只将静态 `dist` 写入公开游戏 manifest 和 MinIO。
@@ -106,22 +108,36 @@ GameWeave 已接入面向生成与修改流程的长期记忆系统：
 ├── docs/                    # 系统设计文档
 ├── backend/                 # FastAPI + Celery + LangGraph
 │   ├── app/
-│   │   ├── api/             # 路由：auth / games / tasks / uploads
+│   │   ├── api/             # 路由：auth / games / tasks / uploads / users / memory
 │   │   ├── agents/          # LangGraph 生成流水线（mock + 真实可切换）
-│   │   ├── services/        # 业务编排（生成、发布、计数…）
+│   │   ├── generation/      # 层中立生成组件：设计契约编译 / 限额 / 源码策略
+│   │   ├── llm/             # 层中立 LLM 层：runtime / provider / cache / accounting
+│   │   ├── observability/   # decision & detailed trace、Opik 集成
+│   │   ├── services/        # 业务编排（生成、发布、素材管线、记忆…）
 │   │   ├── tasks/           # Celery app + 生成任务
+│   │   ├── tools/           # OpenAPI / trace / 生成分析导出脚本
 │   │   ├── storage/         # boto3 / S3 封装
-│   │   ├── models/ · schemas.py     # SQLAlchemy 模型 / Pydantic DTO
+│   │   ├── models/ · schemas/       # SQLAlchemy 模型 / Pydantic DTO（按域拆分）
 │   │   └── seed.py          # 旗舰示例游戏
 │   ├── migrations/          # Alembic 迁移
-│   └── tests/               # pytest 套件
+│   └── tests/               # pytest 套件（按域分桶：api/architecture/assets/authoring/gates/infra/memory/pipeline）
 ├── frontend/                # Next.js（Home / Detail / Auth / Create / Play）
 │   └── app · components/ui（shadcn） · lib
+├── sandbox/                 # 隔离构建 + 浏览器 QA 服务（Playwright/Chromium）
+├── e2e/                     # Playwright 端到端测试
 ├── deploy/                  # 部署指南 + 跨机数据迁移脚本
-├── docker-compose.yml       # 本地：web / api / worker / outbox-worker / beat / postgres / redis / minio
+├── qa/                      # 取证工件（有意保留，见下方「仓库工件策略」）
+├── graphify-out/            # 代码知识图谱输出（仅 GRAPH_REPORT.md 入库）
+├── docker-compose.yml       # 本地：web / api / worker / outbox-worker / beat / sandbox / migrate / postgres / redis / minio
 ├── docker-compose.prod.yml  # 生产：站点密码门禁 + 公网地址
 └── .env.example · .env.prod.example
 ```
+
+### 仓库工件策略
+
+- **`qa/forensic-*/`**：历轮线上问题的取证包（复盘报告、离屏泵帧 harness、复现脚本），是有意入库的工程资产；其中的大体积运行时转储（`traces.jsonl` / `writes.b64` / `oplog.json` 等）已被 `.gitignore` 排除，只保留可读的分析与脚本。
+- **`graphify-out/`**：由 `graphify update .` 本地再生，只有 `GRAPH_REPORT.md` 入库；`graph.json`（5MB 级、单次 diff 可达 15 万行）不入库。
+- **运行时转储不入库**：根目录 `agent-traces-*.jsonl` / `export-err.txt`、`artifacts/`（trace 导出、源码转储、基准输出）等均为本地调试产物，统一走 `.gitignore`。
 
 ## 与设计文档的已知差异（MVP 取舍）
 
