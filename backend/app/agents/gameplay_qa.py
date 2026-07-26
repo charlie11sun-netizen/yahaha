@@ -15,6 +15,7 @@ from app.agents.design_contract import (
     execution_spec_from_state,
 )
 from app.services.vite_projects import phaser_input_binding_errors
+from app.services.win_script import extract_win_script
 from app.agents.validation_gates import (
     _CAPABILITY_DECLARATION_FILES,
     _MENU_SCENE_KEYS,
@@ -975,6 +976,22 @@ def _gameplay_qa(state: dict) -> dict:
             if "boss" not in low:
                 warnings.append("shooter has no boss climax")
 
+    # 胜路模拟:确定性 WinScript 回放,机器证明"按作者剧本真的能赢"。
+    # v1 全部走 warning(理由见 _win_path_findings 文档串)。
+    win_warnings, win_simulation = _win_path_findings(
+        state,
+        sandbox_ready=(
+            browser_result is not None
+            and not getattr(browser_result, "skipped", False)
+            and not browser_result.timed_out
+            and (
+                browser_result.frames_observed > 0
+                or browser_result.intervals_observed > 0
+            )
+        ),
+    )
+    warnings.extend(win_warnings)
+
     return {
         "passed": not issues,
         "archetype": archetype,
@@ -1012,10 +1029,91 @@ def _gameplay_qa(state: dict) -> dict:
             if browser_result is None
             else int(getattr(browser_result, "frames_start", 0) or 0),
             "visual_review": visual_verdict,
+            "win_simulation": win_simulation,
             ("uses_three_webgl" if is_3d else "uses_gradient_or_glow"): depth_metric,
         },
         "error_code": sandbox_error_code,
     }
+
+
+def _win_path_findings(state: dict, sandbox_ready: bool) -> tuple[list[str], dict | None]:
+    """Deterministic WinScript replay verdict → warning-level findings.
+
+    Every finding stays a warning on purpose: repair issue routing is
+    prefix-matched free text (repair.py), and an unrecognized issue string can
+    escalate to a full regeneration. Warnings reach the repair brief without
+    touching routing; promotion to a hard gate is a deliberate later step once
+    false-positive rates are known.
+    """
+    source_files = state.get("project_files") or state.get("generated_files") or []
+    payload, artifact_errors = extract_win_script(source_files)
+    if payload is None and not artifact_errors:
+        # No artifact: adoption is prompt-driven; pre-WinScript tasks stay silent.
+        return [], None
+    if artifact_errors:
+        return (
+            [
+                "win-path: WinScript.json is present but invalid ("
+                + _clip("; ".join(artifact_errors[:4]), 240)
+                + ") — fix the artifact so QA can machine-verify winnability"
+            ],
+            {"verdict": "invalid", "errors": artifact_errors[:8]},
+        )
+    if not settings.WIN_SIMULATION_ENABLED:
+        return [], {"verdict": "disabled"}
+    if not sandbox_ready:
+        return (
+            ["win-path: browser sandbox replay unavailable, win-path simulation skipped"],
+            {"verdict": "skipped", "detail": "sandbox not ready"},
+        )
+    result = sandbox_client.simulate_win(
+        _sandbox_files_for_qa(state.get("generated_files") or [], state.get("dimension")),
+        payload,
+        timeout_ms=settings.WIN_SIMULATION_TIMEOUT_MS,
+    )
+    if result.skipped:
+        return (
+            [f"win-path simulation skipped: {_clip(result.detail, 180)}"],
+            {"verdict": "skipped", "detail": result.detail},
+        )
+    metrics = {
+        "verdict": result.verdict,
+        "pump_mode": result.pump_mode,
+        "sim_seconds": result.sim_seconds,
+        "wall_ms": result.wall_ms,
+        "actions_sent": list(result.actions_sent)[:24],
+        "stats": dict(sorted(result.stats.items())[:24]),
+        "missing_stats": list(result.missing_stats),
+        "timeline_tail": list(result.timeline)[-16:],
+        "detail": result.detail,
+    }
+    warnings: list[str] = []
+    if result.missing_stats:
+        warnings.append(
+            "win-path: WinScript rules reference stats the game never published via Probe.stat: "
+            + ", ".join(result.missing_stats[:6])
+            + " — publish each referenced stat from the rules layer the moment it changes"
+        )
+    if result.verdict == "won":
+        return warnings, metrics
+    timeline_digest = _clip(
+        "; ".join(f"{item.get('t')}s {item.get('event')}" for item in result.timeline[-8:]),
+        420,
+    )
+    if result.verdict in {"lost", "timeout"}:
+        warnings.append(
+            f"win-path simulation could not win: verdict={result.verdict} after "
+            f"{result.sim_seconds:.0f} simulated seconds following the authored WinScript "
+            f"({result.pump_mode} time). Either the game is not winnable as designed, the "
+            'WinScript no longer matches the implementation, or Probe.status("won") is never '
+            f"wired at the terminal transition. Timeline tail: {timeline_digest}"
+        )
+    else:
+        warnings.append(
+            "win-path simulation inconclusive (harness error): "
+            + _clip(result.detail or "; ".join(result.page_errors[:2]), 240)
+        )
+    return warnings, metrics
 
 
 def _gameplay_qa_log_lines(result: dict) -> list[str]:

@@ -234,6 +234,11 @@ class Settings(BaseSettings):
     VISUAL_REVIEW_ENABLED: bool = True
     VISUAL_REVIEW_MODEL: str = ""
     VISUAL_REVIEW_TIMEOUT_SECONDS: int = 90
+    # Win-path simulation: deterministic WinScript replay in the sandbox proves
+    # the game's own rules emit Probe.status("won"). Verdicts stay warning-level
+    # (never a hard gate) while false-positive rates are being established.
+    WIN_SIMULATION_ENABLED: bool = True
+    WIN_SIMULATION_TIMEOUT_MS: int = 120_000
     MAX_ACTIVE_TASKS_PER_USER: int = 2
     TASK_TOKEN_BUDGET: int = 0
     # LangGraph superstep ceiling per run. The happy path takes ~19 supersteps

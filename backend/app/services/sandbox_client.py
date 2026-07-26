@@ -201,6 +201,83 @@ def _parse_probes(raw: object) -> dict[str, int]:
     return probes
 
 
+@dataclass
+class WinSimulationResult:
+    verdict: str = "skipped"  # won | lost | timeout | error | skipped
+    ok: bool = False
+    skipped: bool = False
+    detail: str = ""
+    pump_mode: str = ""
+    sim_seconds: float = 0.0
+    wall_ms: int = 0
+    actions_sent: list[str] = field(default_factory=list)
+    timeline: list[dict] = field(default_factory=list)
+    stats: dict[str, float] = field(default_factory=dict)
+    probes: dict[str, int] = field(default_factory=dict)
+    missing_stats: list[str] = field(default_factory=list)
+    page_errors: list[str] = field(default_factory=list)
+    console_errors: list[str] = field(default_factory=list)
+
+
+def simulate_win(
+    files: list[dict],
+    script: dict,
+    *,
+    entry: str = "index.html",
+    timeout_ms: int | None = None,
+) -> WinSimulationResult:
+    """Replay the authored WinScript deterministically in the sandbox.
+
+    Soft dependency by design: the win-path check is warning-level evidence, so
+    any infrastructure unavailability degrades to ``skipped`` instead of raising
+    ``SandboxUnavailableError`` — a task must never fail because the simulator
+    could not run.
+    """
+    url = settings.SANDBOX_URL.strip().rstrip("/")
+    if not url:
+        return WinSimulationResult(skipped=True, detail="sandbox disabled (SANDBOX_URL is empty)")
+    timeout = int(timeout_ms or settings.WIN_SIMULATION_TIMEOUT_MS)
+    encoded = _payload(files, entry, timeout, False)
+    try:
+        response = httpx.post(
+            f"{url}/simulate",
+            json={
+                "files": encoded["files"],
+                "entry": entry,
+                "script": script,
+                "timeout_ms": timeout,
+            },
+            timeout=_request_timeout_seconds(timeout + 20_000),
+        )
+        response.raise_for_status()
+        data = response.json()
+    except httpx.HTTPStatusError as exc:
+        return WinSimulationResult(
+            skipped=True, detail=f"win simulation unavailable: {_http_error_detail(exc)}"
+        )
+    except (httpx.RequestError, ValueError) as exc:
+        return WinSimulationResult(skipped=True, detail=f"win simulation unavailable: {exc}")
+    return WinSimulationResult(
+        verdict=str(data.get("verdict") or "error"),
+        ok=bool(data.get("ok")),
+        detail=str(data.get("detail") or ""),
+        pump_mode=str(data.get("pump_mode") or ""),
+        sim_seconds=float(data.get("sim_seconds") or 0),
+        wall_ms=int(data.get("wall_ms") or 0),
+        actions_sent=[str(item) for item in (data.get("actions_sent") or [])][:200],
+        timeline=[item for item in (data.get("timeline") or []) if isinstance(item, dict)][:240],
+        stats={
+            str(key)[:40]: float(value)
+            for key, value in (data.get("stats") or {}).items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        },
+        probes=_parse_probes(data.get("probes")),
+        missing_stats=[str(item)[:40] for item in (data.get("missing_stats") or [])][:20],
+        page_errors=[str(item) for item in (data.get("page_errors") or [])][:10],
+        console_errors=[str(item) for item in (data.get("console_errors") or [])][:10],
+    )
+
+
 def build_vite_project(files: list[dict], *, timeout_ms: int | None = None) -> ViteBuildResult:
     url = settings.SANDBOX_URL.strip().rstrip("/")
     if not url:

@@ -18,6 +18,11 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from playwright.async_api import Browser, Error as PlaywrightError, Page, async_playwright
 
+# Relative import on purpose: this module is loaded both as `app.main` (uvicorn
+# in the sandbox container) and as `sandbox.app.main` (backend test suite), and
+# an absolute `app` would resolve to the backend package in the latter.
+from . import winscript
+
 
 ORIGIN_HOST = "bundle.sandbox"
 ORIGIN = f"https://{ORIGIN_HOST}"
@@ -101,6 +106,34 @@ class ViteBuildResponse(BaseModel):
     logs: list[str] = Field(default_factory=list)
     duration_ms: int = 0
     timed_out: bool = False
+
+
+class SimulateRequest(BaseModel):
+    files: list[BundleFile] = Field(min_length=1, max_length=120)
+    entry: str = "index.html"
+    # WinScript payload; validated by winscript.parse_script before any browser work.
+    script: dict
+    # Wall-clock budget. Virtual-time pumping typically finishes an 8-minute
+    # game in well under a minute; realtime fallback needs the headroom.
+    timeout_ms: int | None = Field(default=None, ge=5_000, le=240_000)
+
+
+class SimulateResponse(BaseModel):
+    verdict: str  # won | lost | timeout | error
+    ok: bool = False
+    pump_mode: str = "virtual"  # virtual (game.loop.step) | realtime (no __GW_GAME__)
+    sim_seconds: float = 0.0
+    wall_ms: int = 0
+    actions_sent: list[str] = Field(default_factory=list)
+    timeline: list[dict] = Field(default_factory=list)
+    stats: dict[str, float] = Field(default_factory=dict)
+    probes: dict[str, int] = Field(default_factory=dict)
+    # WinScript-referenced stats the game never published via Probe.stat.
+    missing_stats: list[str] = Field(default_factory=list)
+    page_errors: list[str] = Field(default_factory=list)
+    console_errors: list[str] = Field(default_factory=list)
+    detail: str = ""
+    screenshot_b64: str | None = None
 
 
 @dataclass
@@ -708,6 +741,285 @@ async def _run_with_timeout(payload: RunRequest) -> RunResponse:
     return result
 
 
+# Stops Phaser's own rAF loop and exposes a manual pump so the simulation can
+# run minutes of game time in seconds of wall time. Every pumped frame advances
+# a fixed 1000/60 ms virtual clock, so tweens, timers, physics and update(dt)
+# stay mutually consistent. Falls back to realtime when the scaffold handle is
+# missing (bundles generated before __GW_GAME__ existed).
+_SIM_SETUP_JS = """() => {
+  const game = window.__GW_GAME__;
+  if (!game || !game.loop || typeof game.loop.step !== "function") return "realtime";
+  if (window.__GW_SIM__) return window.__GW_SIM__.mode;
+  try { game.loop.stop(); } catch (error) { return "realtime"; }
+  window.__GW_SIM__ = {
+    mode: "virtual",
+    now: (typeof performance !== "undefined" && performance.now()) || 0,
+    frames: 0,
+    error: "",
+    pump(count) {
+      const n = Math.max(0, Math.min(1200, count | 0));
+      for (let i = 0; i < n; i += 1) {
+        this.now += 1000 / 60;
+        try { game.loop.step(this.now); } catch (error) {
+          this.error = String(error).slice(0, 300);
+          return -1;
+        }
+        this.frames += 1;
+      }
+      return this.frames;
+    },
+  };
+  return "virtual";
+}"""
+
+_SIM_READ_JS = """() => ({
+  stats: window.__GW_STATS__ || {},
+  counts: (window.__GW_PROBES__ && window.__GW_PROBES__.counts) || {},
+  pumpError: (window.__GW_SIM__ && window.__GW_SIM__.error) || "",
+})"""
+
+# Maps WinScript design-space coordinates onto the on-page canvas rect. With
+# Scale.FIT the whole game surface maps linearly to the canvas box, so no
+# camera math is needed for screen-space targets.
+_SIM_POINTER_JS = """(pos) => {
+  const canvases = [...document.querySelectorAll("canvas")]
+    .map((canvas) => ({ canvas, rect: canvas.getBoundingClientRect() }))
+    .filter(({ rect }) => rect.width > 0 && rect.height > 0)
+    .sort((a, b) => (b.rect.width * b.rect.height) - (a.rect.width * a.rect.height));
+  const chosen = canvases[0];
+  if (!chosen) return null;
+  const game = window.__GW_GAME__;
+  const gameWidth = Number((game && game.scale && game.scale.width) || chosen.canvas.width || 1);
+  const gameHeight = Number((game && game.scale && game.scale.height) || chosen.canvas.height || 1);
+  return {
+    x: chosen.rect.left + (Number(pos.x) / gameWidth) * chosen.rect.width,
+    y: chosen.rect.top + (Number(pos.y) / gameHeight) * chosen.rect.height,
+  };
+}"""
+
+_SIM_TICK_SECONDS = 0.5
+_SIM_TIMELINE_LIMIT = 240
+
+
+def _timeline_add(timeline: list[dict], sim_seconds: float, event: str) -> None:
+    if len(timeline) < _SIM_TIMELINE_LIMIT:
+        timeline.append({"t": round(sim_seconds, 1), "event": event[:200]})
+
+
+def _describe_sim_action(action: dict, source: str) -> str:
+    kind = action.get("action")
+    if kind == "pointer":
+        label = f"pointer({action.get('x')},{action.get('y')})"
+    elif kind == "key":
+        hold = int(action.get("hold_ms") or 0)
+        label = f"key {action.get('key')}" + (f" hold {hold}ms" if hold else "")
+    else:
+        label = f"wait {action.get('seconds')}s"
+    named = action.get("label")
+    return f"{source}: {label}" + (f" [{named}]" if named else "")
+
+
+async def _execute_sim_action(page: Page, action: dict) -> tuple[bool, str]:
+    try:
+        kind = action.get("action")
+        if kind == "pointer":
+            target = await page.evaluate(
+                _SIM_POINTER_JS, {"x": action.get("x"), "y": action.get("y")}
+            )
+            if not isinstance(target, dict):
+                return False, "no visible canvas to project the pointer onto"
+            await page.mouse.click(float(target["x"]), float(target["y"]))
+        elif kind == "key":
+            key = str(action.get("key") or "Space")
+            hold = int(action.get("hold_ms") or 0)
+            if hold > 0:
+                await page.keyboard.down(key)
+                await page.wait_for_timeout(min(hold, 2000))
+                await page.keyboard.up(key)
+            else:
+                await page.keyboard.press(key, delay=30)
+        # "wait" needs no page work: the driver pumps the extra virtual time.
+        return True, ""
+    except (PlaywrightError, KeyError, TypeError, ValueError) as exc:
+        return False, " ".join(str(exc).split())[:200]
+
+
+async def _drive_simulation(
+    browser: Browser,
+    files: dict[str, bytes],
+    entry: str,
+    script: dict,
+    timeout_ms: int,
+) -> SimulateResponse:
+    page_errors: list[str] = []
+    console_errors: list[str] = []
+    requests_aborted: list[str] = []
+    actions_sent: list[str] = []
+    timeline: list[dict] = []
+    started = time.perf_counter()
+    context = await browser.new_context(viewport={"width": 1280, "height": 720})
+    await context.add_init_script(_INIT_SCRIPT)
+    try:
+        page = await context.new_page()
+        page.on("pageerror", lambda exc: page_errors.append(" ".join(str(exc).split())[:500]))
+        page.on(
+            "console",
+            lambda msg: console_errors.append(" ".join(msg.text.split())[:500])
+            if msg.type == "error"
+            else None,
+        )
+        await _install_routes(page, files, requests_aborted)
+        await page.goto(f"{ORIGIN}/{entry}", wait_until="domcontentloaded", timeout=15_000)
+        first_frame_deadline = time.perf_counter() + 15
+        frames_seen = 0
+        while time.perf_counter() < first_frame_deadline:
+            try:
+                frames_seen = int(await page.evaluate("window.__sandboxFrameCount || 0"))
+            except PlaywrightError:
+                break
+            if frames_seen > 0:
+                break
+            await page.wait_for_timeout(200)
+        if frames_seen <= 0:
+            return SimulateResponse(
+                verdict="error",
+                detail="game never produced an animation frame; cannot simulate",
+                page_errors=page_errors,
+                console_errors=console_errors,
+                wall_ms=int((time.perf_counter() - started) * 1000),
+            )
+        # Give the boot/title flow a moment before freezing the loop.
+        await page.wait_for_timeout(250)
+        pump_mode = str(await page.evaluate(_SIM_SETUP_JS) or "realtime")
+
+        progress = winscript.SimProgress()
+        sim_seconds = 0.0
+        budget = float(script.get("sim_seconds") or 300)
+        wall_deadline = started + timeout_ms / 1000
+        last_stats_log = -1e9
+        stats: dict = {}
+        verdict = "timeout"
+        detail = ""
+        while True:
+            try:
+                snapshot = await page.evaluate(_SIM_READ_JS)
+            except PlaywrightError as exc:
+                verdict = "error"
+                detail = " ".join(str(exc).split())[:300]
+                break
+            stats = snapshot.get("stats") or {}
+            counts = snapshot.get("counts") or {}
+            if snapshot.get("pumpError"):
+                verdict = "error"
+                detail = f"game crashed during pumped frame: {snapshot['pumpError']}"
+                break
+            terminal = winscript.terminal_verdict(counts)
+            if terminal:
+                verdict = terminal
+                break
+            if sim_seconds >= budget:
+                verdict = "timeout"
+                detail = f"no terminal Probe.status within {budget:.0f} simulated seconds"
+                break
+            if time.perf_counter() >= wall_deadline:
+                verdict = "timeout"
+                detail = "wall-clock budget exhausted"
+                break
+            action, source = winscript.next_action(script, stats, counts, sim_seconds, progress)
+            extra_wait = 0.0
+            if action:
+                description = _describe_sim_action(action, source)
+                ok_action, action_error = await _execute_sim_action(page, action)
+                if ok_action:
+                    if len(actions_sent) < 200:
+                        actions_sent.append(description)
+                    _timeline_add(timeline, sim_seconds, description)
+                else:
+                    _timeline_add(timeline, sim_seconds, f"{description} FAILED: {action_error}")
+                if action.get("action") == "wait":
+                    extra_wait = float(action.get("seconds") or 1.0)
+            if sim_seconds - last_stats_log >= 15:
+                last_stats_log = sim_seconds
+                snap = ", ".join(
+                    f"{key}={round(float(value), 2)}"
+                    for key, value in sorted(stats.items())[:8]
+                    if isinstance(value, (int, float))
+                )
+                _timeline_add(timeline, sim_seconds, f"stats: {snap or 'none published'}")
+            advance = _SIM_TICK_SECONDS + extra_wait
+            if pump_mode == "virtual":
+                pumped = await page.evaluate(
+                    f"window.__GW_SIM__ ? window.__GW_SIM__.pump({int(advance * 60)}) : -2"
+                )
+                if pumped == -2:
+                    pump_mode = "realtime"
+            else:
+                await page.wait_for_timeout(int(min(advance, 5.0) * 1000))
+            sim_seconds += advance
+        _timeline_add(
+            timeline, sim_seconds, f"terminal: {verdict}" + (f" ({detail})" if detail else "")
+        )
+        probes = await _collect_probes(page)
+        screenshot_raw, _shot_error, _method = await _capture_page(page)
+        clean_stats = {
+            str(key)[:40]: float(value)
+            for key, value in list(stats.items())[:60]
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        }
+        return SimulateResponse(
+            verdict=verdict,
+            ok=verdict == "won",
+            pump_mode=pump_mode,
+            sim_seconds=round(sim_seconds, 1),
+            wall_ms=int((time.perf_counter() - started) * 1000),
+            actions_sent=actions_sent,
+            timeline=timeline,
+            stats=clean_stats,
+            probes=probes,
+            missing_stats=winscript.missing_stats(script, clean_stats),
+            page_errors=page_errors,
+            console_errors=console_errors,
+            detail=detail,
+            screenshot_b64=(
+                base64.b64encode(screenshot_raw).decode("ascii") if screenshot_raw else None
+            ),
+        )
+    finally:
+        await context.close()
+
+
+async def _simulate_with_timeout(payload: SimulateRequest) -> SimulateResponse:
+    script, errors = winscript.parse_script(payload.script)
+    if errors:
+        raise HTTPException(
+            status_code=422, detail=("invalid WinScript: " + "; ".join(errors[:6]))[:400]
+        )
+    files = _decode_files(payload.files)
+    entry = _normalize_path(payload.entry)
+    if entry not in files:
+        raise HTTPException(status_code=422, detail=f"entry file not found: {entry}")
+    timeout_ms = payload.timeout_ms or 120_000
+    browser = await _ensure_browser()
+    try:
+        result = await asyncio.wait_for(
+            _drive_simulation(browser, files, entry, script, timeout_ms),
+            timeout=(timeout_ms + 20_000) / 1000,
+        )
+    except TimeoutError:
+        result = SimulateResponse(
+            verdict="timeout",
+            detail=f"simulation exceeded {timeout_ms}ms wall budget",
+            wall_ms=timeout_ms,
+        )
+    except PlaywrightError as exc:
+        result = SimulateResponse(verdict="error", detail=" ".join(str(exc).split())[:400])
+        if state.browser is not None and not state.browser.is_connected():
+            state.browser = None
+    state.runs += 1
+    await _recycle_if_needed()
+    return result
+
+
 def _materialize_project(root: Path, files: dict[str, bytes]) -> None:
     for relative, content in files.items():
         target = root.joinpath(*relative.split("/"))
@@ -896,6 +1208,14 @@ async def run_bundle(payload: RunRequest):
         raise HTTPException(status_code=503, detail="runner not ready")
     async with state.semaphore:
         return await _run_with_timeout(payload)
+
+
+@app.post("/simulate", response_model=SimulateResponse)
+async def simulate_win_path(payload: SimulateRequest):
+    if state.semaphore is None:
+        raise HTTPException(status_code=503, detail="runner not ready")
+    async with state.semaphore:
+        return await _simulate_with_timeout(payload)
 
 
 @app.post("/build/vite", response_model=ViteBuildResponse)

@@ -378,6 +378,11 @@ bounded calls at the real lifecycle points:
   rules resolve the interaction from geometry, timing, or legality.
 - `Probe.despawn(category, stableEntityId, reason)` only after the matching
   renderer and collision/input body have left play.
+- `Probe.status("won" | "lost")` exactly once at the rules-owned terminal
+  transition. The scaffold `GameState` emits it for targetScore games; custom
+  win conditions must call it themselves at the moment the outcome resolves.
+- `Probe.stat("gold", value)` for every numeric the WinScript references —
+  publish from the rules layer the moment the value changes (latest wins).
 
 QA drives the built game for a few seconds and reconciles probes against the
 design roster: a backdrop that never draws in the gameplay scene, animation
@@ -386,6 +391,38 @@ groups that never play, or an enemy roster with zero spawn reports all read as
 (bounded counters on `window`), so never gate gameplay on them — just call
 them at the real spawn points. Faking probes without the behavior is useless:
 QA also sees screenshots, input response, and the static wiring checks.
+
+### WinScript — the machine-executable win proof
+
+`src/contracts/WinScript.json` (Integration-owned) is the deterministic "how to
+win" plan QA replays in the sandbox with virtual time — no model in the loop,
+same bundle + same script = same verdict. Derive it from the tutorial steps and
+the win_feasibility ledger:
+
+```json
+{
+  "sim_seconds": 300,
+  "setup": [
+    {"action": "pointer", "x": 240, "y": 520, "label": "place opening tower"},
+    {"action": "wait", "seconds": 2}
+  ],
+  "rules": [
+    {"label": "build when affordable",
+     "when": {"stat": "gold", "op": "gte", "value": 120},
+     "do": {"action": "pointer", "x": 300, "y": 520},
+     "cooldown_s": 3, "max_times": 6},
+    {"label": "start next wave",
+     "when": {"probe": "window:open|wave-ready", "op": "gte", "value": 1},
+     "do": {"action": "key", "key": "Space"}, "cooldown_s": 5}
+  ]
+}
+```
+
+Coordinates are design-space canvas pixels. Conditions read only `Probe.stat`
+gauges, probe counters, or the sim clock; the run passes only when the rules
+layer emits `Probe.status("won")`. An unwinnable script, a stale script, or
+missing stat wiring all land in the repair brief with the replay timeline
+attached.
 
 ## World edges — nothing drifts offscreen
 

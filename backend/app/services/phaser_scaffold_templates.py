@@ -297,6 +297,8 @@ PROBE_TS = """import Phaser from "phaser";
  * - `Probe.window("low-crate", "open")` when its actionable timing window opens
  * - `Probe.outcome("low-crate", "success")` when an interaction resolves
  * - `Probe.despawn("pickup", actorId, "collected")` after its render/physics entity leaves play
+ * - `Probe.status("won" | "lost")` exactly once when the rules layer reaches its terminal outcome
+ * - `Probe.stat("gold", value)` for every WinScript-referenced numeric the moment it changes
  */
 interface ProbeStore {
   counts: Record<string, number>;
@@ -352,6 +354,28 @@ export const Probe = {
   /** Report that a resolved runtime entity is no longer rendered or collidable. */
   despawn(category: string, id: string, reason = "resolved"): void {
     Probe.emit(`despawn:${category}`, `${id}:${reason}`);
+  },
+
+  /** Publish a rules-owned numeric gauge (latest value wins). The QA win-path
+   * simulation reads `window.__GW_STATS__` to evaluate WinScript conditions,
+   * so every stat a WinScript rule references must be published on change. */
+  stat(id: string, value: number): void {
+    try {
+      if (typeof window === "undefined" || !Number.isFinite(value)) return;
+      const host = window as unknown as { __GW_STATS__?: Record<string, number> };
+      if (!host.__GW_STATS__) host.__GW_STATS__ = {};
+      const stats = host.__GW_STATS__;
+      const key = String(id).slice(0, 40);
+      if (stats[key] === undefined && Object.keys(stats).length >= 60) return;
+      stats[key] = value;
+    } catch {
+      /* probes must never break gameplay */
+    }
+  },
+
+  /** Report the rules-owned terminal outcome exactly once per run. */
+  status(result: "won" | "lost"): void {
+    Probe.emit("game:status", result);
   },
 };
 
@@ -1112,7 +1136,9 @@ export const Bounds = {
 };
 """
 
-GAME_STATE_TS = """export type GameStatus = "playing" | "won" | "lost";
+GAME_STATE_TS = """import { Probe } from "./Probe";
+
+export type GameStatus = "playing" | "won" | "lost";
 
 export class GameState {
   score = 0;
@@ -1121,18 +1147,29 @@ export class GameState {
   constructor(
     public lives: number,
     readonly targetScore: number,
-  ) {}
+  ) {
+    Probe.stat("score", 0);
+    Probe.stat("lives", lives);
+  }
 
   addScore(points: number): void {
     if (this.status !== "playing") return;
     this.score += points;
-    if (this.score >= this.targetScore) this.status = "won";
+    Probe.stat("score", this.score);
+    if (this.score >= this.targetScore) {
+      this.status = "won";
+      Probe.status("won");
+    }
   }
 
   loseLife(): void {
     if (this.status !== "playing") return;
     this.lives = Math.max(0, this.lives - 1);
-    if (this.lives === 0) this.status = "lost";
+    Probe.stat("lives", this.lives);
+    if (this.lives === 0) {
+      this.status = "lost";
+      Probe.status("lost");
+    }
   }
 }
 """
@@ -1907,7 +1944,7 @@ import { TitleScene } from "./scenes/TitleScene";
 import { PlayScene } from "./scenes/PlayScene";
 import { GameOverScene } from "./scenes/GameOverScene";
 
-new Phaser.Game({
+const game = new Phaser.Game({
   type: Phaser.AUTO,
   parent: "game-container",
   width: gameConfig.width,
@@ -1924,6 +1961,10 @@ new Phaser.Game({
     autoCenter: Phaser.Scale.CENTER_BOTH,
   },
 });
+
+// The QA win-path simulator pumps virtual time through this handle
+// (game.loop.step). Gameplay code must never read or depend on it.
+(window as unknown as { __GW_GAME__?: Phaser.Game }).__GW_GAME__ = game;
 """
 
 STYLES_CSS = """html, body, #game-container { width: 100%; height: 100%; margin: 0; }
