@@ -23,7 +23,7 @@ export function GameActions({
   initialLikes: number;
   title: string;
 }) {
-  const { user } = useAuth();
+  const { loading: authLoading, user } = useAuth();
   const flash = useToast();
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -36,6 +36,7 @@ export function GameActions({
     enabled: !!user,
     staleTime: 15_000,
   });
+  const personalizedLoading = !!user && personalized.isLoading;
 
   useEffect(() => {
     if (!personalized.data) return;
@@ -45,6 +46,7 @@ export function GameActions({
   }, [personalized.data]);
 
   const requireUser = (message: string) => {
+    if (authLoading) return false;
     if (user) return true;
     flash(message);
     router.push(`/login?next=${encodeURIComponent(`/games/${gameId}`)}`);
@@ -108,18 +110,18 @@ export function GameActions({
 
   return (
     <div className="flex flex-wrap gap-3">
-      <Button aria-label={`Like ${title}`} aria-pressed={liked} className="rounded-lg" onClick={toggleLike} type="button" variant={liked ? "default" : "outline"}>
+      <Button aria-label={`Like ${title}`} aria-pressed={liked} className="rounded-lg" disabled={authLoading || personalizedLoading} onClick={toggleLike} type="button" variant={liked ? "default" : "outline"}>
         <Heart size={16} fill={liked ? "currentColor" : "none"} />
         {likes}
       </Button>
-      <Button className="rounded-lg" onClick={toggleFavorite} type="button" variant={favorited ? "default" : "outline"}>
+      <Button className="rounded-lg" disabled={authLoading || personalizedLoading} onClick={toggleFavorite} type="button" variant={favorited ? "default" : "outline"}>
         <Star size={16} fill={favorited ? "currentColor" : "none"} />
         {favorited ? "Saved" : "Save"}
       </Button>
       <Button className="rounded-lg" onClick={share} type="button" variant="outline">
         <Share2 size={16} />Share
       </Button>
-      <Button className="rounded-lg" onClick={remix} type="button" variant="outline">
+      <Button className="rounded-lg" disabled={authLoading} onClick={remix} type="button" variant="outline">
         <GitFork size={16} />Remix
       </Button>
     </div>

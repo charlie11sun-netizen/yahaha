@@ -437,7 +437,9 @@ def code_revision_node(state: dict) -> dict:
     changed = list(dict.fromkeys([*changed, *asset_changes]))
     return {
         **prepared,
-        "code_source": "revision",
+        # Offline revisions only annotate the deterministic template; they are not
+        # authored output and must retain the template QA policy.
+        "code_source": "revision" if state.get("use_real") else "template",
         "revision_result": {"changed_files": changed, "base_version": state.get("base_version")},
         "_agent": "CodeRevisionAgent",
         "_tokens_delta": tokens,

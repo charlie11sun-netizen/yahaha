@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { firstPublishedGame, register, signInPage } from "./helpers";
+import { firstPublishedGame, holdAuthHydration, register, signInPage } from "./helpers";
 
 test("create mock pipeline to preview and publish", async ({ page, request }) => {
   test.setTimeout(120_000);
@@ -28,9 +28,13 @@ test("detail remix button opens a prefilled create flow", async ({ page, request
   const auth = await register(request, "E2E Remixer");
   await signInPage(page, auth.session);
   const source = await firstPublishedGame(request);
+  const releaseAuth = await holdAuthHydration(page);
 
   await page.goto(`/games/${source.id}`);
-  await page.getByRole("button", { name: "Remix", exact: true }).click();
+  const remixButton = page.getByRole("button", { name: "Remix", exact: true });
+  await expect(remixButton).toBeDisabled();
+  releaseAuth();
+  await remixButton.click();
   await expect(page).toHaveURL(new RegExp(`/create\\?remix=${source.id}`));
   await expect(page.getByRole("heading", { name: `Remix ${source.title}` })).toBeVisible();
   await expect(page.getByLabel("Game idea")).toHaveValue(/Remix/);

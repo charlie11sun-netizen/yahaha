@@ -39,6 +39,18 @@ export async function signInPage(
   await page.context().addCookies([session]);
 }
 
+export async function holdAuthHydration(page: Page) {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(`${apiBase}/auth/me`, async (route) => {
+    await held;
+    await route.continue();
+  });
+  return release;
+}
+
 export async function firstPublishedGame(request: APIRequestContext) {
   const res = await request.get(`${apiBase}/games?limit=1`, { headers: gateHeaders() });
   expect(res.ok()).toBeTruthy();

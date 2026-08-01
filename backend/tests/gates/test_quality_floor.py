@@ -7,7 +7,7 @@ archetype 降级为元数据、design 丰富键(palette/signature_twist/sfx_even
 import json
 
 from app.agents import validation_nodes
-from app.agents.codegen import code_generation_node
+from app.agents.codegen import code_generation_node, code_revision_node
 from app.agents.planning_brief import _coerce_mechanic_plan
 from app.agents.planning_nodes import archetype_router_node, content_plan_node, gameplay_planning_node
 from app.agents.planning_routing import _balance_plan, _merge_balance_into_design
@@ -559,15 +559,24 @@ def test_coerce_mechanic_plan_keeps_signature_twist():
 
 
 def test_codegen_reports_template_code_source_offline():
-    out = code_generation_node(
+    state = {
+        "dimension": "2d",
+        "use_real": False,
+        "game_spec": {"title": "Sourced", "archetype": "topdown_collect"},
+        "game_design": {},
+    }
+    out = code_generation_node(state)
+    assert out["code_source"] == "template"
+
+    revision = code_revision_node(
         {
-            "dimension": "2d",
-            "use_real": False,
-            "game_spec": {"title": "Sourced", "archetype": "topdown_collect"},
-            "game_design": {},
+            **state,
+            "existing_files": out["project_files"],
+            "source_feedback": "make movement faster",
+            "base_version": "v1",
         }
     )
-    assert out["code_source"] == "template"
+    assert revision["code_source"] == "template"
 
 
 def test_quality_bar_skill_available_to_agents():
