@@ -116,8 +116,9 @@ jobs:
       - name: Run Playwright E2E
         working-directory: e2e
         env:
-          E2E_BASE_URL: http://127.0.0.1:3000
-          E2E_API_URL: http://127.0.0.1:8000
+          E2E_BASE_URL: http://localhost:3000
+          E2E_API_URL: http://localhost:8000
+          E2E_WEB_URL: http://localhost:3000
         run: npx playwright test
       - name: Upload Playwright artifacts
         if: failure()

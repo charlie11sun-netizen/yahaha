@@ -2,17 +2,20 @@ import { expect, test } from "@playwright/test";
 import { register, signInPage } from "./helpers";
 
 test("switch a game back to an earlier version from Studio", async ({ page, request }) => {
+  test.setTimeout(180_000);
   const auth = await register(request, "E2E Versioner");
   await signInPage(page, auth.session);
 
   await page.goto("/create");
   await page.getByLabel("Game idea").fill("A compact puzzle game with glowing tiles and a timer.");
-  await page.getByRole("button", { name: "Generate Game" }).click();
+  await page.getByRole("button", { name: "Start building", exact: true }).click();
   await expect(page.getByRole("button", { name: "Play Preview" })).toBeVisible({ timeout: 90_000 });
 
-  await page.getByLabel("What should change?").fill("Make the game react faster, but keep the same core rules.");
+  await page.getByRole("button", { name: "Plan the next version", exact: true }).click();
+  await page.getByLabel("Desired outcome").fill("Make the game react faster, but keep the same core rules.");
+  await page.getByRole("button", { name: "Review revision", exact: true }).click();
   const firstTaskUrl = page.url();
-  await page.getByRole("button", { name: "Apply feedback to this version" }).click();
+  await page.getByRole("button", { name: "Create revision", exact: true }).click();
   await expect(page).not.toHaveURL(firstTaskUrl);
   await expect(page.getByRole("button", { name: "Play Preview" })).toBeVisible({ timeout: 90_000 });
 

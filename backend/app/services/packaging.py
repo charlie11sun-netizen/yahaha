@@ -203,18 +203,18 @@ def write_bundle(
 
     s3.put_object(bundle_key, html, "text/html; charset=utf-8")
 
-    assets = ["index.html"]
+    files = [{"path": "index.html", "sha256": sha}]
     # Same-prefix sibling files referenced by the bundle via relative <src>
     # (e.g. three.min.js for 3D games). Uploaded next to index.html so the
     # sandboxed iframe resolves them against its own remote URL.
     for name, data in (extra_assets or {}).items():
         s3.put_object(f"{prefix}/{name}", data, _content_type_for(name, default="application/octet-stream"))
-        assets.append(name)
+        files.append({"path": name, "sha256": hashlib.sha256(data).hexdigest()})
 
     manifest = {
         "schemaVersion": 1, "id": game_id, "title": title, "version": version, "entry": "index.html",
         "runtime": "iframe-sandbox", "sandbox": "allow-scripts allow-pointer-lock",
-        "assets": assets, "sha256": sha, "createdBy": author_name, "createdAt": now_utc().isoformat(),
+        "files": files, "sha256": sha, "createdBy": author_name, "createdAt": now_utc().isoformat(),
     }
     s3.put_object(manifest_key, json.dumps(manifest, ensure_ascii=False, indent=2), "application/json")
     return {"manifest_key": manifest_key, "bundle_key": bundle_key, "sha256": sha, "size": len(body)}

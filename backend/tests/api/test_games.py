@@ -6,6 +6,7 @@ from conftest import auth_user, seed_game
 from app.core.config import settings
 from app.models import GameVersion
 from app.models.common import GameStatus
+from app.services.packaging import write_bundle
 
 
 def test_list_pagination(client, db_session_factory):
@@ -113,6 +114,34 @@ def test_manifest_returns_tokenized_api_file_urls(client, db_session_factory, mo
     parts = entry_path.split("/")
     parts[4] = "bad-token"
     assert client.get("/".join(parts)).status_code == 403
+
+
+def test_seed_bundle_manifest_matches_api_response_schema(client, db_session_factory, monkeypatch):
+    game_id = seed_game(db_session_factory, title="SeedBundle")
+    objects: dict[str, bytes] = {}
+
+    def put_object(key, body, content_type):
+        objects[key] = body.encode("utf-8") if isinstance(body, str) else body
+        return key
+
+    monkeypatch.setattr("app.services.packaging.s3.put_object", put_object)
+    write_bundle(
+        game_id,
+        "v1",
+        "<!doctype html><html><head></head><body></body></html>",
+        "Seed Bundle",
+        "Demo",
+        extra_assets={"three.min.js": b"engine"},
+    )
+    monkeypatch.setattr("app.services.game_actions.s3.get_object", lambda key: objects.get(key))
+
+    response = client.get(f"/games/{game_id}/manifest")
+
+    assert response.status_code == 200
+    manifest = response.json()
+    assert [item["path"] for item in manifest["files"]] == ["index.html", "three.min.js"]
+    assert all(f"/games/{game_id}/files/" in item["url"] for item in manifest["files"])
+    assert "assets" not in manifest
 
 
 def test_owner_can_list_and_activate_versions(client, db_session_factory):

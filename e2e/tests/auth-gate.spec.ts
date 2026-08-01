@@ -15,14 +15,14 @@ test("register, logout, and login", async ({ page }) => {
   await page.goto("/login");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("secret1");
-  await page.getByRole("button", { name: "Log in" }).click();
+  await page.getByLabel("Log in").getByRole("button", { name: "Log in" }).click();
   await expect(page).toHaveURL(/\/explore/);
 });
 
 test("unauthenticated create redirects to login", async ({ context, page }) => {
   await context.clearCookies();
   await page.goto("/create");
-  await expect(page).toHaveURL(/\/login\?intent=create/);
+  await expect(page).toHaveURL(/\/login\?next=%2Fcreate$/);
 });
 
 test("password gate unlock flow", async ({ page }) => {
@@ -34,5 +34,5 @@ test("password gate unlock flow", async ({ page }) => {
   await expect(page).toHaveURL(/\/gate/);
   await page.getByPlaceholder("Access password").fill(password!);
   await page.getByRole("button", { name: /unlock/i }).click();
-  await expect(page).toHaveURL(/\/login\?intent=create/);
+  await expect(page).toHaveURL(/\/login\?next=%2Fcreate$/);
 });

@@ -2,11 +2,13 @@ import { createHash } from "node:crypto";
 import { expect, type Page, type APIRequestContext } from "@playwright/test";
 
 export const apiBase = (process.env.E2E_API_URL || process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
-export const webOrigin = new URL(process.env.E2E_WEB_URL || "http://localhost:3000").origin;
+export const webOrigin = new URL(
+  process.env.E2E_WEB_URL || process.env.E2E_BASE_URL || "http://localhost:3000",
+).origin;
 const sessionCookieName = process.env.AUTH_COOKIE_NAME || "gameweave_session";
 
 export function uniqueEmail(prefix: string) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}@e2e.test`;
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}@e2e.gameweave.dev`;
 }
 
 export function gateHeaders() {
