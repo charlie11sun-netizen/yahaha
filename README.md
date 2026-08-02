@@ -163,13 +163,14 @@ GameWeave 已接入面向生成与修改流程的长期记忆系统：
 
 ## 与设计文档的已知差异（MVP 取舍）
 
-- **鉴权**：邮箱登录与 OAuth 统一签发 HttpOnly/SameSite JWT Cookie（不向 JS 暴露 token），受保护写请求校验 `Origin` 防 CSRF；注册/登录/me/改密码/改资料/删号均校验 `is_active`。**真实 Google/GitHub OAuth 授权码流程**配好 client id/secret 即启用；demo 仅本地显式开启。
-- **迁移**：已接入 **Alembic**（`backend/migrations`，单一固化基线 `0001_baseline`，空库可直接 `alembic upgrade head`，测试守护迁移 schema ≡ ORM schema）；开发以 `create_all` 兜底（`AUTO_CREATE_ALL`），生产 compose 关闭兜底、只走迁移。squash 之前建的库先执行 `alembic stamp 0001_baseline --purge`，再执行 `alembic upgrade head`。
-- **测试 / CI**：`backend/tests` pytest 套件（SQLite 内存库，覆盖 auth / games / tasks / uploads / 限流）+ GitHub Actions（`.github/workflows/ci.yml`：后端 pytest；前端依赖审计、OpenAPI 生成物漂移检查、ESLint、TypeScript 和 `next build`）。前端请求通过 `openapi-fetch` 消费生成的 `paths`，后端契约变化需执行 `cd frontend && npm run openapi:generate` 并提交 `lib/api-types.ts`。
-- **加固**：Redis IP 限流、安全响应头、上传 MIME 嗅探/图片重编码/EXIF 清理/ZIP 约束、播放计数防刷、发布时向 bundle 注入 CSP（`connect-src 'self'`，浏览器层强制同前缀资源）、API token 文件代理、未发布游戏的评论/排行/manifest 与详情页同一可见性规则、`/health/ready` 就绪检查（DB/Redis/S3）。
-- **生成**：默认 `USE_REAL_MODEL=false` 走离线启发式流水线；置 `true` 走 **LangGraph 真实链路**（含 Memory、规划、素材、Phaser/Vite 构建、sandbox QA、repair/replan、revision/remix），模型由 `MODEL_NAME` 配置。`CODE_AGENT_ENABLED` / `CODE_AGENT_AUTHOR_ENABLED` 可分别启用 Repair Agent 和 2D 有界 Author Team。
+- **鉴权**：邮箱登录与 OAuth 均签发 HttpOnly/SameSite JWT Cookie（不向 JS 暴露 token），Cookie 鉴权的写请求校验 `Origin` 防 CSRF；正常登录、真实 OAuth 回调及受保护接口统一拒绝 `is_active=false` 的账号，注册账号默认 active。**Google/GitHub OAuth 授权码流程**在配好 client id/secret 后启用。共享身份 demo 默认关闭，仅由 `ENABLE_OAUTH_DEMO=true` 显式打开；代码不会自动识别“本地/生产”，所以生产配置必须保持 `false`。
+- **迁移**：已接入 **Alembic**（`backend/migrations`），以固化基线 `0001_baseline` 为起点、其上继续追加增量迁移，当前单一 head 为 `0019_trace_counter_nonnull`；空库可直接 `alembic upgrade head`，测试守护整条迁移链可重放且 migration schema ≡ ORM schema。开发以 `create_all` 兜底（`AUTO_CREATE_ALL`），生产 compose 关闭兜底、只走迁移。squash 之前建的库先执行 `alembic stamp 0001_baseline --purge`，再执行 `alembic upgrade head`。
+- **测试 / CI**：`backend/tests` 使用 SQLite 测试库并按 api / architecture / assets / authoring / gates / infra / memory / pipeline 分桶；GitHub Actions（`.github/workflows/ci.yml`）执行后端 pytest、独立 sandbox 集成、前端依赖审计、OpenAPI 生成物漂移检查、ESLint、TypeScript、`next build` 与 Playwright E2E。前端请求通过 `openapi-fetch` 消费生成的 `paths`；后端契约变化需执行 `cd frontend && npm run openapi:generate` 并提交 `lib/api-types.ts`。
+- **加固**：已实现 Redis IP 限流、安全响应头、上传 MIME 嗅探/图片重编码/EXIF 清理/ZIP 约束、发布时向 bundle 注入 CSP（`connect-src 'self'`，浏览器层强制同前缀资源）、API token 文件代理、未发布游戏的评论/排行/manifest 与详情页同一可见性规则，以及 `/health/ready` 就绪检查（DB/Redis/S3）。播放计数对已登录用户做 30 分钟去重；匿名播放仍按请求计数，且 `plays_count` 仍同步写 DB，尚未做异步聚合。
+- **生成**：离线启发式与真实模型使用同一张固定 **LangGraph**（含 Memory、规划、素材、Phaser/Vite 构建、sandbox QA、repair/replan、revision/remix）。默认 `USE_REAL_MODEL=false`；真实调用需要同时设置 `USE_REAL_MODEL=true` 和有效模型凭据，模型由 `MODEL_NAME` 配置。`CODE_AGENT_ENABLED` / `CODE_AGENT_AUTHOR_ENABLED` 默认关闭，可分别启用 Repair Agent 和 2D 有界 Author Team。
 - **记忆**：已实现原始证据、Profile 汇总、版本历史、混合检索和自动冲突处理；candidate 记忆后台积累并自动晋升（game 级按重复证据、user 级按跨游戏证据），不要求用户确认；自然表达的全局偏好通过「影子 candidate + 跨游戏晋升」通道自动形成，无需特定措辞。
-- **沙箱**：Compose 默认使用独立 Playwright/Chromium `sandbox` 服务；生产可选 `SANDBOX_RUNTIME=runsc` 启用 gVisor，裸 pytest 才允许 V8 mock 降级。
+- **沙箱**：Compose 默认使用独立 Playwright/Chromium `sandbox` 服务，并设置 `SANDBOX_REQUIRED=true`，服务不可达时 fail-closed；生产 compose 默认仍用 `runc`，宿主机安装 gVisor 后可设置 `SANDBOX_RUNTIME=runsc`。Compose 之外的裸本地运行默认 `SANDBOX_REQUIRED=false`，不只 pytest，均可能跳过浏览器 QA、保留进程内 V8 预检降级。Chromium 自身沙箱在 compose 中也默认关闭，生产仍需结合宿主机能力启用 seccomp/user namespace 或 gVisor。
 - **前端样式**：已迁移到 **Tailwind v4 + shadcn/ui**（设计令牌按品牌调色，组件在 `frontend/components/ui`），核心页优先；早期从设计稿移植的 `pf-*` 内联/CSS 仍共存，逐页替换中。
+- **仍保留的 MVP 边界**：ClamAV、强制内容审核、Sentry/OTel 和真实图像供应商默认关闭；视频素材仍只存储/引用，不做抽帧理解；Play 尚无 CDN/预取，播放事件未异步聚合；公开 Demo 地址、生产告警/成本看板及 gVisor/Chromium 深度隔离需要按实际部署补齐。
 
 完整的「已完成 / Mock / 未完成 + 再给 1 周怎么迭代」清单见 **[完成度说明](docs/完成度说明.md)**；安全相关已知问题另见 `docs/安全与可观测性.md`。
