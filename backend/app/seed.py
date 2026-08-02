@@ -20,6 +20,7 @@ from datetime import timedelta
 
 import app.models  # noqa: F401 - registers SQLAlchemy models
 from app.agents import bundles
+from app.core.config import settings
 from app.core.security import hash_password
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
@@ -153,6 +154,7 @@ def _prune_retired(db) -> int:
     for title in RETIRED_TITLES:
         for game in db.query(Game).filter(Game.title == title).all():
             s3.delete_prefix(f"games/{game.id}/")  # bundle + manifest + any assets
+            s3.delete_prefix(f"game-sources/{game.id}/")
             db.delete(game)                          # cascades versions / likes / scores / ...
             removed += 1
     if removed:
@@ -161,7 +163,8 @@ def _prune_retired(db) -> int:
 
 
 def run() -> None:
-    Base.metadata.create_all(bind=engine)
+    if settings.AUTO_CREATE_ALL:
+        Base.metadata.create_all(bind=engine)
     ensure_bucket()
     db = SessionLocal()
     try:

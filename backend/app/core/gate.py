@@ -19,6 +19,34 @@ def gate_enabled() -> bool:
     return bool(_password())
 
 
+def public_browse_enabled() -> bool:
+    return bool(settings.GATE_PUBLIC_BROWSE)
+
+
+def public_browse_request(method: str, path: str) -> bool:
+    if not public_browse_enabled():
+        return False
+    method = method.upper()
+    if path in {"/health", "/health/ready", "/stats", "/tags"} and method == "GET":
+        return True
+    if path == "/games" and method == "GET":
+        return True
+    if path.startswith("/games/") and method == "GET":
+        return True
+    if path.startswith("/users/") and method == "GET":
+        return True
+    if path.endswith("/play") and path.startswith("/games/") and method == "POST":
+        return True
+    if path.endswith("/score") and path.startswith("/games/") and method == "POST":
+        return True
+    return False
+
+
+def game_file_request(method: str, path: str) -> bool:
+    method = method.upper()
+    return method == "GET" and path.startswith("/games/") and "/files/" in path
+
+
 def _token(password: str) -> str:
     return hashlib.sha256(f"gameweave-gate:v1:{password}".encode()).hexdigest()
 

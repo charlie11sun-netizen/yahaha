@@ -3,37 +3,52 @@
 import math
 import re
 from collections import Counter
-from datetime import datetime, timezone
-from decimal import Decimal
+from datetime import timezone
 from typing import Iterable
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, case, exists, or_, select, text
 from sqlalchemy.orm import Session
 
-from app.models import GenerationTask, MemoryItem, MemorySettings
-from app.models.memory import MemoryCategory, MemoryScope, MemorySource, MemoryStatus
+from app.models import GenerationTask, MemoryItem, MemoryProfile, MemoryProfileEvidence
+from app.models.memory import (
+    MemoryCategory,
+    MemoryProfileStatus,
+    MemoryScope,
+    MemorySource,
+    MemoryStatus,
+)
 from app.core.config import settings as app_settings
-from app.services import memory_embeddings
+from app.services import memory_embeddings, memory_entities
+from app.services.memory_profile_extraction import (
+    extract_profile_claims_batch,
+    has_persistent_profile_claim as _has_persistent_claim,
+)
+from app.services.memory_profile_lifecycle import reconcile_memory_items
+from app.services.memory_repository import (
+    clean_memory_text as _clean,
+    create_memories_batch,
+    create_memory,
+    get_or_create_settings,
+    memory_embedding_text as _embedding_text,
+    memory_out,
+    settings_out,
+    soft_delete_memory,
+    update_memory,
+    utc_now as _now,
+)
+from app.services.memory_retention import purge_expired_memories
+from app.services.memory_rules import (
+    category_for_text as _category_for,
+    should_skip_memory_candidate as _skip_candidate,
+)
 
 _LATIN_TOKEN_RE = re.compile(r"[a-z0-9_]+", re.IGNORECASE)
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]+")
-_SECRET_RE = re.compile(
-    r"(api[_-]?key|secret|token|password|bearer\s+[a-z0-9._-]{10,}|sk-[a-z0-9_-]{10,})",
-    re.IGNORECASE,
-)
 
 DEFAULT_LIMIT = 8
 MAX_CONTEXT_CHARS = 1600
 MAX_ITEM_CHARS = 300
 MAX_CANDIDATES = 120
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _clean(text: str | None, limit: int = 4000) -> str:
-    return re.sub(r"\s+", " ", str(text or "")).strip()[:limit]
 
 
 def _tokenize(text: str) -> list[str]:
@@ -52,72 +67,6 @@ def _memory_text(item: MemoryItem) -> str:
     return f"{item.raw_text} {item.extracted_text or ''}".strip()
 
 
-def _embedding_text(raw_text: str, extracted_text: str | None) -> str:
-    extracted = _clean(extracted_text)
-    raw = _clean(raw_text)
-    return f"{raw}\n{extracted}" if extracted and extracted != raw else raw
-
-
-def _embed_one(raw_text: str, extracted_text: str | None) -> tuple[list[float] | None, str | None]:
-    vectors = memory_embeddings.embed_texts([_embedding_text(raw_text, extracted_text)])
-    if not vectors:
-        return None, None
-    return vectors[0], memory_embeddings.embedding_model()
-
-
-def _safe_confidence(value) -> float:
-    if isinstance(value, Decimal):
-        return float(value)
-    try:
-        return float(value)
-    except Exception:  # noqa: BLE001
-        return 1.0
-
-
-def memory_out(item: MemoryItem) -> dict:
-    return {
-        "id": item.id,
-        "user_id": item.user_id,
-        "scope_type": item.scope_type,
-        "scope_id": item.scope_id,
-        "category": item.category,
-        "raw_text": item.raw_text,
-        "extracted_text": item.extracted_text,
-        "source_type": item.source_type,
-        "source_task_id": item.source_task_id,
-        "source_game_id": item.source_game_id,
-        "source_version": item.source_version,
-        "importance": item.importance,
-        "confidence": _safe_confidence(item.confidence),
-        "pinned": item.pinned,
-        "status": item.status,
-        "supersedes_id": item.supersedes_id,
-        "created_at": item.created_at.isoformat() if item.created_at else None,
-        "updated_at": item.updated_at.isoformat() if item.updated_at else None,
-    }
-
-
-def settings_out(settings: MemorySettings) -> dict:
-    return {
-        "enabled": settings.enabled,
-        "allow_cross_game_memory": settings.allow_cross_game_memory,
-        "allow_memory_extraction": settings.allow_memory_extraction,
-        "retention_days": settings.retention_days,
-        "created_at": settings.created_at.isoformat() if settings.created_at else None,
-        "updated_at": settings.updated_at.isoformat() if settings.updated_at else None,
-    }
-
-
-def get_or_create_settings(db: Session, user_id: str) -> MemorySettings:
-    settings = db.get(MemorySettings, user_id)
-    if settings:
-        return settings
-    settings = MemorySettings(user_id=user_id)
-    db.add(settings)
-    db.flush()
-    return settings
-
-
 def list_memories(
     db: Session,
     user_id: str,
@@ -129,6 +78,7 @@ def list_memories(
     limit: int = 100,
     offset: int = 0,
 ) -> list[MemoryItem]:
+    purge_expired_memories(db, user_id)
     q = db.query(MemoryItem).filter(MemoryItem.user_id == user_id)
     if scope_type:
         q = q.filter(MemoryItem.scope_type == scope_type)
@@ -148,141 +98,6 @@ def list_memories(
 
 def get_owned_memory(db: Session, user_id: str, memory_id: str) -> MemoryItem | None:
     return db.query(MemoryItem).filter(MemoryItem.id == memory_id, MemoryItem.user_id == user_id).first()
-
-
-def create_memory(
-    db: Session,
-    user_id: str,
-    *,
-    scope_type: str,
-    scope_id: str | None,
-    category: str,
-    raw_text: str,
-    extracted_text: str | None = None,
-    source_type: str = MemorySource.MANUAL,
-    source_task_id: str | None = None,
-    source_game_id: str | None = None,
-    source_version: str | None = None,
-    importance: int = 3,
-    confidence: float = 1.0,
-    pinned: bool = False,
-) -> MemoryItem:
-    return create_memories_batch(
-        db,
-        user_id,
-        [
-            {
-                "scope_type": scope_type,
-                "scope_id": scope_id,
-                "category": category,
-                "raw_text": raw_text,
-                "extracted_text": extracted_text,
-                "source_type": source_type,
-                "source_task_id": source_task_id,
-                "source_game_id": source_game_id,
-                "source_version": source_version,
-                "importance": importance,
-                "confidence": confidence,
-                "pinned": pinned,
-            }
-        ],
-    )[0]
-
-
-def create_memories_batch(
-    db: Session,
-    user_id: str,
-    candidates: list[dict],
-) -> list[MemoryItem]:
-    if not candidates:
-        return []
-    prepared = []
-    for candidate in candidates:
-        raw_text = _clean(candidate.get("raw_text"))
-        extracted_text = _clean(candidate.get("extracted_text")) if candidate.get("extracted_text") else None
-        prepared.append((candidate, raw_text, extracted_text))
-    vectors = memory_embeddings.embed_texts(
-        [_embedding_text(raw_text, extracted_text) for _, raw_text, extracted_text in prepared]
-    )
-    model = memory_embeddings.embedding_model()
-    now = _now()
-    items = []
-    for index, (candidate, raw_text, extracted_text) in enumerate(prepared):
-        vector = vectors[index] if vectors and index < len(vectors) else None
-        item = MemoryItem(
-            user_id=user_id,
-            scope_type=candidate["scope_type"],
-            scope_id=candidate.get("scope_id"),
-            category=candidate["category"],
-            raw_text=raw_text,
-            extracted_text=extracted_text,
-            source_type=candidate.get("source_type", MemorySource.MANUAL),
-            source_task_id=candidate.get("source_task_id"),
-            source_game_id=candidate.get("source_game_id"),
-            source_version=candidate.get("source_version"),
-            importance=max(1, min(int(candidate.get("importance", 3)), 5)),
-            confidence=max(0.0, min(float(candidate.get("confidence", 1.0)), 1.0)),
-            pinned=bool(candidate.get("pinned", False)),
-            status=MemoryStatus.ACTIVE,
-            embedding=vector,
-            embedding_model=model if vector else None,
-            embedding_updated_at=now if vector else None,
-        )
-        db.add(item)
-        items.append(item)
-    db.flush()
-    return items
-
-
-def update_memory(item: MemoryItem, **patch) -> MemoryItem:
-    text_changed = False
-    for key in ("category", "raw_text", "extracted_text", "importance", "pinned", "status"):
-        if key not in patch:
-            continue
-        value = patch[key]
-        if value is None:
-            continue
-        if key in {"raw_text", "extracted_text"}:
-            value = _clean(value)
-            text_changed = True
-        if key == "importance":
-            value = max(1, min(int(value), 5))
-        setattr(item, key, value)
-    if text_changed:
-        embedding, embedding_model = _embed_one(item.raw_text, item.extracted_text)
-        # Never retain a vector for text that no longer matches it.
-        item.embedding = embedding
-        item.embedding_model = embedding_model
-        item.embedding_updated_at = _now() if embedding else None
-    item.updated_at = _now()
-    return item
-
-
-def soft_delete_memory(item: MemoryItem) -> MemoryItem:
-    item.status = MemoryStatus.DELETED
-    item.updated_at = _now()
-    return item
-
-
-def _category_for(text: str) -> str:
-    low = text.lower()
-    if any(k in low for k in ("style", "visual", "pixel", "像素", "画风", "美术", "视觉", "cozy", "写实")):
-        return MemoryCategory.STYLE
-    if any(k in low for k in ("jump", "move", "control", "键", "操作", "手感", "跳跃", "移动")):
-        return MemoryCategory.CONTROLS
-    if any(k in low for k in ("hard", "easy", "difficulty", "难", "简单", "太快", "太慢", "节奏")):
-        return MemoryCategory.DIFFICULTY
-    if any(k in low for k in ("keep", "preserve", "don't change", "不要改", "保留", "不能变")):
-        return MemoryCategory.CONSTRAINTS
-    if any(k in low for k in ("enemy", "boss", "powerup", "mechanic", "敌人", "boss", "机制", "道具")):
-        return MemoryCategory.MECHANICS
-    return MemoryCategory.FEEDBACK
-
-
-def _skip_candidate(text: str) -> bool:
-    if len(text.strip()) < 8:
-        return True
-    return bool(_SECRET_RE.search(text))
 
 
 def _policy_score(item: MemoryItem, game_id: str | None) -> float:
@@ -328,16 +143,6 @@ def _bm25_scores(query: str, documents: list[str], *, k1: float = 1.5, b: float 
     return result
 
 
-def _cosine_similarity(left: list[float], right: list[float]) -> float | None:
-    if not left or not right or len(left) != len(right):
-        return None
-    left_norm = math.sqrt(sum(value * value for value in left))
-    right_norm = math.sqrt(sum(value * value for value in right))
-    if not left_norm or not right_norm:
-        return None
-    return sum(a * b for a, b in zip(left, right)) / (left_norm * right_norm)
-
-
 def _rrf_scores(rankings: list[tuple[str, list[str], float]], *, k: int) -> tuple[dict[str, float], dict[str, dict[str, int]]]:
     """Fuse independent rankings by rank, not by incomparable raw scores."""
     scores: dict[str, float] = {}
@@ -352,7 +157,7 @@ def _rrf_scores(rankings: list[tuple[str, list[str], float]], *, k: int) -> tupl
 
 def _query_and_backfill_embeddings(query: str, candidates: list[MemoryItem]) -> list[float] | None:
     model = memory_embeddings.embedding_model()
-    stale = [item for item in candidates if not item.embedding or item.embedding_model != model]
+    stale = [item for item in candidates if not _vector_values(item.embedding) or item.embedding_model != model]
     texts = [query, *[_embedding_text(item.raw_text, item.extracted_text) for item in stale]]
     vectors = memory_embeddings.embed_texts(texts)
     if not vectors or len(vectors) != len(texts):
@@ -365,6 +170,65 @@ def _query_and_backfill_embeddings(query: str, candidates: list[MemoryItem]) -> 
     return vectors[0]
 
 
+def _vector_values(value) -> list[float]:
+    if value is None:
+        return []
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    return [float(item) for item in value]
+
+
+def _backfill_candidate_embeddings(candidates: list[MemoryItem]) -> None:
+    model = memory_embeddings.embedding_model()
+    stale = [
+        item
+        for item in candidates
+        if not _vector_values(item.embedding) or item.embedding_model != model
+    ]
+    if not stale:
+        return
+    vectors = memory_embeddings.embed_texts(
+        [_embedding_text(item.raw_text, item.extracted_text) for item in stale]
+    )
+    if not vectors or len(vectors) != len(stale):
+        return
+    now = _now()
+    for item, vector in zip(stale, vectors):
+        item.embedding = vector
+        item.embedding_model = model
+        item.embedding_updated_at = now
+
+
+def _postgres_ann_candidates(
+    db: Session,
+    query,
+    query_vector: list[float],
+) -> tuple[list[MemoryItem], dict[str, float]]:
+    if db.get_bind().dialect.name != "postgresql" or not query_vector:
+        return [], {}
+    ef_search = max(40, min(int(app_settings.MEMORY_HNSW_EF_SEARCH), 1000))
+    db.execute(text(f"SET LOCAL hnsw.ef_search = {ef_search}"))
+    distance = MemoryItem.embedding.cosine_distance(query_vector).label("cosine_distance")
+    rows = (
+        query.with_entities(MemoryItem, distance)
+        .filter(MemoryItem.embedding.isnot(None))
+        .order_by(distance.asc())
+        .limit(max(1, min(int(app_settings.MEMORY_ANN_CANDIDATES), 500)))
+        .all()
+    )
+    items = []
+    scores = {}
+    for item, value in rows:
+        if value is None:
+            continue
+        similarity = 1.0 - float(value)
+        if similarity < app_settings.MEMORY_SEMANTIC_MIN_SCORE:
+            continue
+        items.append(item)
+        scores[item.id] = similarity
+    return items, scores
+
+
 def retrieve_memories(
     db: Session,
     *,
@@ -375,6 +239,7 @@ def retrieve_memories(
     limit: int = DEFAULT_LIMIT,
 ) -> list[dict]:
     settings = get_or_create_settings(db, user_id)
+    purge_expired_memories(db, user_id, settings_row=settings)
     if not settings.enabled:
         return []
 
@@ -384,35 +249,95 @@ def retrieve_memories(
     if settings.allow_cross_game_memory:
         clauses.append(MemoryItem.scope_type == MemoryScope.USER)
     if not clauses:
-        clauses.append(MemoryItem.scope_type == MemoryScope.USER)
+        return []
 
     q = db.query(MemoryItem).filter(
         MemoryItem.user_id == user_id,
         MemoryItem.status == MemoryStatus.ACTIVE,
         or_(*clauses),
     )
+    has_profile_links = exists(
+        select(MemoryProfileEvidence.id).where(
+            MemoryProfileEvidence.memory_id == MemoryItem.id
+        )
+    )
+    has_active_profile_link = exists(
+        select(MemoryProfileEvidence.id)
+        .join(MemoryProfile, MemoryProfile.id == MemoryProfileEvidence.profile_id)
+        .where(
+            MemoryProfileEvidence.memory_id == MemoryItem.id,
+            MemoryProfileEvidence.is_active.is_(True),
+            MemoryProfile.status == MemoryProfileStatus.ACTIVE,
+        )
+    )
+    q = q.filter(or_(~has_profile_links, has_active_profile_link))
     cats = [c for c in (categories or []) if c]
     if cats:
         q = q.filter(MemoryItem.category.in_(cats))
-    candidates = q.order_by(MemoryItem.created_at.desc()).limit(MAX_CANDIDATES).all()
-    if not candidates:
+    candidate_order = []
+    if game_id:
+        candidate_order.append(
+            case(
+                (
+                    and_(MemoryItem.scope_type == MemoryScope.GAME, MemoryItem.scope_id == game_id),
+                    0,
+                ),
+                else_=1,
+            )
+        )
+    candidate_order.extend(
+        [MemoryItem.pinned.desc(), MemoryItem.importance.desc(), MemoryItem.created_at.desc()]
+    )
+    policy_candidates = q.order_by(*candidate_order).limit(MAX_CANDIDATES).all()
+    if not policy_candidates:
         return []
+
+    query_vector = None
+    semantic_scores: dict[str, float] = {}
+    candidates = policy_candidates
+    if db.get_bind().dialect.name == "postgresql":
+        vectors = memory_embeddings.embed_texts([query])
+        query_vector = vectors[0] if vectors else None
+        if query_vector:
+            ann_candidates, semantic_scores = _postgres_ann_candidates(db, q, query_vector)
+            by_id = {item.id: item for item in policy_candidates}
+            for item in ann_candidates:
+                by_id.setdefault(item.id, item)
+            candidates = list(by_id.values())
+            _backfill_candidate_embeddings(policy_candidates)
 
     documents = [_memory_text(item) for item in candidates]
     bm25 = _bm25_scores(query, documents)
+    exact_matches = {
+        item.id: bool(query.strip() and query.lower().strip() in document.lower())
+        for item, document in zip(candidates, documents)
+    }
     lexical_scores = {
         item.id: score
-        + (8.0 if query.strip() and query.lower().strip() in document.lower() else 0.0)
+        + (8.0 if exact_matches[item.id] else 0.0)
         + _policy_score(item, game_id) * 0.05
-        for item, document, score in zip(candidates, documents, bm25)
+        for item, score in zip(candidates, bm25)
     }
-    lexical_ranking = sorted(candidates, key=lambda item: lexical_scores[item.id], reverse=True)
+    lexical_ids = {
+        item.id
+        for item, score in zip(candidates, bm25)
+        if score >= app_settings.MEMORY_LEXICAL_MIN_SCORE or exact_matches[item.id]
+    }
+    lexical_ranking = sorted(
+        (item for item in candidates if item.id in lexical_ids),
+        key=lambda item: lexical_scores[item.id],
+        reverse=True,
+    )
 
-    query_vector = _query_and_backfill_embeddings(query, candidates)
-    semantic_scores: dict[str, float] = {}
+    if query_vector is None:
+        query_vector = _query_and_backfill_embeddings(query, candidates)
     if query_vector:
         for item in candidates:
-            similarity = _cosine_similarity(query_vector, item.embedding or [])
+            if item.id in semantic_scores:
+                continue
+            similarity = memory_embeddings.cosine_similarity(
+                query_vector, _vector_values(item.embedding)
+            )
             if similarity is not None and similarity >= app_settings.MEMORY_SEMANTIC_MIN_SCORE:
                 semantic_scores[item.id] = similarity
     semantic_ranking = sorted(
@@ -420,8 +345,6 @@ def retrieve_memories(
         key=lambda item: semantic_scores[item.id],
         reverse=True,
     )
-
-    from app.services import memory_entities
 
     entity_ranking, entity_scores = memory_entities.rank_candidate_memories_by_entity(
         db,
@@ -431,14 +354,19 @@ def retrieve_memories(
         query_vector=query_vector,
     )
 
-    rankings = [("lexical", [item.id for item in lexical_ranking], 1.0)]
+    eligible_ids = lexical_ids | set(semantic_scores) | set(entity_scores)
+    if not eligible_ids:
+        return []
+    rankings = []
+    if lexical_ranking:
+        rankings.append(("lexical", [item.id for item in lexical_ranking], 1.0))
     if semantic_ranking:
         rankings.append(("semantic", [item.id for item in semantic_ranking], 1.0))
     if entity_ranking:
         rankings.append(("entity", entity_ranking, 1.2))
     rrf_scores, ranks = _rrf_scores(rankings, k=app_settings.MEMORY_RRF_K)
     ranked = sorted(
-        candidates,
+        (item for item in candidates if item.id in eligible_ids),
         key=lambda item: (
             rrf_scores.get(item.id, 0.0),
             _policy_score(item, game_id),
@@ -499,7 +427,22 @@ def capture_success_memories(db: Session, *, task_id: str, state: dict) -> list[
     if not task:
         return []
     settings = get_or_create_settings(db, task.user_id)
+    purge_expired_memories(db, task.user_id, settings_row=settings)
     if not settings.enabled or not settings.allow_memory_extraction:
+        return []
+
+    # 幂等：acks_late 重投递会整图重跑本函数。同一任务的自动记忆只落一次，
+    # 否则同一句反馈会作为"独立证据"重复计数，把 candidate 刷过晋升阈值
+    # （违背设计文档"避免重试任务刷高置信度"的承诺）。
+    already = (
+        db.query(MemoryItem.id)
+        .filter(
+            MemoryItem.source_task_id == task.id,
+            MemoryItem.source_type.in_([MemorySource.FEEDBACK, MemorySource.IDEA]),
+        )
+        .first()
+    )
+    if already:
         return []
 
     game_id = state.get("game_id") or task.result_game_id or task.base_game_id
@@ -514,7 +457,7 @@ def capture_success_memories(db: Session, *, task_id: str, state: dict) -> list[
     candidates = []
     if task.task_kind == "revision" and task.feedback_text:
         raw = _clean(task.feedback_text)
-        if not _skip_candidate(raw):
+        if not _skip_candidate(raw) and _has_persistent_claim(raw):
             brief = state.get("feedback_brief") or task.feedback_brief
             candidates.append({
                 "scope_type": MemoryScope.GAME,
@@ -558,15 +501,13 @@ def capture_success_memories(db: Session, *, task_id: str, state: dict) -> list[
     if not created:
         return []
 
-    from app.services import memory_entities, memory_profiles
-
-    claims_by_memory_id = memory_profiles.extract_profile_claims_batch(
+    claims_by_memory_id = extract_profile_claims_batch(
         db,
         created,
         game_id=game_id,
         task_id=task.id,
     )
-    memory_profiles.reconcile_memory_items(
+    reconcile_memory_items(
         db,
         created,
         claims_by_memory_id=claims_by_memory_id,
@@ -580,3 +521,20 @@ def capture_success_memories(db: Session, *, task_id: str, state: dict) -> list[
         claims_by_memory_id=claims_by_memory_id,
     )
     return created
+
+
+__all__ = [
+    "capture_success_memories",
+    "create_memories_batch",
+    "create_memory",
+    "get_or_create_settings",
+    "get_owned_memory",
+    "list_memories",
+    "memory_out",
+    "purge_expired_memories",
+    "render_memory_context",
+    "retrieve_memories",
+    "settings_out",
+    "soft_delete_memory",
+    "update_memory",
+]

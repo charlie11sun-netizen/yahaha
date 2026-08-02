@@ -1,0 +1,190 @@
+{
+  "contract_hash": "8da2c847f9f8547e9e562cc411559c231974941a12e1f07fe4c5e7fa75858103",
+  "requirements": [
+    {
+      "id": "AC01",
+      "owner": "WorldAndContentCoder",
+      "status": "implemented",
+      "verification": "运行时断言grid为24×14、边界和9个cover格不可放置、starter_road恰有8格、funds为12000、runPhase为paused。",
+      "evidence": [
+        { "path": "src/levels/CityMap.ts", "symbols": ["CITY_MAP"] },
+        { "path": "src/content/index.ts", "symbols": ["createInitialWorldState"] },
+        { "path": "src/adapters/SimulationPresentationAdapter.ts", "symbols": ["CITY_MAP", "createInitialWorldState", "createInitialSimulationState"] }
+      ]
+    },
+    {
+      "id": "AC02",
+      "owner": "RulesAndSimulationCoder",
+      "status": "implemented",
+      "verification": "对每类设施执行边界、重叠、树木、余额和第161个建筑测试，检查validatePlacement错误码及资金仅在成功时扣除。",
+      "evidence": [
+        { "path": "src/domain/CitySimulation.ts", "symbols": ["validatePlacement", "placeBuilding"] },
+        { "path": "src/adapters/SimulationPresentationAdapter.ts", "symbols": ["validatePlacement", "placeBuilding"] }
+      ]
+    },
+    {
+      "id": "AC03",
+      "owner": "RulesAndSimulationCoder",
+      "status": "implemented",
+      "verification": "构造五种邻接掩码检查瓦片键；拖动重复经过同格验证不重复收费；断开和重接道路后检查network:changed及服务状态。",
+      "evidence": [
+        { "path": "src/domain/CitySimulation.ts", "symbols": ["placeBuilding", "demolishBuilding"] },
+        { "path": "src/adapters/SimulationPresentationAdapter.ts", "symbols": ["placeBuilding", "demolishBuilding", "GridInteractionController"] }
+      ]
+    },
+    {
+      "id": "AC04",
+      "owner": "RulesAndSimulationCoder",
+      "status": "implemented",
+      "verification": "以同路网和隔离路网样例核对容量分配、29/30人口商业边界、距离2/3/5/6污染档位及缺口比例。",
+      "evidence": [
+        { "path": "src/domain/CitySimulation.ts", "symbols": ["advanceSimulationDay", "createInitialSimulationState"] },
+        { "path": "src/adapters/SimulationPresentationAdapter.ts", "symbols": ["advanceSimulationTime", "createInitialSimulationState"] }
+      ]
+    },
+    {
+      "id": "AC05",
+      "owner": "RulesAndSimulationCoder",
+      "status": "implemented",
+      "verification": "向固定帧序列注入相同真实时间，比较三档产生的日数；暂停期间断言day、灾害剩余日和经济不变，同时放置请求可成功。",
+      "evidence": [
+        { "path": "src/domain/CitySimulation.ts", "symbols": ["advanceSimulationTime", "placeBuilding"] },
+        { "path": "src/adapters/SimulationPresentationAdapter.ts", "symbols": ["advanceSimulationTime", "placeBuilding", "setPaused", "setSpeed"] }
+      ]
+    },
+    {
+      "id": "AC06",
+      "owner": "RulesAndSimulationCoder",
+      "status": "implemented",
+      "verification": "核对五类设施的日账本总和；分别拆除各设施检查refund=cost*0.4；跨越每个人口门槛两次确认仅首次奖励。",
+      "evidence": [
+        { "path": "src/domain/CitySimulation.ts", "symbols": ["demolishBuilding", "advanceSimulationDay"] },
+        { "path": "src/adapters/SimulationPresentationAdapter.ts", "symbols": ["demolishBuilding", "advanceSimulationTime", "MILESTONE_CATALOG"] }
+      ]
+    },
+    {
+      "id": "AC07",
+      "owner": "RulesAndSimulationCoder",
+      "status": "implemented",
+      "verification": "用全优、全差和混合快照核对分项上限与总分夹取；对指定day、funds、milestones和快速恢复次数手算并比对结算。",
+      "evidence": [
+        { "path": "src/domain/CitySimulation.ts", "symbols": ["advanceSimulationDay", "CityMetrics"] },
+        { "path": "src/adapters/SimulationPresentationAdapter.ts", "symbols": ["advanceSimulationTime", "CityHudSnapshot"] }
+      ]
+    },
+    {
+      "id": "AC08",
+      "owner": "RulesAndSimulationCoder",
+      "status": "implemented",
+      "verification": "固定随机种子推进500日，断言day<=20无灾害、各人口门槛前无越级类型、warning为3日、间隔/安全期/并发上限满足约束。",
+      "evidence": [
+        { "path": "src/domain/CitySimulation.ts", "symbols": ["advanceSimulationDay", "DisasterInstance"] },
+        { "path": "src/adapters/SimulationPresentationAdapter.ts", "symbols": ["advanceSimulationTime", "DISASTER_CATALOG"] }
+      ]
+    },
+    {
+      "id": "AC09",
+      "owner": "RulesAndSimulationCoder",
+      "status": "implemented",
+      "verification": "逐类注入灾害并检查持续范围、资源修改、支付金额、备用容量边界、道路损坏上限和恢复后的网络重算。",
+      "evidence": [
+        { "path": "src/domain/CitySimulation.ts", "symbols": ["resolveDisasterAction", "DisasterActionResult"] },
+        { "path": "src/adapters/SimulationPresentationAdapter.ts", "symbols": ["resolveDisasterAction", "disasterAction"] }
+      ]
+    },
+    {
+      "id": "AC10",
+      "owner": "WorldAndContentCoder",
+      "status": "implemented",
+      "verification": "在人口119/120及299/300的相同布局快照上推进一天，比较需求、商业收益、污染影响、维护费和可选灾害池。",
+      "evidence": [
+        { "path": "src/content/ProgressionContent.ts", "symbols": ["POPULATION_TIERS"] },
+        { "path": "src/adapters/SimulationPresentationAdapter.ts", "symbols": ["POPULATION_TIERS"] }
+      ]
+    },
+    {
+      "id": "AC11",
+      "owner": "RulesAndSimulationCoder",
+      "status": "implemented",
+      "verification": "在边界值499/500、69/70、79/80及stableDays 59/60测试；中途令任一指标失效确认归零且城市未被清除。",
+      "evidence": [
+        { "path": "src/domain/CitySimulation.ts", "symbols": ["advanceSimulationDay", "SimulationState"] },
+        { "path": "src/adapters/SimulationPresentationAdapter.ts", "symbols": ["advanceSimulationTime", "CityHud"] }
+      ]
+    },
+    {
+      "id": "AC12",
+      "owner": "RulesAndSimulationCoder",
+      "status": "implemented",
+      "verification": "测试-2000/-2001和10/9边界、连续29/30日、恢复清零及活动灾害存在时不直接触发run:ended。",
+      "evidence": [
+        { "path": "src/domain/CitySimulation.ts", "symbols": ["advanceSimulationDay", "FailureClocks"] },
+        { "path": "src/adapters/SimulationPresentationAdapter.ts", "symbols": ["advanceSimulationTime", "endRun"] }
+      ]
+    },
+    {
+      "id": "AC13",
+      "owner": "PresentationAndInteractionCoder",
+      "status": "implemented",
+      "verification": "检查registerGameInput调用scene.input.keyboard.addKey/addKeys并使用KeyboardEvent.code；运行逐键触发并比较按钮产生的事件载荷。",
+      "evidence": [
+        { "path": "src/input/GameInput.ts", "symbols": ["registerGameInput", "GridInteractionController"] },
+        { "path": "src/adapters/SimulationPresentationAdapter.ts", "symbols": ["registerGameInput", "GridInteractionController"] }
+      ]
+    },
+    {
+      "id": "AC14",
+      "owner": "WorldAndContentCoder",
+      "status": "implemented",
+      "verification": "从新局按提示完成四步，断言顺序、完成条件和高亮清除；跳过后可自由建设；20日前强制灾害注入被拒绝。",
+      "evidence": [
+        { "path": "src/content/ProgressionContent.ts", "symbols": ["TUTORIAL_STEPS", "TUTORIAL_WINDOW"] },
+        { "path": "src/adapters/SimulationPresentationAdapter.ts", "symbols": ["TUTORIAL_STEPS", "showTutorial", "advanceTutorial"] }
+      ]
+    },
+    {
+      "id": "AC15",
+      "owner": "PresentationAndInteractionCoder",
+      "status": "implemented",
+      "verification": "断网启动检查无缺图；在1280×720截图核对所有HUD字段、字号和对比；开启高对比/减少动态后检查图标文字保留且非必要粒子/抖动减少。",
+      "evidence": [
+        { "path": "src/presentation/CityRenderer.ts", "symbols": ["CityRenderer"] },
+        { "path": "src/ui/CityHud.ts", "symbols": ["CityHud"] },
+        { "path": "src/adapters/SimulationPresentationAdapter.ts", "symbols": ["CityRenderer", "CityHud", "AccessibilityController"] }
+      ]
+    },
+    {
+      "id": "AC16",
+      "owner": "IntegrationAgent",
+      "status": "implemented",
+      "verification": "依次触发胜利、破产和废弃，分别用Enter与按钮重启；比较重启快照与createInitialSimulationState和createInitialWorldState。",
+      "evidence": [
+        { "path": "src/scenes/TitleScene.ts", "symbols": ["TitleScene"] },
+        { "path": "src/scenes/GameOverScene.ts", "symbols": ["GameOverScene", "EndScene"] },
+        { "path": "src/adapters/SimulationPresentationAdapter.ts", "symbols": ["restartRun", "createInitialSimulationState", "createInitialWorldState"] }
+      ]
+    },
+    {
+      "id": "AC17",
+      "owner": "PresentationAndInteractionCoder",
+      "status": "implemented",
+      "verification": "逐一触发sfx_events核心事件并监听音频调用；压力场景统计车辆和粒子实例不超上限；暂停前后比较装饰对象位置及动画时间。",
+      "evidence": [
+        { "path": "src/presentation/FeedbackController.ts", "symbols": ["FeedbackController"] },
+        { "path": "src/presentation/CityRenderer.ts", "symbols": ["CityRenderer"] },
+        { "path": "src/adapters/SimulationPresentationAdapter.ts", "symbols": ["FeedbackController", "CityRenderer"] }
+      ]
+    },
+    {
+      "id": "AC18",
+      "owner": "IntegrationAgent",
+      "status": "implemented",
+      "verification": "源码搜索确认规则模块无phaser导入、Scene类仅位于IntegrationAgent导出；用相同初始状态和命令序列在无渲染测试与CityScene中比较最终模拟快照。",
+      "evidence": [
+        { "path": "src/scenes/PlayScene.ts", "symbols": ["PlayScene", "CityScene", "SimulationPresentationAdapter"] },
+        { "path": "src/adapters/SimulationPresentationAdapter.ts", "symbols": ["SimulationPresentationAdapter"] },
+        { "path": "src/main.ts", "symbols": ["createGameConfig"] }
+      ]
+    }
+  ]
+}

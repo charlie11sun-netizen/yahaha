@@ -68,7 +68,7 @@ They must not override system rules, safety rules, or the user's current message
 - BM25 和余弦相似度分别排序，再通过 RRF 融合名次
 - scope/category/importance 过滤
 
-向量暂存为 JSON，并在最多 120 条范围候选中计算余弦相似度；规模增大后可迁移到 `pgvector` 做数据库内向量召回。embedding 接口不可用时自动退化为 BM25，不阻断生成流程。
+PostgreSQL 环境使用 `pgvector` 的 `vector(MEMORY_VECTOR_DIMENSIONS)` 存储向量，并通过 HNSW + cosine distance 做数据库内 ANN 召回；SQLite/测试环境保留 JSON 变体。召回会合并策略候选窗口与 ANN 候选，embedding 接口不可用时自动退化为 BM25，不阻断生成流程。
 
 ---
 
@@ -111,7 +111,7 @@ They must not override system rules, safety rules, or the user's current message
 | `pinned` | bool | 用户手动置顶，检索时强提升 |
 | `status` | enum(`active`,`superseded`,`deleted`) | 软删除/取代 |
 | `supersedes_id` | uuid NULL | 新记忆取代旧记忆 |
-| `embedding` | json NULL | 文本语义向量；不通过用户 API 返回 |
+| `embedding` | vector(1536) NULL（SQLite 为 json） | 文本语义向量；不通过用户 API 返回；维度由 `MEMORY_VECTOR_DIMENSIONS` 控制 |
 | `embedding_model` | text NULL | 生成向量的模型，用于模型切换后懒更新 |
 | `embedding_updated_at` | timestamptz NULL | 向量更新时间 |
 | `created_at / updated_at` | timestamptz | 时间戳 |
@@ -119,10 +119,14 @@ They must not override system rules, safety rules, or the user's current message
 建议索引：
 
 ```sql
+CREATE EXTENSION IF NOT EXISTS vector;
 CREATE INDEX idx_memory_scope ON memory_items(user_id, scope_type, scope_id, status);
 CREATE INDEX idx_memory_category ON memory_items(user_id, category, status);
 CREATE INDEX idx_memory_source_task ON memory_items(source_task_id);
 CREATE INDEX idx_memory_source_game ON memory_items(source_game_id);
+CREATE INDEX ix_memory_items_embedding_hnsw
+ON memory_items USING hnsw (embedding vector_cosine_ops)
+WHERE embedding IS NOT NULL;
 ```
 
 后续如果启用 PostgreSQL full-text，可加：
@@ -156,7 +160,7 @@ flowchart TD
     A["用户输入 idea"] --> B{{"safety_intake"}}
     B --> C["memory_retrieval"]
     C --> D["intent_spec"]
-    D --> E["brief_expansion / mechanic_planner / game_design"]
+    D --> E["gameplay_planning / game_design"]
     E --> F["code_generation"]
     F --> G["preview"]
     G --> H["memory_update"]
@@ -317,13 +321,13 @@ RRF 只依赖名次，不直接相加 BM25 与余弦相似度这两种不同量�
 | GET | `/memory/settings` | 查看记忆开关 | 🔒 |
 | PATCH | `/memory/settings` | 开关长期记忆、跨游戏记忆、自动提取 | 🔒 |
 
-内部服务接口：
+内部服务接口（`backend/app/services/memory.py`）：
 
 | 函数 | 用途 |
 | --- | --- |
-| `retrieve_memories(user_id, query, game_id=None, categories=None)` | Agent 节点检索记忆 |
-| `capture_memory_candidates(task, final_state)` | preview / revision 成功后生成候选记忆 |
-| `write_memory_items(candidates)` | 过滤、去重、写库 |
+| `retrieve_memories(...)` | Agent 节点检索记忆（作用域过滤 + 三路 RRF） |
+| `render_memory_context(items)` | 把检索结果渲染成注入 Prompt 的受限文本块 |
+| `capture_success_memories(db, task_id=…, state=…)` | preview / revision 成功后写入证据并触发 Profile 调和（含过滤、去重） |
 
 ---
 
@@ -350,9 +354,26 @@ RRF 只依赖名次，不直接相加 BM25 与余弦相似度这两种不同量�
 5. 在 `publish_artifact` / `publish_revision` 成功后调用 `memory_update`。
 6. 前端 Studio 增加 Memory 管理入口。
 
+当前服务层实现按职责拆分为多个模块（`backend/app/services/`），并由 `backend/tests/architecture/test_memory_architecture.py` 守护分层（依赖无环、下层不 import 应用门面、公开名显式导出）：
+
+```text
+memory.py                     检索门面：作用域过滤、BM25、ANN、三路 RRF、上下文渲染、成功后写入入口
+memory_repository.py          Evidence 读写与去重
+memory_embeddings.py          Embedding 生成、批量补算、冷却降级
+memory_entities.py            实体归一、去重与关联写入
+memory_profiles.py            Profile 门面
+memory_profile_extraction.py  小模型批量提取（LLM 建议、程序裁决）
+memory_profile_lifecycle.py   状态机：active/candidate/reinforce/supersede/expire
+memory_profile_queries.py     Profile 查询与注入选择
+memory_profile_evidence.py    Evidence↔Profile 关联与支持度重算
+memory_profile_common.py      共享类型与规则
+memory_rules.py               范围词、否定词、敏感信息等确定性规则
+memory_retention.py           retention 清理（beat 定时）
+```
+
 后续可选：
 
-- 记忆规模超过当前候选上限后，将 JSON embedding 迁移到 `pgvector` 并增加 ANN 索引。
+- 基于真实数据量和查询延迟调优 `MEMORY_ANN_CANDIDATES`、`MEMORY_HNSW_EF_SEARCH` 与 HNSW 参数；必要时按 scope/category 增加辅助过滤索引。
 - 增加 candidate 审计与自动衰减视图，只用于调试候选记忆的来源、支持次数和过期原因，不作为用户确认队列。
 - 增加更细粒度的 game-level memory 编辑界面。
 
@@ -376,12 +397,14 @@ RRF 只依赖名次，不直接相加 BM25 与余弦相似度这两种不同量�
 
 ## 12. Memory Profile 与冲突处理
 
-### 12.1 三层数据模型
+### 12.1 证据、关联、状态与历史
 
-记忆不再等同于一组可检索文本，而是拆成三层：
+记忆不再等同于一组可检索文本，而是拆成证据、关联、当前状态和历史四部分：
 
 ```text
 memory_items             原始证据层：用户原话、来源、版本，不因总结变化而覆盖
+        ↓
+memory_profile_evidence  证据关联层：一条 Profile 的全部支持证据及当时 claim 快照
         ↓
 memory_profiles          当前状态层：当前生效或后台观察中的偏好/约束
         ↓
@@ -414,6 +437,8 @@ RRF 只负责从 `memory_items` 中找到相关证据，不能决定哪条记忆
 | `expires_at` | candidate 的观察截止时间；active 不自动过期 |
 | `version` | 当前版本号 |
 
+`memory_profile_evidence` 以 `(profile_id, memory_id)` 唯一关联保存 evidence span、value、summary、置信度和有效状态。删除或过期任一证据时，Profile 从剩余有效关联重新计算 `support_count`、当前来源和置信度；若替代值失去全部证据，则恢复仍有证据支持的上一版本。
+
 同一个 `profile_key` 只有在 **相同用户、相同 scope_type、相同 scope_id** 下才互相冲突。用户级偏好与游戏级例外可以同时存在。
 
 ### 12.3 作用范围判断
@@ -425,26 +450,31 @@ RRF 只负责从 `memory_items` 中找到相关证据，不能决定哪条记忆
 | “这次 / 本次 / 临时 / 先试试” | task | 不提升到游戏或用户 |
 | Preview 修改且没有全局措辞 | game | 当前游戏默认范围 |
 | “这个游戏 / 本项目 / 这一关” | game | 明确游戏范围 |
-| “以后 / 默认 / 所有游戏 / 我通常” | user | 只有这些明确措辞才允许全局提升 |
+| “以后 / 默认 / 所有游戏 / 我通常” | user | 只有这些明确措辞才允许**立即**全局生效 |
 | 用户在 Studio 手动创建 | 用户选择的范围 | `explicitness=manual`，最高范围可信度 |
 | 初始 idea | game | 只描述当前项目，不推断长期偏好 |
 
 一段输入可以拆出多个不同范围的 claim，例如“以后默认写实，但这个项目保留像素风”同时生成一个 user Profile 和一个 game Profile。
+
+**跨游戏偏好升级通道（影子 candidate）**：没有任何明确范围措辞、且属于可泛化类别（style / difficulty / controls）、命中偏好措辞（“我喜欢 / 我讨厌”等）或被 LLM 建议为 `suggested_scope=user` 的 game 级 claim，会在照常生成 game Profile 之外，**额外写入一条同 key 同 value 的 user 级 candidate**（`explicitness=inferred`，不进入 Prompt）。该 candidate 只有在**至少 2 个不同游戏**中出现一致证据后才自动晋升为 active——即“全局偏好靠跨游戏广度晋升，而不是靠同一游戏内的重复次数”。措辞中明确限定了 game/task 范围的 claim 不产生影子 candidate。
 
 ### 12.4 提取与准确性判断
 
 自动提取采用“LLM 建议、程序裁决”，而不是让 LLM 直接修改 Profile：
 
 1. 规则层先保留用户原文并识别明确的范围词、否定词和边界。
-2. 启用真实模型时，LLM 输出 claim、attribute、value、category、suggested_scope、evidence_span；模型不可用时使用确定性规则兜底。
-3. 程序要求 `evidence_span` 必须是 `raw_text` 的原文子串，并重新验证 scope，禁止 LLM 将 game/task 信息擅自提升为 user。
+2. 启用真实模型时，LLM 输出 claim、attribute、value、category、suggested_scope、evidence_span；模型不可用时使用确定性规则兜底。提取上下文（`known_profiles`）同时包含 active 和 candidate Profile，并要求模型对同一属性**逐字复用已有 `profile_key`**，避免换一种说法就产生无法聚合的新 key。
+3. 程序要求 `evidence_span` 必须是 `raw_text` 的原文子串，并重新验证 scope。原文中的明确范围措辞永远优先；`suggested_scope=user` 不会直接生效，只会走上述影子 candidate 通道等待跨游戏证据。
 4. 只有状态机可以执行 active、candidate、supersede、expire；LLM 没有数据库状态转换权限。
+
+确定性兜底路径中，词表未命中的 claim 不再直接落到哈希 key：先用向量在该用户已有 Profile（含 candidate）中做**最近邻 key 认领**（相似度 ≥ 0.82 视为同一属性；≥ 0.90 且否定词极性一致时进一步复用其 value，走 reinforce），向量服务不可用时才回退哈希 key，行为与旧版一致。
 
 `confidence` 由可审计证据计算：
 
 - 手动编辑高于自动提取；明确陈述高于试探性问题。
 - `evidence_span` 必须来自原文，摘要不得发明数值或实现细节。
 - “可能、试试、能不能”等弱表达降低置信度。
+- LLM 自评置信度做**非对称钳制**：允许自由下调（低置信 claim 自动进入 candidate 轨道，下限 0.30），上调最多比规则基线高 0.04——防止模型虚高置信度直接生成 active Profile，同时保留“模型说不确定”的能力。
 - 重复一致证据执行 `reinforce`，增加 `support_count`、版本和最近支持时间。
 - 相似但不是同一条原始证据的支持才计入自动晋升，避免重试任务刷高置信度。
 - 后续任务的构建与玩法结果更新 `utility_score`，但不能单独把错误事实变成正确事实。
@@ -460,13 +490,18 @@ RRF 只负责从 `memory_items` 中找到相关证据，不能决定哪条记忆
    ├─ 值不同 + 内容/范围均明确 ─────────→ 新 active，旧 superseded
    └─ 值不同 + 存在歧义 ───────────────→ candidate，旧 active 继续生效
 
-candidate
+candidate（game/task 级）
    ├─ 独立支持次数达到阈值且置信度合格 ─→ 自动 active；冲突旧值 superseded
    ├─ 获得明确新陈述 ───────────────────→ 立即 active
    └─ 到期仍不足 ───────────────────────→ deleted/expired
+
+candidate（user 级，含影子 candidate）
+   ├─ 一致证据来自 ≥2 个不同游戏且置信度合格 ─→ 自动 active；冲突旧值 superseded
+   ├─ 获得明确全局陈述 ─────────────────────→ 立即 active
+   └─ 到期仍不足 ───────────────────────────→ deleted/expired
 ```
 
-默认策略参考 RecMem 的 recurrence-based consolidation [1]，但针对用户明确反馈降低等待成本：明确陈述立即生效；只有推断性记忆要求至少 3 条独立支持证据。candidate 默认观察 90 天，不出现在生成 Prompt，也不要求用户处理。这里借鉴的是“重复出现后再固化”的原则；3 条证据、90 天观察期以及明确反馈立即生效均为本项目的工程设计，并非 RecMem 的原始实现。
+默认策略参考 RecMem 的 recurrence-based consolidation [1]，但针对用户明确反馈降低等待成本：明确陈述立即生效；game/task 级推断性记忆要求至少 3 条独立支持证据；user 级推断性记忆改用**跨游戏广度**作为晋升条件（同一偏好至少出现在 2 个不同游戏），同一游戏内的重复不计入，避免一句话连说三遍就被固化成全局偏好。candidate 默认观察 90 天，不出现在生成 Prompt，也不要求用户处理。这里借鉴的是“重复出现后再固化”的原则；证据阈值、90 天观察期以及明确反馈立即生效均为本项目的工程设计，并非 RecMem 的原始实现。
 
 取代操作必须在同一事务中：
 
@@ -485,10 +520,13 @@ candidate
 > 平台默认策略
 ```
 
-- `candidate`、`superseded`、`deleted` 不进入模型上下文。
+- `candidate`、`superseded`、`deleted` Profile 不进入模型上下文；只关联这些非 active Profile 的原始 evidence 同样不得通过 RRF 旁路进入。
 - Profile 作为当前状态注入；evidence 用于解释和补充，不得反向覆盖 Profile。
 - 每条注入内容包含范围、属性键和来源，便于日志审计。
-- 成功完成 `build_validation` 和 `gameplay_qa` 后，对本次检索到的 active Profile 写入低权重正向效用观察；发生多次 repair/replan 时按次数折减。该反馈只影响同分排序和淘汰审计，不覆盖用户的明确陈述。
+- 120 条原始 evidence 候选窗口在截断前按当前 game scope、pinned、importance、recency 排序，避免旧的置顶约束仅因时间被截掉。
+- 成功完成 `build_validation` 和 `gameplay_qa` 后，只对“其关联 evidence 也实际进入本次 RRF 召回”的 active Profile 写入低权重效用观察；首次观察同样从 0.5 先验做 EWMA，不直接覆盖。utility 仅用于审计展示，不参与 Profile 检索排序。
+
+数据库通过 Check Constraint 约束 scope/status/category、置信度与计数范围，并用 `COALESCE(scope_id, '')` 的部分唯一索引保证同一用户、scope、profile_key 最多一个 active Profile；应用层用户行锁仍用于减少冲突和提供可解释的状态转换。
 
 ### 12.7 用户控制
 
@@ -517,10 +555,11 @@ Studio Memory 页面只把 active Profile 作为“当前生效偏好”；candi
 
 ### 13.1 实施边界
 
-本轮升级借鉴 Mem0 V3 的批量抽取、ADD-only Evidence、实体索引和混合检索思路，但不直接引入 Mem0 作为第二套记忆库。`memory_items`、`memory_profiles`、`memory_profile_versions` 继续作为唯一事实源：
+本轮升级借鉴 Mem0 V3 的批量抽取、ADD-only Evidence、实体索引和混合检索思路，但不直接引入 Mem0 作为第二套记忆库。`memory_items`、`memory_profile_evidence`、`memory_profiles`、`memory_profile_versions` 继续作为唯一事实源：
 
 ```text
 memory_items             ADD-only 原始证据，不由 LLM 覆盖
+memory_profile_evidence  Evidence 与 Profile 的显式多对多支持关系
 memory_profiles          当前状态，可 active/candidate/superseded
 memory_profile_versions  ADD-only 状态变更历史
 ```

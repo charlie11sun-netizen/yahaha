@@ -42,11 +42,30 @@ class Game(PkMixin, TimestampMixin, Base):
     plays_count: Mapped[int] = mapped_column(BigInteger, default=0)
     likes_count: Mapped[int] = mapped_column(BigInteger, default=0)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    remixed_from_game_id: Mapped[str | None] = mapped_column(
+        ForeignKey("games.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    remixed_from_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     author = relationship("User", lazy="joined")
+    remixed_from: Mapped["Game | None"] = relationship(
+        "Game",
+        remote_side=lambda: Game.id,
+        foreign_keys=[remixed_from_game_id],
+        back_populates="remixes",
+        lazy="joined",
+    )
+    remixes: Mapped[list["Game"]] = relationship(
+        "Game",
+        foreign_keys=[remixed_from_game_id],
+        back_populates="remixed_from",
+        lazy="select",
+    )
     tags: Mapped[list["Tag"]] = relationship("Tag", secondary=game_tags, lazy="selectin")
+    # 默认惰性加载：列表页（game_card）不用 versions，selectin 会让每次
+    # /games 查询连带加载所有游戏的所有版本行；需要版本的场景都在会话内显式访问。
     versions: Mapped[list["GameVersion"]] = relationship(
-        back_populates="game", cascade="all, delete-orphan", lazy="selectin"
+        back_populates="game", cascade="all, delete-orphan"
     )
 
 

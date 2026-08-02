@@ -1,188 +1,50 @@
-export interface User {
-  id: string;
-  name: string;
-  email: string;
-  init: string;
-  created_at?: string | null;
-}
+import type { components } from "./api-types";
 
-export interface Game {
-  id: string;
-  title: string;
-  summary: string;
-  genre: string;
-  cover: string;
-  version: string;
-  source: string;
-  from_create: boolean;
-  status: string;
-  author: string;
-  author_init: string;
-  author_id: string;
-  tags: string[];
-  plays: number;
-  plays_str: string;
-  likes: number;
-  likes_str: string;
-  published_at: string | null;
-  date: string;
-  manifest_url: string;
-  oss_path: string;
-  prompt?: string | null;
-  bundle_url?: string;
-  liked?: boolean;
-  favorited?: boolean;
-}
+type Schemas = components["schemas"];
+type GameCard = Schemas["GameCardOut"];
+type GameDetail = Schemas["GameDetailOut"];
 
-export interface Step {
-  seq: number;
-  agent: string;
-  name: string;
-  status: string;
-  logs: string[];
-}
+export type User = Schemas["UserOut"];
+export type OAuthProviders = Schemas["OAuthProvidersOut"];
 
-export interface StepSummary {
-  step: string;
-  title: string;
-  status: "pending" | "running" | "completed" | "failed";
-  summary?: string | null;
-}
+// Frontend views intentionally accept both list cards and detail payloads.
+// Endpoint-specific response types remain available below for tighter callers.
+export type Game = GameCard & Partial<Omit<GameDetail, keyof GameCard>>;
+export type GameDetailResponse = GameDetail;
+export type GameListResponse = Schemas["GameListOut"];
+export type GameCollectionResponse = Schemas["GameCollectionOut"];
+export type GameVersion = Schemas["GameVersionOut"];
+export type GameVersionListResponse = Schemas["GameVersionListOut"];
+export type GameManifestFile = Schemas["GameManifestFileOut"];
+export type GameManifest = Schemas["GameManifestOut"];
 
-export interface AgentLogItem {
-  agent_name: string;
-  step: string;
-  message: string;
-  created_at?: string;
-  duration?: string | null;
-  status: string;
-  lines: string[];
-}
+export type Step = Schemas["TaskStepOut"];
+export type StepSummary = Schemas["TaskStepSummaryOut"];
+export type AgentLogItem = Schemas["AgentLogItemOut"];
+export type AgentLogEvent = NonNullable<Schemas["AgentLogEntryOut"]["event"]>;
+export type AgentLogEntry = Schemas["AgentLogEntryOut"];
+export type DesignPreview = Schemas["DesignPreviewOut"];
+export type TaskAsset = Schemas["TaskAssetOut"];
+export type GeneratedTaskAsset = Schemas["TaskGeneratedAssetOut"];
+export type Task = Schemas["TaskOut"];
+export type TaskListResponse = Schemas["TaskListOut"];
+export type TaskIdResponse = Schemas["TaskIdOut"];
+export type TaskRetryResponse = Schemas["TaskRetryOut"];
 
-export interface DesignPreview {
-  title: string;
-  fields: { label: string; value: string }[];
-}
+export type AgentBundleFile = Schemas["AgentBundleFileOut"];
+export type AgentFileContext = Schemas["AgentFileContextOut"];
+export type AgentBundleMetadata = Schemas["AgentBundleMetadataOut"];
 
-export interface TaskAsset {
-  name: string;
-  type: "uploaded" | "generated" | "default";
-  status: string;
-  kind?: string;
-  url?: string;
-}
-
-export interface Task {
-  id: string;
-  status: string;
-  task_kind?: "generation" | "revision";
-  base_game_id?: string | null;
-  base_version?: string | null;
-  feedback_text?: string | null;
-  feedback_brief?: string | null;
-  created_at?: string;
-  updated_at?: string;
-  started_at?: string | null;
-  finished_at?: string | null;
-  current_step: number;
-  current_agent?: string | null;
-  repair_attempts?: number;
-  max_repair_attempts?: number;
-  replan_attempts?: number;
-  max_replan_attempts?: number;
-  tokens: number;
-  error: string | null;
-  error_code?: string | null;
-  idea: string;
-  dimension?: "2d" | "3d";
-  progress?: number;
-  game_title?: string;
-  manifest_url?: string | null;
-  preview_url?: string | null;
-  step_summaries?: StepSummary[];
-  design?: DesignPreview | null;
-  assets?: TaskAsset[];
-  logs?: AgentLogItem[];
-  steps: Step[];
-  game: Game | null;
-}
-
-export interface UploadedAsset {
-  id: string;
-  name: string;
-  kind: string;
-  size: number;
-  url: string;
-}
-
-export interface Comment {
-  id: string;
-  body: string;
-  created_at?: string | null;
-  ago: string;
-  author: string;
-  author_init: string;
-  author_id: string;
-}
-
-export interface MemoryItem {
-  id: string;
-  scope_type: "user" | "game" | "task";
-  scope_id?: string | null;
-  category: "style" | "mechanics" | "controls" | "difficulty" | "content" | "constraints" | "feedback";
-  raw_text: string;
-  extracted_text?: string | null;
-  source_type: string;
-  source_task_id?: string | null;
-  source_game_id?: string | null;
-  source_version?: string | null;
-  importance: number;
-  confidence: number;
-  pinned: boolean;
-  status: string;
-  created_at?: string | null;
-  updated_at?: string | null;
-}
-
-export interface MemorySettings {
-  enabled: boolean;
-  allow_cross_game_memory: boolean;
-  allow_memory_extraction: boolean;
-  retention_days?: number | null;
-}
-
-export interface MemoryProfile {
-  id: string;
-  scope_type: "user" | "game" | "task";
-  scope_id?: string | null;
-  profile_key: string;
-  category: MemoryItem["category"];
-  value_text: string;
-  summary_text: string;
-  evidence_span: string;
-  confidence: number;
-  scope_confidence: number;
-  explicitness: "manual" | "explicit" | "inferred";
-  status: "active" | "candidate" | "superseded" | "deleted";
-  source_memory_id: string;
-  conflicts_with_id?: string | null;
-  support_count: number;
-  utility_score: number;
-  utility_observation_count: number;
-  last_supported_at?: string | null;
-  expires_at?: string | null;
-  version: number;
-  created_at?: string | null;
-  updated_at?: string | null;
-}
-
-export interface MemoryProfileVersion {
-  id: string;
-  profile_id: string;
-  version: number;
-  operation: string;
-  snapshot: Record<string, unknown>;
-  source_memory_id?: string | null;
-  reason?: string | null;
-  created_at?: string | null;
-}
+export type UploadedAsset = Schemas["UploadedAssetOut"];
+export type UploadResponse = Schemas["UploadOut"];
+export type Comment = Schemas["CommentOut"];
+export type CommentListResponse = Schemas["CommentListOut"];
+export type PublicUserProfile = Schemas["PublicUserProfileOut"];
+export type TagsResponse = Schemas["TagsOut"];
+export type MemoryItem = Schemas["MemoryItemOut"];
+export type MemoryListResponse = Schemas["MemoryListOut"];
+export type MemorySettings = Schemas["MemorySettingsOut"];
+export type MemoryProfile = Schemas["MemoryProfileOut"];
+export type MemoryProfileListResponse = Schemas["MemoryProfileListOut"];
+export type MemoryProfileVersion = Schemas["MemoryProfileVersionOut"];
+export type MemoryProfileHistoryResponse = Schemas["MemoryProfileHistoryOut"];

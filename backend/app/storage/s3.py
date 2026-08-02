@@ -2,16 +2,33 @@
 
 所有读写走 S3 SDK，换真 S3 / 阿里云 OSS 仅改 endpoint 与凭证。
 """
+from functools import lru_cache
+
 from botocore.client import Config
 import boto3
 
 from app.core.config import settings
 
 
+# boto3 client 构造不便宜且线程安全，进程内复用（此前每次 put/get/签名都新建）
+@lru_cache(maxsize=1)
 def client():
     return boto3.client(
         "s3",
         endpoint_url=settings.S3_ENDPOINT,
+        aws_access_key_id=settings.S3_ACCESS_KEY,
+        aws_secret_access_key=settings.S3_SECRET_KEY,
+        region_name=settings.S3_REGION,
+        config=Config(signature_version="s3v4"),
+    )
+
+
+@lru_cache(maxsize=1)
+def public_client():
+    """Signing-only client whose endpoint is reachable by the browser."""
+    return boto3.client(
+        "s3",
+        endpoint_url=settings.S3_PUBLIC_ENDPOINT,
         aws_access_key_id=settings.S3_ACCESS_KEY,
         aws_secret_access_key=settings.S3_SECRET_KEY,
         region_name=settings.S3_REGION,
@@ -69,8 +86,25 @@ def delete_prefix(prefix: str) -> int:
 
 
 def public_url(key: str) -> str:
-    """浏览器可直接访问的远端地址（桶 games 前缀已设匿名只读）。"""
-    return f"{settings.S3_PUBLIC_ENDPOINT}/{settings.S3_BUCKET}/{key}"
+    """Backward-compatible browser URL for private objects."""
+    return presigned_url(key)
+
+
+def presigned_url(
+    key: str,
+    expires_seconds: int = 3600,
+    *,
+    response_content_disposition: str | None = None,
+) -> str:
+    """Short-lived browser URL for private uploads and other non-public objects."""
+    params = {"Bucket": settings.S3_BUCKET, "Key": key}
+    if response_content_disposition:
+        params["ResponseContentDisposition"] = response_content_disposition
+    return public_client().generate_presigned_url(
+        "get_object",
+        Params=params,
+        ExpiresIn=expires_seconds,
+    )
 
 
 def game_prefix(game_id: str, version: str) -> str:
@@ -78,4 +112,6 @@ def game_prefix(game_id: str, version: str) -> str:
 
 
 def manifest_url(game_id: str, version: str) -> str:
-    return public_url(f"{game_prefix(game_id, version)}/manifest.json")
+    from app.services.runtime_urls import game_manifest_url
+
+    return game_manifest_url(game_id, version)

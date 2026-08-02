@@ -10,10 +10,15 @@ python-multipart>=0.0.9      # 文件上传
 sqlalchemy>=2.0
 psycopg[binary]>=3.2
 alembic>=1.13                # 数据库迁移
+pgvector>=0.3                # PostgreSQL vector 类型与 SQLAlchemy ANN 查询
 
-# 鉴权（MVP 脚手架用最小 JWT 实现；生产换 fastapi-users，见 README）
-bcrypt>=4.0
-pyjwt>=2.9
+# 鉴权（fastapi-users + HttpOnly JWT Cookie）
+# bcrypt 必须 >=5：security.py 把原始 sha256 digest 字节喂给 bcrypt，digest 含
+# \x00 的概率约 12%，bcrypt 4.x 对含 NUL 的输入直接 ValueError（注册 500）
+# FastAPI Users owns user manager / JWT / reset / verify; legacy hashes still verify.
+fastapi-users[sqlalchemy,oauth]>=15.0.5
+bcrypt>=5.0
+pyjwt[crypto]>=2.12
 
 # 异步任务
 celery>=5.4
@@ -21,14 +26,30 @@ redis>=5.0
 
 # 对象存储（S3 兼容）
 boto3>=1.35
+filetype>=1.2
+Pillow>=10.4
+clamd>=1.0
 
 # Agent / 模型（USE_REAL_MODEL=true 时启用）
-langgraph>=0.2
+langgraph>=1.0,<1.1
+langgraph-checkpoint-postgres>=3.1,<4
 langchain-core>=0.3
 langchain-openai>=0.2
-openai>=1.40
-jinja2>=3.1                  # GameCode 模板渲染
+openai>=2.45.0               # GPT-5.6 explicit prompt-cache options/breakpoints
+openai-agents>=0.18.2        # GPT-5.6 usage details + native repair/author tool loop
 httpx>=0.27
+
+# Observability
+opik==2.1.32
+sentry-sdk[fastapi,celery]>=2.13
+structlog>=24.4
+opentelemetry-sdk>=1.27
+opentelemetry-exporter-otlp>=1.27
+opentelemetry-instrumentation-fastapi>=0.48b0
+opentelemetry-instrumentation-sqlalchemy>=0.48b0
+opentelemetry-instrumentation-redis>=0.48b0
+opentelemetry-instrumentation-celery>=0.48b0
+opentelemetry-instrumentation-httpx>=0.48b0
 
 # 生成产物运行时冒烟测试（沙箱执行 game.js，抓"一加载就崩"的运行时错误）
 py-mini-racer>=0.6

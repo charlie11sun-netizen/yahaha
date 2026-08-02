@@ -1,18 +1,21 @@
 """公开作者主页 + 关注。"""
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_optional_user
 from app.db.session import get_db
 from app.models import Follow, Game, User
 from app.models.common import GameStatus
+from app.schemas import FollowOut, GameCollectionOut, PublicUserProfileOut
+from app.services import game_actions
 from app.services.serialize import game_card
 
 router = APIRouter(prefix="/users", tags=["users"])
 
 
-@router.get("/{user_id}")
+@router.get("/{user_id}", response_model=PublicUserProfileOut, response_model_exclude_unset=True)
 def get_profile(user_id: str, viewer=Depends(get_optional_user), db: Session = Depends(get_db)):
     u = db.get(User, user_id)
     if not u:
@@ -39,18 +42,22 @@ def get_profile(user_id: str, viewer=Depends(get_optional_user), db: Session = D
     }
 
 
-@router.get("/{user_id}/games")
-def get_user_games(user_id: str, db: Session = Depends(get_db)):
-    games = (
-        db.query(Game)
-        .filter(Game.author_id == user_id, Game.status == GameStatus.PUBLISHED)
-        .order_by(Game.published_at.desc(), Game.created_at.desc())
-        .all()
+@router.get("/{user_id}/games", response_model=GameCollectionOut, response_model_exclude_unset=True)
+def get_user_games(user_id: str, limit: int = 24, offset: int = 0, db: Session = Depends(get_db)):
+    page, total, offset, limit = game_actions.list_public_user_games(
+        db,
+        user_id,
+        limit=limit,
+        offset=offset,
     )
-    return {"items": [game_card(g) for g in games]}
+    return {
+        "items": [game_card(g) for g in page],
+        "total": total,
+        "has_more": offset + limit < total,
+    }
 
 
-@router.post("/{user_id}/follow")
+@router.post("/{user_id}/follow", response_model=FollowOut, response_model_exclude_unset=True)
 def follow(user_id: str, user=Depends(get_current_user), db: Session = Depends(get_db)):
     if user_id == user.id:
         raise HTTPException(status_code=400, detail="Cannot follow yourself")
@@ -58,11 +65,14 @@ def follow(user_id: str, user=Depends(get_current_user), db: Session = Depends(g
         raise HTTPException(status_code=404, detail="User not found")
     if not db.get(Follow, {"follower_id": user.id, "following_id": user_id}):
         db.add(Follow(follower_id=user.id, following_id=user_id))
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()  # 并发双击：复合主键兜底，当作已关注
     return {"following": True}
 
 
-@router.delete("/{user_id}/follow")
+@router.delete("/{user_id}/follow", response_model=FollowOut, response_model_exclude_unset=True)
 def unfollow(user_id: str, user=Depends(get_current_user), db: Session = Depends(get_db)):
     row = db.get(Follow, {"follower_id": user.id, "following_id": user_id})
     if row:

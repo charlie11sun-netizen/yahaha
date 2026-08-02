@@ -14,6 +14,7 @@ from app.models.memory import (
     MemoryEntityLink,
     MemoryItem,
     MemoryProfile,
+    MemoryProfileEvidence,
     MemoryProfileOperation,
     MemoryProfileStatus,
     MemoryProfileVersion,
@@ -22,11 +23,15 @@ from app.models.memory import (
     MemorySource,
     MemoryStatus,
 )
+from app.models.moderation import ModerationEvent
 from app.models.task import (
     AgentLog,
     AgentStep,
+    AgentTraceEvent,
     Asset,
+    GenerationDispatchOutbox,
     GenerationTask,
+    LLMCall,
     task_assets,
 )
 from app.models.social import Comment, Follow, Score
@@ -51,6 +56,7 @@ __all__ = [
     "MemoryEntityLink",
     "MemoryItem",
     "MemoryProfile",
+    "MemoryProfileEvidence",
     "MemoryProfileOperation",
     "MemoryProfileStatus",
     "MemoryProfileVersion",
@@ -58,9 +64,13 @@ __all__ = [
     "MemorySettings",
     "MemorySource",
     "MemoryStatus",
+    "ModerationEvent",
     "Asset",
     "task_assets",
     "GenerationTask",
+    "GenerationDispatchOutbox",
     "AgentStep",
     "AgentLog",
+    "AgentTraceEvent",
+    "LLMCall",
 ]

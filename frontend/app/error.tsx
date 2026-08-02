@@ -1,7 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect } from "react";
+
+import { StatusPage } from "@/app/_components/StatusPage";
 
 export default function RouteError({
   error,
@@ -15,16 +16,16 @@ export default function RouteError({
   }, [error]);
 
   return (
-    <main className="pf-status-page">
-      <section className="pf-status-card">
-        <span className="pf-status-code is-error">Something went wrong</span>
-        <h1>Unexpected error</h1>
-        <p>{error?.message || "An unexpected error occurred while rendering this page."}</p>
-        <div className="pf-status-actions">
-          <button onClick={() => reset()} type="button">Try again</button>
-          <Link href="/">Back to home</Link>
-        </div>
-      </section>
-    </main>
+    <StatusPage
+      code="Something went wrong"
+      isError
+      title="Unexpected error"
+      actions={[
+        { label: "Try again", onClick: reset },
+        { href: "/", label: "Back to home", variant: "outline" },
+      ]}
+    >
+      <p>{error?.message || "An unexpected error occurred while rendering this page."}</p>
+    </StatusPage>
   );
 }

@@ -1,0 +1,29 @@
+# Keep the canonical graph focused on application source, tests, textual design
+# documentation, and deployment code. Runtime evidence remains in the repository,
+# but it should not influence architecture centrality or community detection.
+
+# Graphify's own reports, caches, and historical snapshots. Graphify always
+# re-includes the reserved graphify-out/memory directory, so archived query
+# records live under graphify-out/query-memory-archive-* instead.
+/graphify-out/
+
+# Local game previews and ad-hoc forensic/QA captures.
+/.preview-games/
+/qa/
+
+# Agent/client metadata describes the development environment, not the product.
+/.claude/
+/.codex/
+
+# Third-party minified browser runtimes copied into generated game bundles.
+/backend/app/agents/vendor/
+
+# Generated API schema bindings are verified by CI; the handwritten boundary in
+# frontend/lib/types.ts is the architecture-relevant source.
+/frontend/lib/api-types.ts
+
+# Static product media, design screenshots, and documentation images.
+/frontend/public/
+/frontend/design/
+/frontend/gameweave-homepage-qa.png
+/docs/assets/

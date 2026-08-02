@@ -1,47 +1,8 @@
-"""模型调用层（OpenAI 兼容，如 Yahaha 提供的 GPT-5.5）。
+"""Compatibility alias for the layer-neutral LLM runtime."""
+from __future__ import annotations
 
-只发 model + messages（可选 temperature/max_tokens），最大化兼容各家 OpenAI 兼容端点。
-换 provider / 模型只改 .env 的 OPENAI_BASE_URL / MODEL_NAME。
-"""
-from openai import OpenAI
+import sys
 
-from app.core.config import settings
+from app.llm import runtime as _implementation
 
-
-def _client(*, timeout: int | None = None) -> OpenAI:
-    return OpenAI(
-        api_key=settings.OPENAI_API_KEY,
-        base_url=settings.OPENAI_BASE_URL,
-        timeout=timeout or settings.OPENAI_TIMEOUT,
-    )
-
-
-def chat(
-    system: str,
-    user: str,
-    temperature: float | None = None,
-    max_tokens: int | None = None,
-    *,
-    model: str | None = None,
-    timeout: int | None = None,
-    response_format: dict | None = None,
-) -> tuple[str, int]:
-    kwargs: dict = {
-        "model": model or settings.MODEL_NAME,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    }
-    if temperature is not None:
-        kwargs["temperature"] = temperature
-    if max_tokens is not None:
-        kwargs["max_tokens"] = max_tokens
-    if response_format is not None:
-        kwargs["response_format"] = response_format
-
-    resp = _client(timeout=timeout).chat.completions.create(**kwargs)
-    text = (resp.choices[0].message.content or "").strip()
-    usage = getattr(resp, "usage", None)
-    tokens = getattr(usage, "total_tokens", 0) if usage else 0
-    return text, int(tokens or 0)
+sys.modules[__name__] = _implementation

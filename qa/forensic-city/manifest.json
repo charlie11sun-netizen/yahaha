@@ -1,0 +1,230 @@
+{
+  "schema_version": "game-manifest/v1",
+  "game_id": "7eed85a1-253b-4054-8c25-03cf204a19a6",
+  "version_id": "1621a6c9-fc9f-49ef-84d9-ab4029eb9e0d",
+  "title": "像素都市计划",
+  "runtime": "phaser-vite-dist",
+  "entry": "index.html",
+  "files": [
+    {
+      "path": "assets/background-2.webp",
+      "sha256": "56c0a97dfaddd7d6caccaeccf422568735891496fa7f42d6a322e1ee88b7c9b0",
+      "size": 335136,
+      "content_type": "image/webp"
+    },
+    {
+      "path": "assets/background-3.webp",
+      "sha256": "1659616ffe5140c84257272245f711172c16c609ed1789eed1810c635d837dfc",
+      "size": 394034,
+      "content_type": "image/webp"
+    },
+    {
+      "path": "assets/background.webp",
+      "sha256": "fb3a911574b7691fa46d0ff814733ee7442063e6d5b62587f62104f50debb1cc",
+      "size": 333546,
+      "content_type": "image/webp"
+    },
+    {
+      "path": "assets/index-BeEbcY0S.js",
+      "sha256": "03adb465ab2f9660d5195f54ace01f155fd90c47117f36e5ba41b79307d62bf7",
+      "size": 1559128,
+      "content_type": "application/javascript; charset=utf-8"
+    },
+    {
+      "path": "assets/index-yIO0pKXV.css",
+      "sha256": "63c60127ac4dc64ab4cf1901ee64878a738554e195bcade59c552c0a762d3355",
+      "size": 613,
+      "content_type": "text/css; charset=utf-8"
+    },
+    {
+      "path": "assets/sheet-2.webp",
+      "sha256": "44393a6a92f1d76f1f1372282de0a570d5ebfbed02fc8d352b8374ce63c890b1",
+      "size": 282790,
+      "content_type": "image/webp"
+    },
+    {
+      "path": "assets/sheet-3.webp",
+      "sha256": "2c042bd80366538d48628368df7a813fa0bf152117015adbedaa20acd515f398",
+      "size": 213982,
+      "content_type": "image/webp"
+    },
+    {
+      "path": "assets/sheet.webp",
+      "sha256": "820ef97ca04c79b00745600e178c96ae405d3c3f9ebd4c79ada52a2b994207b2",
+      "size": 228572,
+      "content_type": "image/webp"
+    },
+    {
+      "path": "index.html",
+      "sha256": "73cd64778b46ba4cd3d1a0a9009687b97a98fc9602cf73636fd26218289743ad",
+      "size": 692,
+      "content_type": "text/html; charset=utf-8"
+    }
+  ],
+  "assets": [
+    {
+      "key": "sheet",
+      "kind": "spritesheet",
+      "path": "assets/sheet.webp",
+      "content_type": "image/webp",
+      "provider": "openai-compatible",
+      "model": "gpt-image-2",
+      "frame_width": 256,
+      "frame_height": 256,
+      "frames": {
+        "player_idle": 0,
+        "player_move_a": 1,
+        "player_move_b": 2,
+        "player_action": 3,
+        "player_skill_2": 4,
+        "player_skill_3": 5,
+        "player_hurt": 6,
+        "player_jump": 7,
+        "player_death": 8,
+        "player_victory": 9,
+        "player_skill_4": 10,
+        "player_skill_5": 11,
+        "enemy_1": 12,
+        "enemy_1_b": 13,
+        "enemy_1_c": 14,
+        "enemy_1_move": 15
+      },
+      "animations": {
+        "player_idle": [
+          "player_idle",
+          "player_move_a",
+          "player_move_b",
+          "player_action",
+          "player_skill_2",
+          "player_skill_3",
+          "player_hurt",
+          "player_jump",
+          "player_death",
+          "player_victory",
+          "player_skill_4",
+          "player_skill_5"
+        ],
+        "enemy_1": [
+          "enemy_1",
+          "enemy_1_b",
+          "enemy_1_c",
+          "enemy_1_move"
+        ]
+      }
+    },
+    {
+      "key": "sheet-2",
+      "kind": "spritesheet",
+      "path": "assets/sheet-2.webp",
+      "content_type": "image/webp",
+      "provider": "openai-compatible",
+      "model": "gpt-image-2",
+      "frame_width": 256,
+      "frame_height": 256,
+      "frames": {
+        "obstacle_1": 0,
+        "obstacle_2": 1,
+        "obstacle_3": 2,
+        "item_1": 3,
+        "item_1_b": 4,
+        "item_2": 5,
+        "item_2_b": 6,
+        "entity_1": 7,
+        "entity_2": 8,
+        "entity_3": 9,
+        "entity_4": 10,
+        "entity_5": 11,
+        "entity_6": 12,
+        "projectile": 13,
+        "explosion": 14,
+        "flash": 15
+      },
+      "animations": {
+        "item_1": [
+          "item_1",
+          "item_1_b"
+        ],
+        "item_2": [
+          "item_2",
+          "item_2_b"
+        ]
+      }
+    },
+    {
+      "key": "sheet-3",
+      "kind": "spritesheet",
+      "path": "assets/sheet-3.webp",
+      "content_type": "image/webp",
+      "provider": "openai-compatible",
+      "model": "gpt-image-2",
+      "frame_width": 256,
+      "frame_height": 256,
+      "frames": {
+        "prop": 0,
+        "bonus_1": 1,
+        "bonus_2": 2,
+        "bonus_3": 3,
+        "bonus_4": 4,
+        "bonus_5": 5,
+        "bonus_6": 6,
+        "bonus_7": 7,
+        "bonus_8": 8,
+        "bonus_9": 9,
+        "bonus_10": 10,
+        "bonus_11": 11,
+        "bonus_12": 12,
+        "bonus_13": 13,
+        "bonus_14": 14,
+        "bonus_15": 15
+      },
+      "animations": {}
+    },
+    {
+      "key": "background",
+      "kind": "image",
+      "path": "assets/background.webp",
+      "content_type": "image/webp",
+      "provider": "openai-compatible",
+      "model": "gpt-image-2",
+      "luma": 79
+    },
+    {
+      "key": "background-2",
+      "kind": "image",
+      "path": "assets/background-2.webp",
+      "content_type": "image/webp",
+      "provider": "openai-compatible",
+      "model": "gpt-image-2",
+      "luma": 67
+    },
+    {
+      "key": "background-3",
+      "kind": "image",
+      "path": "assets/background-3.webp",
+      "content_type": "image/webp",
+      "provider": "openai-compatible",
+      "model": "gpt-image-2",
+      "luma": 97
+    }
+  ],
+  "permissions": {
+    "network": false,
+    "storage": false,
+    "cookies": false
+  },
+  "artifact_format": "phaser-vite/v1",
+  "build": {
+    "ok": true,
+    "files": 9,
+    "bytes": 3348214,
+    "warnings": [
+      "",
+      "(!) Some chunks are larger than 500 kB after minification. Consider:",
+      "- Using dynamic import() to code-split the application",
+      "- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks",
+      "- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit."
+    ],
+    "duration_ms": 12294,
+    "format": "phaser-vite/v1"
+  }
+}

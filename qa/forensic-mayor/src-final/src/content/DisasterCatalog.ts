@@ -1,0 +1,90 @@
+import type { DisasterDefinition, DisasterKind } from "./CityTypes";
+
+export const DISASTER_CATALOG: Readonly<Record<DisasterKind, DisasterDefinition>> = Object.freeze({
+  facility_failure: Object.freeze({
+    kind: "facility_failure",
+    name: "设施故障",
+    description: "一座电厂或水务站的容量暂时降为一半。",
+    unlockPopulation: 120,
+    warningDays: 3,
+    durationDays: Object.freeze({ min: 8, max: 12 }),
+    validTargets: Object.freeze(["power", "water"] as const),
+    maximumTargets: 1,
+    effect: Object.freeze({ capacityMultiplier: 0.5 }),
+    mitigation: Object.freeze({
+      label: "紧急检修（目标造价的15%）",
+      costRate: 0.15,
+      result: Object.freeze({ remainingDays: 3 }),
+    }),
+  }),
+  fire: Object.freeze({
+    kind: "fire",
+    name: "小型火灾",
+    description: "目标建筑停运，并可能威胁相邻建筑。",
+    unlockPopulation: 120,
+    warningDays: 3,
+    durationDays: Object.freeze({ min: 6, max: 10 }),
+    validTargets: Object.freeze(["home", "commercial", "power", "water"] as const),
+    maximumTargets: 1,
+    effect: Object.freeze({ operational: false, maySpread: true }),
+    mitigation: Object.freeze({
+      label: "支付600组织消防隔离",
+      flatCost: 600,
+      result: Object.freeze({ preventSpread: true, durationMultiplier: 0.5 }),
+    }),
+  }),
+  storm: Object.freeze({
+    kind: "storm",
+    name: "暴风雨",
+    description: "商业收入下降20%，并损坏最多三段道路。",
+    unlockPopulation: 300,
+    warningDays: 3,
+    durationDays: Object.freeze({ min: 10, max: 15 }),
+    validTargets: Object.freeze(["road", "commercial"] as const),
+    maximumTargets: 3,
+    effect: Object.freeze({ commercialIncomeMultiplier: 0.8, maximumDamagedRoads: 3 }),
+    mitigation: Object.freeze({
+      label: "逐段修复或拆除重铺受损道路",
+      result: Object.freeze({ resolution: "repair_or_rebuild_damaged_roads" }),
+    }),
+  }),
+  blackout: Object.freeze({
+    kind: "blackout",
+    name: "局部停电",
+    description: "一个道路分区的可用电力降低40%。",
+    unlockPopulation: 300,
+    warningDays: 3,
+    durationDays: Object.freeze({ min: 6, max: 9 }),
+    validTargets: Object.freeze(["home", "commercial", "power", "water"] as const),
+    maximumTargets: 1,
+    effect: Object.freeze({ networkPowerMultiplier: 0.6, reserveCapacityThreshold: 0.2 }),
+    mitigation: Object.freeze({
+      label: "以至少20%备用容量减轻影响",
+      result: Object.freeze({ qualifyingNetworkPowerMultiplier: 0.8, effectReduction: 0.5 }),
+    }),
+  }),
+  water_main_break: Object.freeze({
+    kind: "water_main_break",
+    name: "水管破裂",
+    description: "一个道路分区暂时断水，需抢修或重建受影响连接。",
+    unlockPopulation: 300,
+    warningDays: 3,
+    durationDays: Object.freeze({ min: 8, max: 12 }),
+    validTargets: Object.freeze(["road", "home", "commercial"] as const),
+    maximumTargets: 1,
+    effect: Object.freeze({ networkWaterMultiplier: 0 }),
+    mitigation: Object.freeze({
+      label: "支付500抢修，或拆除重铺断裂路段",
+      flatCost: 500,
+      result: Object.freeze({ remainingDays: 0, alternate: "demolish_and_rebuild_target_road" }),
+    }),
+  }),
+});
+
+export const DISASTER_SCHEDULING = Object.freeze({
+  safeUntilDay: 20,
+  intervalDays: Object.freeze({ min: 45, max: 70 }),
+  warningDays: 3,
+  postDisasterSafeDays: 30,
+  maximumConcurrent: 2,
+});

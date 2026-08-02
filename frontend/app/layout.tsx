@@ -13,8 +13,8 @@ import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "@fontsource/ibm-plex-mono/600.css";
 import "./globals.css";
-import "./homepage.css";
-import Nav from "@/components/Nav";
+import "./app-shell.css";
+import AppShell from "./app-shell";
 import Providers from "./providers";
 
 export const metadata: Metadata = {
@@ -27,10 +27,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" suppressHydrationWarning>
       <body suppressHydrationWarning>
         <Providers>
-          <div className="pf-root-layout">
-            <Nav />
-            <main className="pf-root-main">{children}</main>
-          </div>
+          <AppShell>{children}</AppShell>
         </Providers>
       </body>
     </html>

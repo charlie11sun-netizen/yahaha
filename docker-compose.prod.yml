@@ -6,7 +6,7 @@
 #   - the whole site sits behind a password: SITE_PASSWORD is REQUIRED (compose errors if unset)
 #   - only web (3000), api (8000) and the MinIO S3 port (9000) are published; Postgres/Redis/console stay internal
 #
-# Same `name:` as the dev stack => it reuses the SAME named volumes (pgdata/miniodata).
+# Same `name:` as the dev stack => it reuses the SAME named volumes (pgdata/redisdata/miniodata).
 # On the SAME machine your existing games are already in those volumes (no migration needed).
 # To move to a NEW host, run deploy/migrate-export.sh here and deploy/migrate-import.sh there first.
 #
@@ -15,8 +15,10 @@ name: gameweave
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:0.8.2-pg16
     restart: unless-stopped
+    mem_limit: 1g
+    cpus: "1.0"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-gameweave}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a strong POSTGRES_PASSWORD in .env}
@@ -32,6 +34,11 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    mem_limit: 256m
+    cpus: "0.5"
+    command: redis-server --appendonly yes --appendfsync always
+    volumes:
+      - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -41,6 +48,8 @@ services:
   minio:
     image: minio/minio
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: "0.5"
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
@@ -50,9 +59,8 @@ services:
     volumes:
       - miniodata:/data
 
-  # Create the bucket and make the games prefix anonymously readable so the
-  # sandboxed <iframe> can load bundles cross-origin (the site gate covers the
-  # app + API; raw bundle URLs in object storage are UUID-obscured but public).
+  # Create the bucket and keep it private. Game bundles are served through
+  # short-lived API file URLs after the API has checked game visibility.
   createbuckets:
     image: minio/mc
     depends_on:
@@ -61,25 +69,42 @@ services:
       /bin/sh -c "
       until mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin}; do echo 'waiting for minio...'; sleep 2; done;
       mc mb --ignore-existing local/${S3_BUCKET:-gameweave};
-      mc anonymous set download local/${S3_BUCKET:-gameweave};
+      mc anonymous set none local/${S3_BUCKET:-gameweave};
       echo 'bucket ready';
       exit 0;
       "
 
-  api:
+  migrate:
     build: ./backend
-    restart: unless-stopped
+    restart: "no"
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-gameweave}
+    command: sh -c "alembic upgrade head && python -m app.tools.setup_checkpoints"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build: ./backend
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: "1.0"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-gameweave}
+      # Schema is owned by the migrate service (alembic upgrade head); the dev
+      # create_all fallback must stay off so missing migrations fail loudly.
+      AUTO_CREATE_ALL: "false"
       REDIS_URL: redis://redis:6379/0
       S3_ENDPOINT: http://minio:9000
-      # Public address browsers use to fetch game bundles. MUST be reachable from
-      # the visitor's browser (server IP or domain), e.g. http://YOUR_HOST:9000
+      # Public address used only for short-lived signed object URLs.
       S3_PUBLIC_ENDPOINT: ${PUBLIC_S3_URL:?set PUBLIC_S3_URL in .env}
       CORS_ORIGINS: ${PUBLIC_WEB_URL:?set PUBLIC_WEB_URL in .env}
       FRONTEND_BASE_URL: ${PUBLIC_WEB_URL}
       OAUTH_REDIRECT_BASE: ${PUBLIC_API_URL:?set PUBLIC_API_URL in .env}
+      AUTH_COOKIE_SECURE: "true"
+      ENABLE_OAUTH_DEMO: "false"
       # SITE_PASSWORD comes from .env (env_file). Backend requires X-Gate-Token when set.
       SITE_PASSWORD: ${SITE_PASSWORD:?set SITE_PASSWORD in .env — site must not be public}
     command: sh -c "python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"
@@ -92,17 +117,27 @@ services:
         condition: service_healthy
       createbuckets:
         condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
 
   worker:
     build: ./backend
     restart: unless-stopped
+    mem_limit: 1g
+    cpus: "1.5"
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-gameweave}
+      AUTO_CREATE_ALL: "false"
       REDIS_URL: redis://redis:6379/0
       S3_ENDPOINT: http://minio:9000
       S3_PUBLIC_ENDPOINT: ${PUBLIC_S3_URL}
-    command: celery -A app.tasks.celery_app.celery worker --loglevel=info
+      SANDBOX_URL: http://sandbox:8001
+      SANDBOX_REQUIRED: "true"
+    command: celery -A app.tasks.celery_app.celery worker --loglevel=info --queues=celery,generation-v2 --concurrency=2 --max-tasks-per-child=20
+    networks:
+      - default
+      - sandbox_net
     depends_on:
       postgres:
         condition: service_healthy
@@ -110,6 +145,90 @@ services:
         condition: service_healthy
       createbuckets:
         condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+      sandbox:
+        condition: service_healthy
+
+  outbox-worker:
+    build: ./backend
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: "0.25"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-gameweave}
+      AUTO_CREATE_ALL: "false"
+      REDIS_URL: redis://redis:6379/0
+    command: celery -A app.tasks.celery_app.celery worker --loglevel=info --queues=generation-outbox --concurrency=1 --max-tasks-per-child=100
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  beat:
+    build: ./backend
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: "0.5"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-gameweave}
+      REDIS_URL: redis://redis:6379/0
+    command: celery -A app.tasks.celery_app.celery beat --loglevel=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  sandbox:
+    build: ./sandbox
+    restart: unless-stopped
+    # Set SANDBOX_RUNTIME=runsc after installing gVisor on the host. Use runc
+    # when the deployment platform does not support custom runtimes.
+    runtime: ${SANDBOX_RUNTIME:-runc}
+    init: true
+    read_only: true
+    shm_size: 1gb
+    tmpfs:
+      - /tmp
+    mem_limit: 768m
+    cpus: "1.0"
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/.cache
+      SANDBOX_RUNNER_CONCURRENCY: "1"
+      SANDBOX_RUNNER_CHROMIUM_NO_SANDBOX: ${SANDBOX_RUNNER_CHROMIUM_NO_SANDBOX:-true}
+      SANDBOX_RUNNER_MAX_FILE_BYTES: ${SANDBOX_RUNNER_MAX_FILE_BYTES:-16000000}
+      SANDBOX_RUNNER_MAX_TOTAL_BYTES: ${SANDBOX_RUNNER_MAX_TOTAL_BYTES:-64000000}
+    networks:
+      - sandbox_net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  clamav:
+    image: clamav/clamav:stable
+    profiles: ["scan"]
+    restart: unless-stopped
+    mem_limit: 1536m
+    cpus: "1.0"
+    healthcheck:
+      test: ["CMD", "clamdscan", "--version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
   web:
     build:
@@ -121,14 +240,42 @@ services:
     restart: unless-stopped
     environment:
       NODE_ENV: production
+      API_INTERNAL_BASE_URL: http://api:8000
+      AUTH_COOKIE_NAME: ${AUTH_COOKIE_NAME:-gameweave_session}
       # The front-door password. Read at runtime by middleware.ts; never exposed
       # to the client. Empty => site is OPEN, so it is required here.
       SITE_PASSWORD: ${SITE_PASSWORD:?set SITE_PASSWORD in .env — site must not be public}
+      GATE_PUBLIC_BROWSE: ${GATE_PUBLIC_BROWSE:-false}
     ports:
       - "3000:3000"
     depends_on:
       - api
 
+  edge:
+    image: caddy:2-alpine
+    profiles: ["edge"]
+    restart: unless-stopped
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    depends_on:
+      - web
+      - api
+      - minio
+
 volumes:
   pgdata:
+  redisdata:
   miniodata:
+  caddydata:
+  caddyconfig:
+
+networks:
+  sandbox_net:
+    internal: true

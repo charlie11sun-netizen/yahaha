@@ -116,30 +116,6 @@ BUNDLES = {
 }
 
 
-def pick_bundle(idea: str) -> dict:
-    t = idea.lower()
-    if re.search(r"dodge|race|run|avoid|躲|赛|跑", t):
-        return {"bundle": "neondodge", "genre": "ENDLESS RUNNER",
-                "cover": "linear-gradient(135deg,#0ea5b7,#4f46e5)", "tags": ["Arcade", "Endless"]}
-    if re.search(r"memory|match|color|simon|记忆|颜色|配对", t):
-        return {"bundle": "colormatch", "genre": "MEMORY PUZZLE",
-                "cover": "linear-gradient(135deg,#7c5cff,#c026d3)", "tags": ["Puzzle", "Memory"]}
-    return {"bundle": "starcatch", "genre": "CASUAL · COZY",
-            "cover": "linear-gradient(135deg,#ff8a3d,#ff3ea5)", "tags": ["Casual", "Cozy"]}
-
-
-def title_from(idea: str) -> str:
-    t = idea.lower()
-    if re.search(r"star|catch|星|接", t):
-        return "Star Drift"
-    if re.search(r"dodge|race|run|躲|赛|跑", t):
-        return "Lane Breaker"
-    if re.search(r"memory|color|记忆|颜色", t):
-        return "Echo Tiles"
-    w = " ".join(idea.strip().split()[:2])
-    return (w[:1].upper() + w[1:]) if w else "Untitled Game"
-
-
 # ---------- Moonlit Koi ----------
 _KOI_BODY = (
     '<canvas id="stage"></canvas>'

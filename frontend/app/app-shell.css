@@ -1,0 +1,315 @@
+/* Shared app chrome. */
+.app-root-layout .pf-topnav {
+  background: rgba(255, 255, 255, 0.92);
+  border-bottom: 1px solid var(--pf-border);
+  height: 61px;
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
+
+.app-root-layout .pf-topnav-inner {
+  align-items: center;
+  display: flex;
+  gap: 34px;
+  height: 100%;
+  margin: 0 auto;
+  max-width: 1220px;
+  padding: 0 40px;
+}
+
+.app-root-layout .pf-brand,
+.app-root-layout .pf-navlinks button,
+.app-root-layout .pf-nav-actions button {
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.app-root-layout .pf-brand {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 10px;
+}
+
+.app-root-layout .pf-brand span:last-child {
+  color: #0d1433;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.app-root-layout .pf-logo-mark {
+  align-items: center;
+  background: var(--pf-grad);
+  border-radius: 7px;
+  box-shadow: 0 10px 22px rgba(108, 92, 255, 0.4);
+  color: #fff;
+  display: inline-flex;
+  height: 28px;
+  justify-content: center;
+  width: 28px;
+}
+
+.app-root-layout .pf-navlinks {
+  align-items: center;
+  display: flex;
+  gap: 32px;
+}
+
+.app-root-layout .pf-navlinks button {
+  color: #11183a;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 8px 0;
+  transition: color var(--pf-dur) var(--pf-ease);
+}
+
+.app-root-layout .pf-navlinks button.is-active {
+  color: #2536a8;
+}
+
+.app-root-layout .pf-nav-actions {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  margin-left: auto;
+}
+
+.app-root-layout .pf-login-btn,
+.app-root-layout .pf-start-btn,
+.app-root-layout .pf-user-chip {
+  align-items: center;
+  border-radius: 10px;
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 700;
+  justify-content: center;
+  min-height: 38px;
+  padding: 0 20px;
+  transition:
+    transform var(--pf-dur) var(--pf-ease),
+    box-shadow var(--pf-dur) var(--pf-ease),
+    border-color var(--pf-dur) var(--pf-ease),
+    background-color var(--pf-dur) var(--pf-ease),
+    color var(--pf-dur) var(--pf-ease);
+  white-space: nowrap;
+}
+
+.app-root-layout .pf-login-btn {
+  background: #fff;
+  border: 1px solid #dfe5f3;
+  color: #151b39;
+}
+
+.app-root-layout .pf-start-btn {
+  background: var(--pf-grad);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 11px 25px rgba(93, 99, 255, 0.28);
+  color: #fff;
+  min-width: 119px;
+}
+
+.app-root-layout .pf-user-chip {
+  background: #f5f7ff;
+  border: 1px solid var(--pf-border);
+  gap: 8px;
+}
+
+.app-root-layout .pf-user-chip span {
+  align-items: center;
+  background: var(--pf-grad);
+  border-radius: 999px;
+  color: #fff;
+  display: inline-flex;
+  font-size: 11px;
+  height: 24px;
+  justify-content: center;
+  width: 24px;
+}
+
+.app-root-layout .pf-login-btn:hover {
+  background: #f8f9ff;
+  border-color: #cfd7ef;
+  transform: translateY(-1px);
+}
+
+.app-root-layout .pf-start-btn:hover {
+  box-shadow: var(--pf-glow);
+  transform: translateY(-1px);
+}
+
+.app-root-layout .pf-topnav:not(.is-create) .pf-navlinks button {
+  position: relative;
+}
+
+.app-root-layout .pf-topnav:not(.is-create) .pf-navlinks button::after {
+  background: var(--pf-grad-vivid);
+  border-radius: 2px;
+  bottom: 0;
+  content: "";
+  height: 2px;
+  left: 0;
+  position: absolute;
+  right: 0;
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.26s var(--pf-ease);
+}
+
+.app-root-layout .pf-topnav:not(.is-create) .pf-navlinks button:hover {
+  color: #4f46e5;
+}
+
+.app-root-layout .pf-topnav:not(.is-create) .pf-navlinks button:hover::after,
+.app-root-layout .pf-topnav:not(.is-create) .pf-navlinks button.is-active::after {
+  transform: scaleX(1);
+}
+
+.app-root-layout .pf-topnav.is-create .pf-topnav-inner {
+  max-width: 1512px;
+  padding-left: 32px;
+  padding-right: 32px;
+}
+
+.app-root-layout .pf-topnav.is-create .pf-navlinks button.is-active {
+  color: #4f46e5;
+  position: relative;
+}
+
+.app-root-layout .pf-topnav.is-create .pf-navlinks button.is-active::after {
+  background: #5b5ff7;
+  border-radius: 999px;
+  bottom: -19px;
+  content: "";
+  height: 3px;
+  left: -8px;
+  position: absolute;
+  right: -8px;
+}
+
+.app-root-layout .pf-task-btn,
+.app-root-layout .pf-save-draft-btn,
+.app-root-layout .pf-create-avatar {
+  align-items: center;
+  border-radius: 10px;
+  display: inline-flex;
+  font-size: 14px;
+  font-weight: 700;
+  gap: 9px;
+  justify-content: center;
+  min-height: 44px;
+  transition:
+    transform var(--pf-dur) var(--pf-ease),
+    box-shadow var(--pf-dur) var(--pf-ease),
+    border-color var(--pf-dur) var(--pf-ease),
+    background-color var(--pf-dur) var(--pf-ease),
+    color var(--pf-dur) var(--pf-ease);
+  white-space: nowrap;
+}
+
+.app-root-layout .pf-task-btn {
+  background: transparent;
+  border: 0;
+  color: #11183a;
+  padding: 0 4px;
+}
+
+.app-root-layout .pf-save-draft-btn {
+  background: #fff;
+  border: 1px solid #dfe5f3;
+  color: #4f46e5;
+  min-width: 142px;
+  padding: 0 18px;
+}
+
+.app-root-layout .pf-create-avatar {
+  background: linear-gradient(135deg, #7c5cff, #4f7dff);
+  border: 0;
+  color: #fff;
+  font-size: 13px;
+  height: 44px;
+  padding: 0;
+  width: 44px;
+}
+
+.app-root-layout .pf-task-btn:hover,
+.app-root-layout .pf-save-draft-btn:hover {
+  transform: translateY(-1px);
+}
+
+@media (max-width: 860px) {
+  .app-root-layout .pf-topnav-inner {
+    gap: 18px;
+    padding: 0 28px;
+  }
+
+  .app-root-layout .pf-navlinks {
+    gap: 18px;
+  }
+}
+
+@media (max-width: 760px) {
+  .app-root-layout .pf-topnav {
+    height: auto;
+  }
+
+  .app-root-layout .pf-topnav-inner {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 14px;
+    padding: 14px 18px;
+  }
+
+  .app-root-layout .pf-navlinks {
+    order: 3;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    width: 100%;
+  }
+
+  .app-root-layout .pf-nav-actions {
+    gap: 8px;
+  }
+
+  .app-root-layout .pf-login-btn,
+  .app-root-layout .pf-start-btn,
+  .app-root-layout .pf-user-chip {
+    min-height: 34px;
+    padding: 0 12px;
+  }
+
+  .app-root-layout .pf-topnav.is-create .pf-topnav-inner {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+
+  .app-root-layout .pf-topnav.is-create .pf-navlinks button.is-active::after {
+    bottom: -7px;
+  }
+
+  .app-root-layout .pf-task-btn,
+  .app-root-layout .pf-save-draft-btn,
+  .app-root-layout .pf-create-avatar {
+    min-height: 36px;
+  }
+
+  .app-root-layout .pf-task-btn {
+    font-size: 0;
+    gap: 0;
+    padding: 0 8px;
+  }
+
+  .app-root-layout .pf-save-draft-btn {
+    min-width: 0;
+    padding: 0 12px;
+  }
+
+  .app-root-layout .pf-create-avatar {
+    height: 36px;
+    width: 36px;
+  }
+}

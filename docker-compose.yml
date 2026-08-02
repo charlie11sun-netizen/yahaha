@@ -2,7 +2,9 @@ name: gameweave
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:0.8.2-pg16
+    mem_limit: 1g
+    cpus: "1.0"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-gameweave}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gameweave}
@@ -19,8 +21,13 @@ services:
 
   redis:
     image: redis:7-alpine
+    mem_limit: 256m
+    cpus: "0.5"
+    command: redis-server --appendonly yes --appendfsync always
     ports:
       - "6379:6379"
+    volumes:
+      - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -29,6 +36,8 @@ services:
 
   minio:
     image: minio/minio
+    mem_limit: 512m
+    cpus: "0.5"
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
@@ -48,20 +57,36 @@ services:
       /bin/sh -c "
       until mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin}; do echo 'waiting for minio...'; sleep 2; done;
       mc mb --ignore-existing local/${S3_BUCKET:-gameweave};
-      mc anonymous set download local/${S3_BUCKET:-gameweave};
+      mc anonymous set none local/${S3_BUCKET:-gameweave};
+      mc anonymous set download local/${S3_BUCKET:-gameweave}/games;
       echo 'bucket ready';
       exit 0;
       "
 
+  migrate:
+    build: ./backend
+    restart: "no"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD:-gameweave}@postgres:5432/${POSTGRES_DB:-gameweave}
+    command: sh -c "alembic upgrade head && python -m app.tools.setup_checkpoints"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   api:
     build: ./backend
+    mem_limit: 512m
+    cpus: "1.0"
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD:-gameweave}@postgres:5432/${POSTGRES_DB:-gameweave}
       REDIS_URL: redis://redis:6379/0
       S3_ENDPOINT: http://minio:9000
       S3_PUBLIC_ENDPOINT: http://localhost:9000
-    command: sh -c "python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    command: sh -c "python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --timeout-graceful-shutdown 5"
     ports:
       - "8000:8000"
     volumes:
@@ -73,18 +98,27 @@ services:
         condition: service_healthy
       createbuckets:
         condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
 
   worker:
     build: ./backend
+    mem_limit: 1g
+    cpus: "1.5"
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD:-gameweave}@postgres:5432/${POSTGRES_DB:-gameweave}
       REDIS_URL: redis://redis:6379/0
       S3_ENDPOINT: http://minio:9000
       S3_PUBLIC_ENDPOINT: http://localhost:9000
-    command: celery -A app.tasks.celery_app.celery worker --loglevel=info
+      SANDBOX_URL: http://sandbox:8001
+      SANDBOX_REQUIRED: "true"
+    command: celery -A app.tasks.celery_app.celery worker --loglevel=info --queues=celery,generation-v2 --concurrency=2 --max-tasks-per-child=20
     volumes:
       - ./backend:/app
+    networks:
+      - default
+      - sandbox_net
     depends_on:
       postgres:
         condition: service_healthy
@@ -92,18 +126,112 @@ services:
         condition: service_healthy
       createbuckets:
         condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+      sandbox:
+        condition: service_healthy
+
+  outbox-worker:
+    build: ./backend
+    mem_limit: 256m
+    cpus: "0.25"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD:-gameweave}@postgres:5432/${POSTGRES_DB:-gameweave}
+      REDIS_URL: redis://redis:6379/0
+    command: celery -A app.tasks.celery_app.celery worker --loglevel=info --queues=generation-outbox --concurrency=1 --max-tasks-per-child=100
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  beat:
+    build: ./backend
+    mem_limit: 256m
+    cpus: "0.5"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gameweave}:${POSTGRES_PASSWORD:-gameweave}@postgres:5432/${POSTGRES_DB:-gameweave}
+      REDIS_URL: redis://redis:6379/0
+    command: celery -A app.tasks.celery_app.celery beat --loglevel=info
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  sandbox:
+    build: ./sandbox
+    init: true
+    read_only: true
+    volumes:
+      - ./sandbox/app:/app/app:ro
+    shm_size: 1gb
+    tmpfs:
+      - /tmp
+    mem_limit: 768m
+    cpus: "1.0"
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/.cache
+      SANDBOX_RUNNER_CONCURRENCY: "1"
+      SANDBOX_RUNNER_CHROMIUM_NO_SANDBOX: ${SANDBOX_RUNNER_CHROMIUM_NO_SANDBOX:-true}
+      SANDBOX_RUNNER_MAX_FILE_BYTES: ${SANDBOX_RUNNER_MAX_FILE_BYTES:-16000000}
+      SANDBOX_RUNNER_MAX_TOTAL_BYTES: ${SANDBOX_RUNNER_MAX_TOTAL_BYTES:-64000000}
+    networks:
+      - sandbox_net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  clamav:
+    image: clamav/clamav:stable
+    profiles: ["scan"]
+    mem_limit: 1536m
+    cpus: "1.0"
+    healthcheck:
+      test: ["CMD", "clamdscan", "--version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    profiles: ["otel"]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+      - "4317:4317"
 
   web:
     build: ./frontend
     environment:
       NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+      API_INTERNAL_BASE_URL: http://api:8000
+      AUTH_COOKIE_NAME: ${AUTH_COOKIE_NAME:-gameweave_session}
       # 整站访问密码门禁。留空 = 不启用（本地开发默认开放）；
       # 部署时在 .env 里设好 SITE_PASSWORD，打开网站即需先输入此密码。
       SITE_PASSWORD: ${SITE_PASSWORD:-}
+      GATE_PUBLIC_BROWSE: ${GATE_PUBLIC_BROWSE:-false}
       # Bind mounts on Windows/Docker don't deliver inotify events; poll so HMR
       # detects host edits and never leaves .next half-compiled.
       WATCHPACK_POLLING: "true"
-    command: npm run dev
+    command: sh -c "npm install --no-audit --no-fund && npm run dev"
     ports:
       - "3000:3000"
     volumes:
@@ -115,6 +243,30 @@ services:
     depends_on:
       - api
 
+  edge:
+    image: caddy:2-alpine
+    profiles: ["edge"]
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    depends_on:
+      - web
+      - api
+      - minio
+
 volumes:
   pgdata:
+  redisdata:
   miniodata:
+  caddydata:
+  caddyconfig:
+
+networks:
+  sandbox_net:
+    internal: true

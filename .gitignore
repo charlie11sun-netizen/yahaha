@@ -1,7 +1,7 @@
-# Claude Design 设计 handoff（留本地当参考，不进仓库）
+# Claude Design handoff (local reference, not committed)
 AI全栈工程师系统设计-handoff/
 
-# 环境变量 / 密钥（保留示例模板，真实 .env 不进仓库）
+# Environment variables / secrets
 .env
 .env.*
 !.env.example
@@ -17,6 +17,7 @@ build/
 *.tsbuildinfo
 npm-debug.log*
 yarn-error.log*
+frontend/.openapi.json
 
 # Python
 __pycache__/
@@ -27,9 +28,41 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+celerybeat-schedule
 
-# 操作系统 / 编辑器
+# Graphify: keep only the portable report in Git. graph.json is a local
+# regenerable artifact (`graphify update .`) whose diffs ran 150k+ lines and
+# polluted history/review (untracked 2026-07-26).
+graphify-out/*
+!graphify-out/GRAPH_REPORT.md
+
+# Local runtime logs and generated agent/evaluation output
+/.backend.*.log
+.next-dev.*.log
+/agent-traces-*.jsonl
+/export-err.txt
+/artifacts/
+/.preview-games/
+/scripts/prompt_iter*.txt
+/scripts/prompt_probe*.txt
+/scripts/*_traces.jsonl
+/.mock-api.*.log
+/.playwright-cli/
+/qa/forensic-*/traces.jsonl
+/qa/forensic-*/writes.b64
+/qa/forensic-*/writes.jsonl
+/qa/forensic-*/oplog.json
+/qa/forensic-*/pytest-full.txt
+/qa/forensic-*/export-err.txt
+
+# Stray nested Graphify output; the canonical graph lives at the repo root.
+/backend/graphify-out/
+
+# Operating system / editors
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
+
+# session scratch/evidence dumps
+.scratch/

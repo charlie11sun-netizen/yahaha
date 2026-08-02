@@ -1,21 +1,21 @@
 "use client";
 import { createContext, useContext, useEffect, useState } from "react";
 
-import { api } from "./api";
+import { api, setAuthenticatedSessionKnown } from "./api";
 import type { User } from "./types";
 
 interface AuthCtx {
   user: User | null;
   loading: boolean;
-  setSession: (token: string, user: User) => void;
-  logout: () => void;
+  setSession: (user: User) => void;
+  logout: () => Promise<void>;
 }
 
 const Ctx = createContext<AuthCtx>({
   user: null,
   loading: true,
   setSession: () => {},
-  logout: () => {},
+  logout: async () => {},
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -23,27 +23,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const t = localStorage.getItem("pf_token");
-    if (!t) {
-      setLoading(false);
-      return;
-    }
     api
       .me()
-      .then(setUser)
-      .catch(() => localStorage.removeItem("pf_token"))
+      .then((currentUser) => {
+        setAuthenticatedSessionKnown(true);
+        setUser(currentUser);
+      })
+      .catch(() => {
+        setAuthenticatedSessionKnown(false);
+        setUser(null);
+      })
       .finally(() => setLoading(false));
   }, []);
 
-  function setSession(token: string, u: User) {
-    localStorage.setItem("pf_token", token);
+  function setSession(u: User) {
+    setAuthenticatedSessionKnown(true);
     setUser(u);
   }
 
-  function logout() {
-    api.logout().catch(() => {});
-    localStorage.removeItem("pf_token");
-    setUser(null);
+  async function logout() {
+    try {
+      await api.logout();
+    } catch {
+      // The account may already be deleted or the session may have expired.
+    } finally {
+      setAuthenticatedSessionKnown(false);
+      setUser(null);
+    }
   }
 
   return <Ctx.Provider value={{ user, loading, setSession, logout }}>{children}</Ctx.Provider>;
