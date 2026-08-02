@@ -19,12 +19,18 @@ test("create mock pipeline to preview and publish", async ({ page, request }) =>
   await page.getByRole("button", { name: "Play Preview" }).click();
   const preview = await previewPromise;
   await expect(preview.locator("iframe")).toBeVisible({ timeout: 30_000 });
+  const gamePath = new URL(preview.url()).pathname.replace(/\/$/, "");
+  expect(gamePath).toMatch(/^\/play\/[^/]+$/);
+  const gameId = gamePath.slice("/play/".length);
   await preview.close();
 
   await page.bringToFront();
   await page.getByRole("button", { name: "Publish to Home" }).click();
   await expect(page).toHaveURL(/\/explore/);
-  await expect(page.getByRole("heading", { name: gameTitle, exact: true })).toBeVisible();
+  const gameLink = page
+    .getByRole("link", { name: gameTitle, exact: true })
+    .and(page.locator(`a[href="/games/${gameId}"]`));
+  await expect(gameLink).toBeVisible();
 });
 
 test("detail remix button opens a prefilled create flow", async ({ page, request }) => {
